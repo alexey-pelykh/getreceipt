@@ -10,6 +10,20 @@
 # MCP configuration with credentials
 .mcp.json.local
 
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.tsbuildinfo
+
+# Tooling caches
+.turbo/
+coverage/
+
+# Agent / workflow scratch
+.tmp/
+
 ## Origin: https://github.com/github/gitignore/blob/main/Global/Linux.gitignore
 *~
 

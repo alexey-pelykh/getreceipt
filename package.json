@@ -1,0 +1,32 @@
+{
+  "name": "@getreceipt/monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Monorepo workspace root for @getreceipt (unofficial).",
+  "packageManager": "pnpm@11.8.0",
+  "engines": {
+    "node": ">=22.11.0",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "catalog:",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "eslint-config-prettier": "catalog:",
+    "prettier": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:",
+    "typescript-eslint": "catalog:",
+    "vitest": "catalog:"
+  },
+  "license": "AGPL-3.0-only"
+}

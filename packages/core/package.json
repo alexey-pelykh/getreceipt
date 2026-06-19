@@ -1,0 +1,31 @@
+{
+  "name": "@getreceipt/core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "@getreceipt core — pipeline, registry, resolvers (scaffold; no logic yet).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
+    "@types/node": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "AGPL-3.0-only"
+}
