@@ -18,10 +18,16 @@ import { parse as parseYaml } from 'yaml';
  * as real YAML rather than regex-matched, so structural drift is caught too.
  */
 
+interface DependabotGroup {
+    'applies-to'?: string;
+    'update-types'?: string[];
+}
+
 interface DependabotUpdate {
     'package-ecosystem'?: string;
     directory?: string;
     schedule?: { interval?: string };
+    groups?: Record<string, DependabotGroup>;
 }
 
 interface DependabotConfig {
@@ -42,7 +48,8 @@ function findWorkspaceRoot(): string {
 }
 
 const configPath = join(findWorkspaceRoot(), '.github', 'dependabot.yml');
-const config = parseYaml(readFileSync(configPath, 'utf8')) as DependabotConfig;
+const rawConfig = readFileSync(configPath, 'utf8');
+const config = parseYaml(rawConfig) as DependabotConfig;
 
 describe('dependabot config', () => {
     it('declares config version 2', () => {
@@ -68,6 +75,43 @@ describe('dependabot config', () => {
 
         it('runs on a defined schedule so the pins do not silently rot', () => {
             expect(entry?.schedule?.interval).toBeTruthy();
+        });
+    });
+
+    /**
+     * The npm ecosystem (issue #44) keeps the shared dependency versions current. Those versions
+     * live only in pnpm-workspace.yaml's `catalog:`, so the entry must be rooted at the workspace
+     * and Dependabot's (GA) pnpm-catalog support does the rest. These asserts bind the issue's
+     * acceptance criteria — ecosystem present, cadence, grouping, auto-merge policy — to CI.
+     */
+    describe('npm ecosystem (pnpm catalog-aware)', () => {
+        const entry = config.updates?.find((update) => update['package-ecosystem'] === 'npm');
+
+        it('is configured (AC: dependabot.yml includes the npm ecosystem)', () => {
+            expect(entry).toBeDefined();
+        });
+
+        it("is rooted at the workspace, where pnpm-workspace.yaml's catalog lives", () => {
+            expect(entry?.directory).toBe('/');
+        });
+
+        it('runs on a defined schedule (AC: update cadence recorded)', () => {
+            expect(entry?.schedule?.interval).toBeTruthy();
+        });
+
+        it('groups updates by type, covering patch and minor (AC: grouping recorded)', () => {
+            // Grouping is by update-TYPE, not dependency-type: Dependabot mislabels pnpm catalog
+            // deps as `production` (dependabot-core#14824), so a devDependencies group would
+            // misfire. Assert the groups exist and that patch + minor are both covered.
+            const groupList = Object.values(entry?.groups ?? {});
+            expect(groupList.length).toBeGreaterThanOrEqual(1);
+            const updateTypes = groupList.flatMap((group) => group['update-types'] ?? []);
+            expect(updateTypes).toContain('patch');
+            expect(updateTypes).toContain('minor');
+        });
+
+        it('records an auto-merge policy (AC: policy recorded in the config)', () => {
+            expect(rawConfig).toMatch(/auto-merge/i);
         });
     });
 });
