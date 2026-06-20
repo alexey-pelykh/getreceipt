@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 
-import {
-    DuplicateSourceError,
-    SourceAdapterRegistry,
-    SourceResolver,
-    UnknownSourceError,
-} from './index.js';
+import { DuplicateSourceError, SourceAdapterRegistry, SourceResolver, UnknownSourceError } from './index.js';
 import type { SourceAdapter, SourceDescriptor } from './index.js';
 
 /**
