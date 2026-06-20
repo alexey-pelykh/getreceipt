@@ -105,10 +105,7 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     const auth = raw.auth;
 
     if (!isAuthKind(auth.kind)) {
-        throw new ConfigError(
-            `unknown auth kind; expected one of ${AUTH_KINDS.join(', ')}`,
-            `${authPath}.kind`,
-        );
+        throw new ConfigError(`unknown auth kind; expected one of ${AUTH_KINDS.join(', ')}`, `${authPath}.kind`);
     }
 
     const result: { kind: AuthKind; username?: string; secret?: CredentialValue } = { kind: auth.kind };
