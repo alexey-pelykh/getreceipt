@@ -121,6 +121,9 @@ importers:
       getreceipt:
         specifier: workspace:^
         version: link:../getreceipt
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
 
   packages/getreceipt:
     devDependencies:
