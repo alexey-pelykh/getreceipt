@@ -1,0 +1,9 @@
+{
+  "//": "Build-mode solution for editors and `tsc -b`: references the composite BUILD configs only (emits dist/, tests excluded). This is NOT the full typecheck surface — run `pnpm typecheck` (turbo type-checks every package's tsconfig.json, including tests and the non-built testing/e2e/umbrella packages).",
+  "files": [],
+  "references": [
+    { "path": "packages/core/tsconfig.build.json" },
+    { "path": "packages/cli/tsconfig.build.json" },
+    { "path": "packages/mcp/tsconfig.build.json" }
+  ]
+}

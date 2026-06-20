@@ -1,0 +1,34 @@
+{
+  "name": "getreceipt",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "getreceipt — unofficial receipt fetcher (CLI + MCP), self-contained umbrella.",
+  "bin": {
+    "getreceipt": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit && tsup",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@getreceipt/cli": "workspace:^",
+    "@getreceipt/core": "workspace:^",
+    "@getreceipt/mcp": "workspace:^",
+    "@types/node": "catalog:",
+    "tsup": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "AGPL-3.0-only"
+}

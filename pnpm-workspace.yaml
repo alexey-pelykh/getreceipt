@@ -1,0 +1,31 @@
+packages:
+  - packages/*
+
+# pnpm 11 blocks dependency build scripts by default. esbuild needs its postinstall
+# (platform binary used by tsup + vitest); msw's is harmless. Both explicitly approved.
+allowBuilds:
+  esbuild: true
+  msw: true
+
+# Single source of truth for shared dependency versions (referenced as `catalog:`).
+catalog:
+  # Toolchain
+  typescript: 6.0.3
+  turbo: 2.9.18
+  tsup: 8.5.1
+  # Test substrate
+  vitest: 4.1.9
+  msw: 2.14.6
+  # Lint + format
+  eslint: 10.5.0
+  '@eslint/js': 10.0.1
+  typescript-eslint: 8.61.1
+  eslint-config-prettier: 10.1.8
+  prettier: 3.8.4
+  # Types
+  '@types/node': 26.0.0
+
+# @types/node 26 is newer than pnpm's default minimum-release-age window; vetted + allowed
+# so fresh clones install deterministically without a prompt.
+minimumReleaseAgeExclude:
+  - '@types/node@26.0.0'

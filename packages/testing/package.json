@@ -1,0 +1,28 @@
+{
+  "name": "@getreceipt/testing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal test support: shared MSW server + lifecycle. Consumed as source; not published.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./setup": {
+      "types": "./src/setup.ts",
+      "import": "./src/setup.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "msw": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  },
+  "license": "AGPL-3.0-only"
+}
