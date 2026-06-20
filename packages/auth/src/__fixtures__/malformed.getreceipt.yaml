@@ -1,0 +1,10 @@
+# Malformed-YAML fixture for the secret-leak-on-parse-error test (issue #37):
+# the unclosed flow sequence ("[") on the `secret:` line makes the `yaml` parser
+# throw an error that echoes the sentinel below — which loadConfig must NOT surface.
+profiles:
+  default:
+    sources:
+      free.fr:
+        auth:
+          kind: password
+          secret: [sk-LEAK-SENTINEL-9f3a2b
