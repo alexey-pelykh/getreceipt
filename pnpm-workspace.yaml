@@ -24,8 +24,11 @@ catalog:
   prettier: 3.8.4
   # Types
   '@types/node': 26.0.0
+  # Runtime
+  yaml: 2.9.0
 
 # @types/node 26 is newer than pnpm's default minimum-release-age window; vetted + allowed
 # so fresh clones install deterministically without a prompt.
 minimumReleaseAgeExclude:
   - '@types/node@26.0.0'
+  - 'yaml@2.9.0'
