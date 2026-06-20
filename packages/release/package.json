@@ -1,0 +1,23 @@
+{
+  "name": "@getreceipt/release",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal release tooling: dist-tag routing, version stamping, agreement guard, idempotent publish. Consumed by .github/workflows/release.yml; never published.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/release"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
+    "@types/node": "catalog:"
+  },
+  "license": "AGPL-3.0-only"
+}

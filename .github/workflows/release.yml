@@ -1,0 +1,131 @@
+name: Release
+
+# A published GitHub Release (tag vX.Y.Z[-pre]) triggers the publish train; drafts excluded.
+on:
+  release:
+    types: [published]
+
+# Least privilege by default; only the publish job elevates id-token (for OIDC).
+permissions:
+  contents: read
+
+# One publish per tag; never cancel in-flight — a half-published release is the worst outcome.
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  # GATE 1: derive version + dist-tag from the tag (pre-release → @next/AC1, plain → @latest/AC2)
+  # and assert it agrees with the Release pre-release flag (AC3). Fails before any npm mutation.
+  guard:
+    name: Derive version & guard agreement
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      dist_tag: ${{ steps.derive.outputs.dist_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      # No `registry-url`: it makes setup-node write _authToken into .npmrc, which breaks OIDC.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build release tooling
+        run: pnpm --filter @getreceipt/release build
+
+      - name: Derive version + dist-tag and guard against the release pre-release flag
+        id: derive
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: node packages/release/dist/bin/release-guard.js
+
+  # GATE 2: build + typecheck + test must pass before any publish. Sibling of `guard`; publish needs both.
+  validate:
+    name: Build, typecheck & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  # PUBLISH: stamp the version into every package.json, then idempotently (AC4) publish each public
+  # package to its dist-tag via OIDC trusted publishing (AC6) with provenance (AC5). No NPM_TOKEN.
+  publish:
+    name: Stamp & publish to npm
+    needs: [guard, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Publish environment (AC6) — create in Settings → Environments to gate this job. Runs
+    # unprotected until configured, but never with a token (auth is OIDC).
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # OIDC token exchange + provenance attestation (AC6).
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      # node-version >= 22.14.0 is required for trusted publishing; no `registry-url` (see guard).
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # npm >= 11.5.1 aligns the provenance toolchain; the publish itself runs through pnpm.
+      - name: Upgrade npm for trusted-publishing toolchain
+        run: npm install --global npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Build (on committed 0.0.0) before stamping: dist embeds no version, and install is frozen.
+      - name: Build
+        run: pnpm build
+
+      - name: Stamp release version into every workspace package.json
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: node packages/release/dist/bin/release-stamp.js
+
+      - name: Publish (idempotent, provenance, OIDC trusted publishing)
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          DIST_TAG: ${{ needs.guard.outputs.dist_tag }}
+        run: node packages/release/dist/bin/release-publish.js
