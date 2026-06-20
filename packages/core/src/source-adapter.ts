@@ -73,7 +73,14 @@ export interface SourceDescriptor {
     readonly pagination: PaginationKind;
 }
 
-/** A date window; inclusivity of each bound is declared on the source's {@link DateFilter}. */
+/**
+ * A date window; inclusivity of each bound is declared on the source's {@link DateFilter}.
+ *
+ * `readonly` locks the bindings, not the `Date` values (a `Date` is mutable): treat both
+ * bounds as immutable — the contract does not defensively copy. Switching to an immutable
+ * representation (epoch `number` / ISO `string`) is deferred until `collect()` (#4) lands
+ * and settles how timestamps cross the contract boundary.
+ */
 export interface DateRange {
     readonly from: Date;
     readonly to: Date;
@@ -83,7 +90,10 @@ export interface DateRange {
 export interface ReceiptRef {
     /** Stable identifier, unique within the source. */
     readonly id: string;
-    /** Timestamp on the source's declared {@link DateFilterBasis}; used for range filtering and ordering. */
+    /**
+     * Timestamp on the source's declared {@link DateFilterBasis}; used for range filtering
+     * and ordering. Immutable like {@link DateRange} bounds — do not mutate the `Date` in place.
+     */
     readonly issuedAt: Date;
     /** Optional human-friendly label (e.g. an invoice number). */
     readonly title?: string;

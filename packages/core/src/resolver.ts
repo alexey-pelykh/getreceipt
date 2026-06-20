@@ -24,6 +24,14 @@ export class SourceResolver {
         }
     }
 
+    /**
+     * Index `domain` → `adapter`, rejecting only a true collision: a domain already
+     * claimed by a DIFFERENT adapter. The `existing !== adapter` guard deliberately
+     * tolerates a domain repeated by the SAME adapter — a self-alias (canonical listed
+     * in its own `aliasDomains`) or a duplicated alias entry — because re-indexing the
+     * same adapter is idempotent. Linting such redundant descriptors belongs to the
+     * concrete adapters once they land (#4+), not to this routing layer.
+     */
     #index(domain: string, adapter: SourceAdapter): void {
         const normalized = normalizeDomain(domain);
         const existing = this.#byDomain.get(normalized);
