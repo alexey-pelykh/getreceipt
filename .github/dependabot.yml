@@ -1,0 +1,12 @@
+# Keeps the SHA-pinned actions in .github/workflows/ current (issue #40): the pins are
+# immutable commit SHAs, so without this they silently rot — Dependabot raises a weekly PR
+# bumping each pin and its trailing `# vX.Y.Z` comment as new releases ship.
+version: 2
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    commit-message:
+      prefix: '(ci)'
+    open-pull-requests-limit: 10

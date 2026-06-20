@@ -20,7 +20,8 @@
   "devDependencies": {
     "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:",
-    "getreceipt": "workspace:^"
+    "getreceipt": "workspace:^",
+    "yaml": "catalog:"
   },
   "license": "AGPL-3.0-only"
 }
