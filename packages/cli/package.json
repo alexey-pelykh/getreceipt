@@ -3,6 +3,15 @@
   "version": "0.0.0",
   "type": "module",
   "description": "@getreceipt CLI library (scaffold; no commands yet).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/alexey-pelykh/getreceipt/issues"
+  },
+  "homepage": "https://github.com/alexey-pelykh/getreceipt#readme",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

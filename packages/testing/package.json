@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Internal test support: shared MSW server + lifecycle. Consumed as source; not published.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/testing"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",
