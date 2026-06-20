@@ -10,6 +10,23 @@ from supported sources.
 > toolchain, and a green build/test/typecheck/lint baseline. There is **no product logic yet**;
 > adapters, auth, CLI commands, and MCP tools land in later issues.
 
+## Personal use & non-goals
+
+`getreceipt` fetches **your own** receipts, invoices, and statements from services you already have
+accounts with, using **your own** credentials. It is for personal use only — **not** for third-party
+data, scraping, bulk or abusive automation, or any use that violates a service's terms.
+
+Explicit non-goals:
+
+- **Banks and financial institutions are out of scope.** This is not an account-aggregation or
+  open-banking tool.
+- **Documents, not data.** `getreceipt` retrieves only the documents a service issues to you
+  (receipts, invoices, statements) — never your account balances or transaction history.
+- **No machine-tempo affordances.** There is no `--watch` and no `--repeat`; it runs once, at human
+  tempo, when you ask it to.
+
+The fuller posture and rationale will live in `docs/legitimacy.md`.
+
 ## Packages
 
 | Package                                   | Published | Purpose                                                                                              |

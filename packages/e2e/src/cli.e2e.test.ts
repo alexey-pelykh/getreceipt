@@ -46,6 +46,15 @@ describe('getreceipt bundled CLI', () => {
             .join('');
         expect(banner).toContain('getreceipt');
         expect(banner).toContain('@getreceipt/core');
+
+        // The CLI channel carries the unofficial disclaimer + personal-use posture as shipped text
+        // (issue #10). Assert the canonical not-affiliated clause and the personal-use markers — the
+        // constants' wording is pinned independently by @getreceipt/core's disclaimer.test.ts.
+        expect(banner).toContain(
+            'affiliated with, endorsed by, or supported by any of the services it integrates with',
+        );
+        expect(banner).toContain('personal use only');
+        expect(banner).toContain('your own credentials');
     });
 
     it('is self-contained — the built dist inlines its @getreceipt workspace deps', () => {
