@@ -135,6 +135,12 @@ describe('SourceResolver', () => {
         expect(resolver.tryResolve('free.fr')).toBeDefined();
     });
 
+    it('returns undefined from tryResolve when built over an empty registry', () => {
+        const resolver = new SourceResolver(new SourceAdapterRegistry());
+
+        expect(resolver.tryResolve('free.fr')).toBeUndefined();
+    });
+
     it('rejects construction when two adapters claim the same alias', () => {
         const registry = new SourceAdapterRegistry();
         registry.register(fakeAdapter('free.fr', ['shared.test']));
@@ -149,5 +155,26 @@ describe('SourceResolver', () => {
         registry.register(fakeAdapter('orange.fr', ['free.fr']));
 
         expect(() => new SourceResolver(registry)).toThrow(DuplicateSourceError);
+    });
+
+    it('tolerates an adapter that lists its own canonical domain as an alias', () => {
+        const registry = new SourceAdapterRegistry();
+        const adapter = fakeAdapter('free.fr', ['free.fr']);
+        registry.register(adapter);
+
+        // Construction would throw DuplicateSourceError if the self-alias were not tolerated.
+        const resolver = new SourceResolver(registry);
+
+        expect(resolver.resolve('free.fr')).toBe(adapter);
+    });
+
+    it('tolerates a duplicate alias repeated within a single adapter', () => {
+        const registry = new SourceAdapterRegistry();
+        const adapter = fakeAdapter('free.fr', ['pro.free.fr', 'pro.free.fr']);
+        registry.register(adapter);
+
+        const resolver = new SourceResolver(registry);
+
+        expect(resolver.resolve('pro.free.fr')).toBe(adapter);
     });
 });
