@@ -27,7 +27,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && tsup",
     "typecheck": "tsc -p tsconfig.json",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "prepack": "cp ../../README.md ."
   },
   "devDependencies": {
     "@getreceipt/cli": "workspace:^",
