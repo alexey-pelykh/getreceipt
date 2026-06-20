@@ -3,6 +3,15 @@
   "version": "0.0.0",
   "type": "module",
   "description": "getreceipt — unofficial receipt fetcher (CLI + MCP), self-contained umbrella.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/getreceipt"
+  },
+  "bugs": {
+    "url": "https://github.com/alexey-pelykh/getreceipt/issues"
+  },
+  "homepage": "https://github.com/alexey-pelykh/getreceipt#readme",
   "bin": {
     "getreceipt": "./dist/cli.js"
   },

@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "description": "End-to-end / integration smoke tests for the bundled umbrella.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/e2e"
+  },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
