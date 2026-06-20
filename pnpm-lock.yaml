@@ -131,6 +131,15 @@ importers:
         specifier: 'catalog:'
         version: 26.0.0
 
+  packages/release:
+    devDependencies:
+      '@getreceipt/testing':
+        specifier: workspace:^
+        version: link:../testing
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.0.0
+
   packages/testing:
     dependencies:
       msw:
