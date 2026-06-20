@@ -10,3 +10,34 @@ updates:
     commit-message:
       prefix: '(ci)'
     open-pull-requests-limit: 10
+
+  # Shared dev/runtime versions all live in pnpm-workspace.yaml's `catalog:` (per-package
+  # manifests only carry `catalog:` refs). Dependabot's pnpm-catalog support is GA, so an npm
+  # ecosystem rooted at the workspace updates the catalog in place.
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    commit-message:
+      prefix: '(chore)'
+    open-pull-requests-limit: 10
+    # Group by update-TYPE, not dependency-type: Dependabot mislabels catalog deps as
+    # `production` (dependabot-core#14824), so a devDependencies group would misfire. Patch
+    # and minor land as low-noise grouped PRs; majors stay ungrouped for individual review.
+    groups:
+      catalog-patch:
+        applies-to: version-updates
+        update-types:
+          - 'patch'
+      catalog-minor:
+        applies-to: version-updates
+        update-types:
+          - 'minor'
+      security-patch:
+        applies-to: security-updates
+        update-types:
+          - 'patch'
+    # Auto-merge policy: patch/minor are low-risk auto-merge candidates once CI is green;
+    # majors require review. Automation is deferred — with no branch protection it needs a
+    # `workflow_run` merge job (separate change). Release-age cooldown is already provided by
+    # pnpm's minimumReleaseAge (1-day default), so none is duplicated here.
