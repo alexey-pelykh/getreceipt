@@ -4,6 +4,7 @@
   "references": [
     { "path": "packages/core/tsconfig.build.json" },
     { "path": "packages/cli/tsconfig.build.json" },
-    { "path": "packages/mcp/tsconfig.build.json" }
+    { "path": "packages/mcp/tsconfig.build.json" },
+    { "path": "packages/auth/tsconfig.build.json" }
   ]
 }

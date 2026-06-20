@@ -1,0 +1,38 @@
+{
+  "name": "@getreceipt/auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "@getreceipt auth subsystem — config loading/validation and auth-driver orchestration.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/auth"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@getreceipt/core": "workspace:^",
+    "yaml": "catalog:"
+  },
+  "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
+    "@types/node": "catalog:"
+  },
+  "license": "AGPL-3.0-only"
+}

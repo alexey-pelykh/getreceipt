@@ -1,0 +1,14 @@
+# Example getreceipt config — used by ConfigLoader integration tests.
+profiles:
+  default:
+    sources:
+      free.fr:
+        auth:
+          kind: password
+          username: alice@free.fr
+          secret:
+            ref: FREE_PASSWORD
+      amazon.fr:
+        auth:
+          kind: api-token
+          secret: inline-token-value
