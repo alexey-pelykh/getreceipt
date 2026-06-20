@@ -5,3 +5,6 @@
 pnpm-lock.yaml
 LICENSE
 .tmp/**
+
+# Intentionally-malformed fixture: invalid YAML by design (issue #37), so Prettier can't parse it.
+packages/auth/src/__fixtures__/malformed.getreceipt.yaml
