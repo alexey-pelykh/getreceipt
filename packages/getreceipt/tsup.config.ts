@@ -14,6 +14,8 @@ export default defineConfig({
     // #1368 dep-type inlining); the umbrella exposes no importable types — consumers
     // use the `bin`, or import the scoped `@getreceipt/*` packages directly.
     dts: false,
-    sourcemap: true,
+    // No sourcemaps in the published umbrella: it's a bundled binary, and maps would
+    // reference inlined sources absent from the tarball.
+    sourcemap: false,
     clean: true,
 });
