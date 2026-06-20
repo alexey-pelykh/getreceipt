@@ -15,7 +15,7 @@ The engine for [getreceipt](https://github.com/alexey-pelykh/getreceipt) — the
 npm install @getreceipt/core
 ```
 
-Requires **Node.js ≥ 22.19.0**, ESM only.
+Requires **Node.js ≥ 24**, ESM only.
 
 Most users want the [`getreceipt`](https://www.npmjs.com/package/getreceipt) umbrella (CLI + MCP server), not this library directly.
 

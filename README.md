@@ -25,7 +25,7 @@ Internal dependencies are linked with pnpm `workspace:^`.
 
 ## Requirements
 
-- **Node.js** `>=22.19.0` (see [`.nvmrc`](.nvmrc) — `nvm use`)
+- **Node.js** `>=24` (see [`.nvmrc`](.nvmrc) — `nvm use`)
 - **pnpm** `11` (managed via the `packageManager` field / Corepack)
 
 ## Getting started

@@ -6,7 +6,7 @@ export default defineConfig({
         cli: 'src/cli.ts',
     },
     format: ['esm'],
-    target: 'node22',
+    target: 'node24',
     // Inline the workspace packages so the published umbrella is self-contained
     // (a global / `npx` install needs nothing else).
     noExternal: [/^@getreceipt\//],
