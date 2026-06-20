@@ -2,7 +2,7 @@
   "name": "@getreceipt/mcp",
   "version": "0.0.0",
   "type": "module",
-  "description": "@getreceipt MCP server library (scaffold; no tools yet).",
+  "description": "Unofficial @getreceipt MCP server library (scaffold; no tools yet).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
