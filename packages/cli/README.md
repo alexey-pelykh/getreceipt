@@ -17,7 +17,7 @@ End users should install the [`getreceipt`](https://www.npmjs.com/package/getrec
 npm install -g getreceipt
 ```
 
-This package exists for composition. Requires **Node.js ≥ 22.19.0**, ESM only.
+This package exists for composition. Requires **Node.js ≥ 24**, ESM only.
 
 ## License
 
