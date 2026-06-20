@@ -109,8 +109,9 @@ jobs:
           cache: pnpm
 
       # npm >= 11.5.1 aligns the provenance toolchain; the publish itself runs through pnpm.
+      # Floor-pinned (not @latest) for reproducible runs; quote the >= or the shell reads a redirect.
       - name: Upgrade npm for trusted-publishing toolchain
-        run: npm install --global npm@latest
+        run: npm install --global "npm@>=11.5.1"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
