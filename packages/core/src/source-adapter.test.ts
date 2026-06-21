@@ -25,6 +25,7 @@ function fakeAdapter(
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+            defaultWindow: { days: 90 },
             pagination: 'none',
             ...descriptor,
         },

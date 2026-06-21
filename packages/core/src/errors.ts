@@ -19,3 +19,28 @@ export class DuplicateSourceError extends Error {
         super(`A source adapter is already registered for domain "${domain}".`);
     }
 }
+
+/**
+ * The re-auth seam's typed signal: a source's stored session is terminally expired
+ * and only fresh interactive credentials can recover it. An adapter throws this
+ * from any stage; `collect()` catches it and surfaces a single structured
+ * `reauth-required` result to the caller — it never prompts or blocks inline.
+ */
+export class ReauthRequiredError extends Error {
+    override readonly name = 'ReauthRequiredError';
+
+    /**
+     * @param domain Canonical domain whose session expired.
+     * @param reason Optional human-readable detail; carries no secret material.
+     */
+    constructor(
+        readonly domain: string,
+        readonly reason?: string,
+    ) {
+        super(
+            reason === undefined
+                ? `Re-authentication required for "${domain}".`
+                : `Re-authentication required for "${domain}": ${reason}`,
+        );
+    }
+}
