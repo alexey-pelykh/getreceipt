@@ -1,40 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { CredentialResolver, defaultConfigPath, loadConfig as authLoadConfig } from '@getreceipt/auth';
 import type { ConfigParseResult, CredentialValue, Secret } from '@getreceipt/auth';
-import {
-    collect as coreCollect,
-    FilesystemReceiptWriter,
-    SourceAdapterRegistry,
-    SourceResolver,
-} from '@getreceipt/core';
+import { collect as coreCollect, FilesystemReceiptWriter } from '@getreceipt/core';
 import type {
     CollectRequest,
     CollectResult,
     OperationResult,
     OperationSpec,
-    OperationWindow,
     ReceiptWriter,
+    SourceResolver,
 } from '@getreceipt/core';
 import { Command, CommanderError } from 'commander';
 
 import { DEFAULT_PROFILE } from './config-render.js';
+import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError, runOperation, type OperationRunnerDeps } from './operation-runner.js';
 import { traceAdapter } from './verbose-trace.js';
+import { parseWindow } from './window.js';
 
 /**
  * The `from` command's collaborators. Every field has a production default, so
  * `createFromCommand()` works as-is; tests override individual seams — a fake
- * {@link SourceResolver} (no real adapter ships in 0.1.0), a stub credential resolver,
- * a temp-dir writer, a capturing {@link CliIO} — without touching the network, the real
- * home dir, or the `op` CLI.
+ * {@link SourceResolver}, a stub credential resolver, a temp-dir writer, a capturing
+ * {@link CliIO} — without touching the network, the real home dir, or the `op` CLI.
  */
 export interface FromCommandEnv {
     readonly io: CliIO;
     readonly resolveConfigPath: () => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
-    /** Resolves a requested domain to its adapter. Default is an EMPTY registry — no source adapter ships in 0.1.0. */
+    /** Resolves a requested domain to its adapter. Defaults to the bundled-adapter resolver ({@link createDefaultResolver}). */
     readonly resolver: SourceResolver;
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
     /** Builds the receipt writer for a target directory. */
@@ -59,8 +55,7 @@ function defaultEnv(): FromCommandEnv {
         io: processStreamsIO(),
         resolveConfigPath: defaultConfigPath,
         loadConfig: authLoadConfig,
-        // No source adapter ships in 0.1.0; production resolves an empty registry (→ unknown-source).
-        resolver: new SourceResolver(new SourceAdapterRegistry()),
+        resolver: createDefaultResolver(),
         resolveCredential: (value) => credentialResolver.resolve(value),
         createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
         collect: coreCollect,
@@ -71,58 +66,6 @@ function defaultEnv(): FromCommandEnv {
 /** A non-zero exit signal whose user-facing text was ALREADY written via {@link CliIO} — it carries no message of its own. */
 function exitWith(exitCode: number, code: string): CommanderError {
     return new CommanderError(exitCode, code, '');
-}
-
-/** A strict ISO-8601 calendar date — `YYYY-MM-DD`, nothing looser. */
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * Parse a strict `YYYY-MM-DD` date (UTC midnight), or `undefined` if the string isn't one.
- * Bare `new Date(...)` silently mis-handles two cases the "ISO date" contract must reject: an
- * impossible day in a valid month (`2024-02-30` rolls forward to Mar 1) and locale-dependent
- * legacy formats (`2024-1-1`, `01/15/2024` parse in local time, inconsistently across engines).
- */
-function parseIsoDate(value: string): Date | undefined {
-    if (!ISO_DATE.test(value)) {
-        return undefined;
-    }
-    const date = new Date(value);
-    // A rolled-over day parses fine but no longer round-trips to the requested calendar date.
-    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
-        return undefined;
-    }
-    return date;
-}
-
-/**
- * Validate the `--since`/`--until` pair into a canonical ISO window, or `undefined` when
- * neither is given (the adapter's default window then applies). Both-or-neither, both strict
- * `YYYY-MM-DD`, and `since <= until` — each violation is a usage error whose message is
- * written before the exit signal is thrown.
- */
-function parseWindow(io: CliIO, since: string | undefined, until: string | undefined): OperationWindow | undefined {
-    if (since === undefined && until === undefined) {
-        return undefined;
-    }
-    if (since === undefined || until === undefined) {
-        io.writeErr('✗ --since and --until must be provided together\n');
-        throw exitWith(EXIT_CODES.usage, 'getreceipt.from.window-incomplete');
-    }
-    const from = parseIsoDate(since);
-    if (from === undefined) {
-        io.writeErr(`✗ --since is not a valid ISO date (expected YYYY-MM-DD): ${since}\n`);
-        throw exitWith(EXIT_CODES.usage, 'getreceipt.from.bad-date');
-    }
-    const to = parseIsoDate(until);
-    if (to === undefined) {
-        io.writeErr(`✗ --until is not a valid ISO date (expected YYYY-MM-DD): ${until}\n`);
-        throw exitWith(EXIT_CODES.usage, 'getreceipt.from.bad-date');
-    }
-    if (from.getTime() > to.getTime()) {
-        io.writeErr('✗ --since must not be after --until\n');
-        throw exitWith(EXIT_CODES.usage, 'getreceipt.from.window-inverted');
-    }
-    return { since: from.toISOString(), until: to.toISOString() };
 }
 
 /**
@@ -147,7 +90,7 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
         .option('--verbose', 'stream secret-fenced stage diagnostics to stderr')
         .option('--debug', 'alias for --verbose')
         .action(async (domain: string, options: FromOptions) => {
-            const window = parseWindow(env.io, options.since, options.until);
+            const window = parseWindow(env.io, options.since, options.until, 'getreceipt.from');
             const profile = options.profile ?? DEFAULT_PROFILE;
             const spec: OperationSpec =
                 window === undefined ? { source: domain, profile } : { source: domain, profile, window };

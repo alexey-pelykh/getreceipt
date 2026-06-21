@@ -33,6 +33,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@getreceipt/adapter-grandfrais": "workspace:^",
+    "@getreceipt/adapter-monoprix": "workspace:^",
     "@getreceipt/auth": "workspace:^",
     "@getreceipt/core": "workspace:^",
     "commander": "catalog:",

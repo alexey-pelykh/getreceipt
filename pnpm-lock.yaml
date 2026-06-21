@@ -137,6 +137,12 @@ importers:
 
   packages/cli:
     dependencies:
+      '@getreceipt/adapter-grandfrais':
+        specifier: workspace:^
+        version: link:../adapter-grandfrais
+      '@getreceipt/adapter-monoprix':
+        specifier: workspace:^
+        version: link:../adapter-monoprix
       '@getreceipt/auth':
         specifier: workspace:^
         version: link:../auth
