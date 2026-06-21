@@ -57,6 +57,16 @@ export interface DateFilter {
 }
 
 /**
+ * A relative date window, expressed as a lookback from "now". `collect()`
+ * materializes it into a concrete {@link DateRange} (ending at the run's clock)
+ * when the caller supplies no explicit `--since`/`--until`.
+ */
+export interface RelativeDateWindow {
+    /** How many days back from "now" the default window reaches. */
+    readonly days: number;
+}
+
+/**
  * The DECLARED half of an adapter: a static capability descriptor that the
  * registry, resolver, pipeline, and auth orchestrator read to route to and drive
  * the source — without invoking any of its stages.
@@ -70,6 +80,8 @@ export interface SourceDescriptor {
     readonly transportTier: TransportTier;
     readonly artifactMode: ArtifactMode;
     readonly dateFilter: DateFilter;
+    /** Window `collect()` applies when the caller gives no explicit date range. */
+    readonly defaultWindow: RelativeDateWindow;
     readonly pagination: PaginationKind;
 }
 
@@ -77,9 +89,10 @@ export interface SourceDescriptor {
  * A date window; inclusivity of each bound is declared on the source's {@link DateFilter}.
  *
  * `readonly` locks the bindings, not the `Date` values (a `Date` is mutable): treat both
- * bounds as immutable — the contract does not defensively copy. Switching to an immutable
- * representation (epoch `number` / ISO `string`) is deferred until `collect()` (#4) lands
- * and settles how timestamps cross the contract boundary.
+ * bounds as immutable — the contract does not defensively copy. `collect()` (#4) settled
+ * the representation by keeping `Date` for 0.1.0 (consistent with {@link ReceiptRef.issuedAt});
+ * a switch to an immutable epoch `number` / ISO `string` is deferred to a later, deliberate
+ * change rather than churned in now.
  */
 export interface DateRange {
     readonly from: Date;

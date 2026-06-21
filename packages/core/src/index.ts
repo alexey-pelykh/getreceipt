@@ -17,10 +17,24 @@ export type {
     Opaque,
     PaginationKind,
     ReceiptRef,
+    RelativeDateWindow,
     SourceAdapter,
     SourceDescriptor,
     TransportTier,
 } from './source-adapter.js';
 export { SourceAdapterRegistry } from './registry.js';
 export { SourceResolver } from './resolver.js';
-export { DuplicateSourceError, UnknownSourceError } from './errors.js';
+export { DuplicateSourceError, ReauthRequiredError, UnknownSourceError } from './errors.js';
+
+export { collect } from './collect.js';
+export type {
+    CollectFailed,
+    CollectReauthRequired,
+    CollectRequest,
+    CollectResult,
+    CollectSucceeded,
+} from './collect.js';
+export type { ReceiptWriter } from './writer.js';
+export { Semaphore } from './semaphore.js';
+export { RateLimiter } from './rate-limiter.js';
+export type { RateLimiterOptions } from './rate-limiter.js';
