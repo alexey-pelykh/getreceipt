@@ -28,7 +28,7 @@ import {
     listSourcesOutputSchema,
 } from './schemas.js';
 
-/** Bootstrap version; real stamping lands with publishing (#11). */
+/** Version reported when the caller injects none (tests, standalone build); the umbrella bin injects its release-stamped package.json version. */
 const SERVER_VERSION = '0.0.0';
 
 /** Remedy returned when the consent gate (#32) blocks a collect tool — phrased for an MCP client, not the CLI. */
@@ -79,9 +79,9 @@ async function consentDenial(consent: ConsentGate, acceptConsent: boolean | unde
  * description via {@link withToolDisclaimer}. `deps` is injectable so the tools run against fakes (no
  * network, no real home dir, no keyring).
  */
-export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps()): McpServer {
+export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), version: string = SERVER_VERSION): McpServer {
     const server = new McpServer(
-        { name: 'getreceipt', title: 'getreceipt (unofficial)', version: SERVER_VERSION },
+        { name: 'getreceipt', title: 'getreceipt (unofficial)', version },
         { instructions: mcpServerDescription() },
     );
 

@@ -20,6 +20,12 @@ dist/
 # Umbrella README is generated at prepack from the root README (single source of truth)
 packages/getreceipt/README.md
 
+# Umbrella THIRD-PARTY-NOTICES is generated at prepack from the bundled-dependency tree
+packages/getreceipt/THIRD-PARTY-NOTICES
+
+# Umbrella LICENSE is copied from the repo root at prepack (single source of truth)
+packages/getreceipt/LICENSE
+
 # Tooling caches
 .turbo/
 coverage/

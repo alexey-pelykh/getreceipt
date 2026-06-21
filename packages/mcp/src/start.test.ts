@@ -28,4 +28,17 @@ describe('startMcpServer lifecycle', () => {
         await serving;
         expect(resolved).toBe(true);
     });
+
+    it('surfaces the injected version in initialize serverInfo (the umbrella binds its package.json version)', async () => {
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        const serving = startMcpServer(serverTransport, '1.2.3');
+
+        const client = new Client({ name: 'version-test', version: '0.0.0' });
+        await client.connect(clientTransport);
+
+        expect(client.getServerVersion()?.version).toBe('1.2.3');
+
+        await client.close();
+        await serving;
+    });
 });

@@ -12,7 +12,7 @@ import { createMcpCommand, type McpCommandEnv } from './mcp-command.js';
 import { createSourcesCommand, type SourcesCommandEnv } from './sources-command.js';
 import { createStatusCommand, type StatusCommandEnv } from './status-command.js';
 
-/** Version reported when the caller injects none. The packages bootstrap at 0.0.0; real version stamping lands with publishing (#11). */
+/** Version reported when the caller injects none (e.g. tests). The umbrella bin injects its package.json version, which the release stamps. */
 const DEFAULT_VERSION = '0.0.0';
 
 /** Construction-time options for {@link createProgram}; all optional, so `createProgram()` yields the full production CLI. */

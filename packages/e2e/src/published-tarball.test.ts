@@ -21,6 +21,27 @@ interface Manifest {
     private?: boolean;
     files?: string[];
     scripts?: Record<string, string>;
+    main?: string;
+    types?: string;
+    bin?: string | Record<string, string>;
+    exports?: unknown;
+}
+
+/** Collect every `./dist/...` path a manifest points consumers at (main/types/bin + nested exports). */
+function referencedDistPaths(manifest: Manifest): string[] {
+    const found = new Set<string>();
+    const add = (value: unknown): void => {
+        if (typeof value === 'string' && value.startsWith('./')) {
+            found.add(value);
+        } else if (value && typeof value === 'object') {
+            Object.values(value).forEach(add);
+        }
+    };
+    add(manifest.main);
+    add(manifest.types);
+    add(manifest.bin);
+    add(manifest.exports);
+    return [...found];
 }
 
 function findWorkspaceRoot(): string {
@@ -80,12 +101,24 @@ describe('published tarball contract', () => {
     });
 
     describe.each(publishable)('$name', (pkg) => {
-        it('publishes only dist/ (the payload this contract inspects)', () => {
-            expect(pkg.manifest.files).toEqual(['dist']);
+        it('publishes only dist/ plus the generated THIRD-PARTY-NOTICES (no source, tests, or config)', () => {
+            // dist/ is the payload this contract inspects; the umbrella additionally ships generated
+            // third-party attribution for its bundled deps. Nothing else (src, tsconfig, tests) rides along.
+            const allowed = new Set(['dist', 'THIRD-PARTY-NOTICES']);
+            expect(pkg.manifest.files).toContain('dist');
+            expect(pkg.manifest.files?.filter((entry) => !allowed.has(entry))).toEqual([]);
         });
 
         it('has a built dist/ (guards against a vacuous pass on an unbuilt tree)', () => {
             expect(distFiles(pkg.dir).some((file) => file.endsWith('.js'))).toBe(true);
+        });
+
+        it('main/types/bin/exports point at built files that exist', () => {
+            const referenced = referencedDistPaths(pkg.manifest);
+            expect(referenced.length).toBeGreaterThan(0);
+            for (const rel of referenced) {
+                expect(existsSync(join(pkg.dir, rel)), `${pkg.name} → ${rel}`).toBe(true);
+            }
         });
 
         it('ships no sourcemaps', () => {
