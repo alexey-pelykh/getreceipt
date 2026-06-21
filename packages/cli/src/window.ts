@@ -31,12 +31,60 @@ function parseIsoDate(value: string): Date | undefined {
     return date;
 }
 
+/** Why a `--since`/`--until` pair was rejected — namespaces the CLI exit code and is front-end-agnostic. */
+export type WindowErrorKind = 'incomplete' | 'bad-date' | 'inverted';
+
+/** The pure outcome of validating a window: a canonical ISO window (or none), or a typed usage message. */
+export type WindowValidation =
+    | { readonly ok: true; readonly window: OperationWindow | undefined }
+    | { readonly ok: false; readonly kind: WindowErrorKind; readonly message: string };
+
 /**
- * Validate the `--since`/`--until` pair into a canonical ISO window, or `undefined` when
- * neither is given (the adapter's default window then applies). Both-or-neither, both strict
- * `YYYY-MM-DD`, and `since <= until` — each violation is a usage error whose message is written
- * before the exit signal is thrown. Shared by the `from` (one source) and `all` (every source)
- * collection verbs, with `errorCode` namespacing the thrown {@link CommanderError} per verb.
+ * Validate a `since`/`until` pair into a canonical ISO window — the pure, I/O-free, throw-free core
+ * shared by the CLI `parseWindow` wrapper and the MCP collection tools. Both-or-neither, both strict
+ * `YYYY-MM-DD`, and `since <= until`; neither given → no window (the adapter's default applies).
+ * Messages carry no `✗` prefix — the front-end adds its own presentation.
+ */
+export function validateWindow(since: string | undefined, until: string | undefined): WindowValidation {
+    if (since === undefined && until === undefined) {
+        return { ok: true, window: undefined };
+    }
+    if (since === undefined || until === undefined) {
+        return { ok: false, kind: 'incomplete', message: '--since and --until must be provided together' };
+    }
+    const from = parseIsoDate(since);
+    if (from === undefined) {
+        return {
+            ok: false,
+            kind: 'bad-date',
+            message: `--since is not a valid ISO date (expected YYYY-MM-DD): ${since}`,
+        };
+    }
+    const to = parseIsoDate(until);
+    if (to === undefined) {
+        return {
+            ok: false,
+            kind: 'bad-date',
+            message: `--until is not a valid ISO date (expected YYYY-MM-DD): ${until}`,
+        };
+    }
+    if (from.getTime() > to.getTime()) {
+        return { ok: false, kind: 'inverted', message: '--since must not be after --until' };
+    }
+    return { ok: true, window: { since: from.toISOString(), until: to.toISOString() } };
+}
+
+/** Map a {@link WindowErrorKind} to its CLI exit-code suffix (preserves the per-failure code names). */
+const WINDOW_ERROR_SUFFIX: Record<WindowErrorKind, string> = {
+    incomplete: 'window-incomplete',
+    'bad-date': 'bad-date',
+    inverted: 'window-inverted',
+};
+
+/**
+ * The CLI wrapper over {@link validateWindow}: write the usage message before the exit signal, and
+ * namespace the thrown {@link CommanderError} per verb via `errorCode`. Shared by the `from` (one
+ * source) and `all` (every source) collection verbs.
  */
 export function parseWindow(
     io: CliIO,
@@ -44,26 +92,10 @@ export function parseWindow(
     until: string | undefined,
     errorCode: string,
 ): OperationWindow | undefined {
-    if (since === undefined && until === undefined) {
-        return undefined;
+    const result = validateWindow(since, until);
+    if (!result.ok) {
+        io.writeErr(`✗ ${result.message}\n`);
+        throw usageExit(`${errorCode}.${WINDOW_ERROR_SUFFIX[result.kind]}`);
     }
-    if (since === undefined || until === undefined) {
-        io.writeErr('✗ --since and --until must be provided together\n');
-        throw usageExit(`${errorCode}.window-incomplete`);
-    }
-    const from = parseIsoDate(since);
-    if (from === undefined) {
-        io.writeErr(`✗ --since is not a valid ISO date (expected YYYY-MM-DD): ${since}\n`);
-        throw usageExit(`${errorCode}.bad-date`);
-    }
-    const to = parseIsoDate(until);
-    if (to === undefined) {
-        io.writeErr(`✗ --until is not a valid ISO date (expected YYYY-MM-DD): ${until}\n`);
-        throw usageExit(`${errorCode}.bad-date`);
-    }
-    if (from.getTime() > to.getTime()) {
-        io.writeErr('✗ --since must not be after --until\n');
-        throw usageExit(`${errorCode}.window-inverted`);
-    }
-    return { since: from.toISOString(), until: to.toISOString() };
+    return result.window;
 }

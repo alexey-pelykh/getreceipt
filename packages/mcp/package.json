@@ -2,7 +2,7 @@
   "name": "@getreceipt/mcp",
   "version": "0.0.0",
   "type": "module",
-  "description": "Unofficial @getreceipt MCP server library (scaffold; no tools yet).",
+  "description": "Unofficial @getreceipt MCP server — collect, collect_all, list_sources, auth_status tools over the CLI operation layer.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
@@ -33,9 +33,13 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@getreceipt/core": "workspace:^"
+    "@getreceipt/cli": "workspace:^",
+    "@getreceipt/core": "workspace:^",
+    "@modelcontextprotocol/sdk": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
+    "@getreceipt/auth": "workspace:^",
     "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:"
   },

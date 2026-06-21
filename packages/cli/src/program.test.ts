@@ -40,11 +40,11 @@ async function runProgram(args: string[], options: ProgramOptions = {}): Promise
 }
 
 describe('createProgram — assembly', () => {
-    it('wires the from, all, sources, status, login, logout, and config verbs', () => {
+    it('wires the from, all, sources, status, login, logout, config, and mcp verbs', () => {
         const names = createProgram()
             .commands.map((c) => c.name())
             .sort();
-        expect(names).toEqual(['all', 'config', 'from', 'login', 'logout', 'sources', 'status']);
+        expect(names).toEqual(['all', 'config', 'from', 'login', 'logout', 'mcp', 'sources', 'status']);
     });
 
     it('the verb named in the reauth-required remedy is a registered command (#17 [AC3])', () => {

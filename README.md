@@ -61,6 +61,7 @@ credential forms are in the **[configuration guide](docs/configuration.md)**.
 | `login <domain>`                    | Authenticate to a source and store a reusable session for later runs.         |
 | `logout <domain>`                   | Clear a source's stored session (rotate, switch account, or recover).         |
 | `config show` / `validate` / `path` | Inspect the resolved configuration (read-only; secrets redacted).             |
+| `mcp`                               | Serve the receipt-collection tools to an MCP client over stdio.               |
 
 The collection verbs (`from`, `all`) share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied
 together), `--profile <name>` (default `default`), `--out <dir>` (default `.`), `--json`, and
@@ -75,6 +76,33 @@ and names `getreceipt login <domain>` as the remedy. Neither verb ever prints th
 `from` exits `0` success · `1` usage/config · `3` partial · `4` failed · `5` re-auth required; `all`
 reflects the batch outcome (`0` all ok · `3` partial · `4` none · `1` usage). The
 [`@getreceipt/cli`](packages/cli) README carries the per-verb detail.
+
+### MCP server
+
+`getreceipt mcp` serves the same collection operations to any
+[Model Context Protocol](https://modelcontextprotocol.io) client (Claude Desktop, IDE agents, …) over
+stdio. The four tools map 1:1 to the CLI verbs and return the **same structured result** the verbs emit
+under `--json` — a single shared operation layer keeps them in lock-step (enforced by a parity test):
+
+| MCP tool       | CLI verb  |
+| -------------- | --------- |
+| `collect`      | `from`    |
+| `collect_all`  | `all`     |
+| `list_sources` | `sources` |
+| `auth_status`  | `status`  |
+
+Every tool carries the unofficial / own-accounts-only disclaimer, and the consent acknowledgment
+applies to `collect` / `collect_all` exactly as it does to `from` / `all` — pass `acceptConsent: true`
+(or accept once in a terminal) for unattended use. Point your MCP client at the `getreceipt mcp`
+command:
+
+```jsonc
+{
+  "mcpServers": {
+    "getreceipt": { "command": "getreceipt", "args": ["mcp"] },
+  },
+}
+```
 
 ## Configuration
 

@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { CredentialResolver, defaultConfigPath, loadConfig as authLoadConfig } from '@getreceipt/auth';
 import type { ConfigParseResult, CredentialValue, Secret } from '@getreceipt/auth';
-import { collect as coreCollect, FilesystemReceiptWriter } from '@getreceipt/core';
-import type {
-    CollectRequest,
-    CollectResult,
-    OperationResult,
-    OperationSpec,
-    ReceiptWriter,
-    SourceResolver,
-} from '@getreceipt/core';
+import type { CollectRequest, CollectResult, OperationResult, ReceiptWriter, SourceResolver } from '@getreceipt/core';
 import { Command, CommanderError } from 'commander';
 
 import { DEFAULT_PROFILE } from './config-render.js';
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
-import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
-import { OperationError, runOperation, type OperationRunnerDeps } from './operation-runner.js';
+import { OperationError } from './operation-runner.js';
+import { defaultCollectionDeps, runCollect, type CollectionDeps, type CollectParams } from './operations.js';
 import { traceAdapter } from './verbose-trace.js';
 import { parseWindow } from './window.js';
 
@@ -54,18 +45,7 @@ interface FromOptions {
 }
 
 function defaultEnv(): FromCommandEnv {
-    const credentialResolver = new CredentialResolver();
-    return {
-        io: processStreamsIO(),
-        consent: createConsentGate(),
-        resolveConfigPath: defaultConfigPath,
-        loadConfig: authLoadConfig,
-        resolver: createDefaultResolver(),
-        resolveCredential: (value) => credentialResolver.resolve(value),
-        createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
-        collect: coreCollect,
-        now: () => new Date(),
-    };
+    return { io: processStreamsIO(), consent: createConsentGate(), ...defaultCollectionDeps() };
 }
 
 /** A non-zero exit signal whose user-facing text was ALREADY written via {@link CliIO} — it carries no message of its own. */
@@ -108,25 +88,23 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
 
             const window = parseWindow(env.io, options.since, options.until, 'getreceipt.from');
             const profile = options.profile ?? DEFAULT_PROFILE;
-            const spec: OperationSpec =
-                window === undefined ? { source: domain, profile } : { source: domain, profile, window };
-
             const verbose = options.verbose === true || options.debug === true;
             const outDir = options.out ?? '.';
-            const deps: OperationRunnerDeps = {
-                resolver: env.resolver,
-                resolveConfigPath: env.resolveConfigPath,
-                loadConfig: env.loadConfig,
-                resolveCredential: env.resolveCredential,
-                createWriter: () => env.createWriter(outDir),
-                collect: env.collect,
-                now: env.now,
-                ...(verbose ? { instrument: (adapter) => traceAdapter(adapter, env.io.writeErr) } : {}),
+
+            const params: CollectParams = {
+                source: domain,
+                profile,
+                outDir,
+                ...(window === undefined ? {} : { window }),
             };
+            // Verbose wraps the adapter with a secret-fenced tracer; the trace sink is the CLI's stderr.
+            const deps: CollectionDeps = verbose
+                ? { ...env, instrument: (adapter) => traceAdapter(adapter, env.io.writeErr) }
+                : env;
 
             let result: OperationResult;
             try {
-                result = await runOperation(spec, deps);
+                result = await runCollect(params, deps);
             } catch (error) {
                 if (error instanceof OperationError) {
                     env.io.writeErr(`✗ ${error.message}\n`);

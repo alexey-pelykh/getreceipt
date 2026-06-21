@@ -8,6 +8,7 @@ import { createFromCommand, type FromCommandEnv } from './from-command.js';
 import { EXIT_CODES } from './from-render.js';
 import { createLoginCommand, type LoginCommandEnv } from './login-command.js';
 import { createLogoutCommand, type LogoutCommandEnv } from './logout-command.js';
+import { createMcpCommand, type McpCommandEnv } from './mcp-command.js';
 import { createSourcesCommand, type SourcesCommandEnv } from './sources-command.js';
 import { createStatusCommand, type StatusCommandEnv } from './status-command.js';
 
@@ -32,11 +33,13 @@ export interface ProgramOptions {
     readonly logoutEnv?: Partial<LogoutCommandEnv>;
     /** Seam overrides for the `config` subcommand. */
     readonly configEnv?: Partial<ConfigCommandEnv>;
+    /** Seam overrides for the `mcp` subcommand — chiefly the injected `startMcpServer` thunk from `@getreceipt/mcp`. */
+    readonly mcpEnv?: Partial<McpCommandEnv>;
 }
 
 /**
  * Assemble the root `getreceipt` program: the `from`, `all`, `sources`, `status`, `login`,
- * `logout`, and `config` verbs, `--version` (which prints the version AND the unofficial-use
+ * `logout`, `config`, and `mcp` verbs, `--version` (which prints the version AND the unofficial-use
  * disclaimer), and a help
  * footer carrying the disclaimer + personal-use posture on every command (`afterAll`), so the
  * legitimacy posture ships on the CLI channel wherever a user looks. Returns a fresh
@@ -60,6 +63,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
     program.addCommand(createLoginCommand(options.loginEnv ?? {}));
     program.addCommand(createLogoutCommand(options.logoutEnv ?? {}));
     program.addCommand(createConfigCommand(options.configEnv ?? {}));
+    program.addCommand(createMcpCommand(options.mcpEnv ?? {}));
 
     return program;
 }
