@@ -4,9 +4,10 @@ import type { AuthKind } from '@getreceipt/core';
 import { UnsupportedAuthKindError } from './errors.js';
 
 /**
- * An auth driver satisfies ONE {@link AuthKind}. Concrete drivers (password,
- * oauth2, …) land in later issues; this interface is the seam the orchestrator
- * selects against, so those drivers slot in without changing the orchestrator.
+ * An auth driver satisfies ONE {@link AuthKind}. The password driver
+ * ({@link PasswordAuthDriver}) is the first; further kinds (oauth2, api-token, …)
+ * land in later issues. This interface is the seam the orchestrator selects
+ * against, so a driver slots in without changing the orchestrator.
  */
 export interface AuthDriver {
     readonly kind: AuthKind;
