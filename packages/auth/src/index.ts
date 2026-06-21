@@ -12,4 +12,19 @@ export type {
 } from './config.js';
 export { AuthOrchestrator } from './auth-orchestrator.js';
 export type { AuthDriver } from './auth-orchestrator.js';
-export { ConfigError, UnsupportedAuthKindError } from './errors.js';
+export { CredentialResolver, ENCRYPTED_FILE_PASSPHRASE_ENV, defaultCommandRunner } from './credential-resolver.js';
+export type {
+    CommandResult,
+    CommandRunner,
+    CredentialResolverOptions,
+    PassphraseProvider,
+} from './credential-resolver.js';
+export { Secret } from './secret.js';
+export { sealEnvelope } from './secret-envelope.js';
+export {
+    ConfigError,
+    CredentialBackendUnavailableError,
+    CredentialResolutionError,
+    UnsupportedAuthKindError,
+} from './errors.js';
+export type { CredentialResolutionReason } from './errors.js';
