@@ -6,9 +6,85 @@
 `getreceipt` is a CLI + [MCP](https://modelcontextprotocol.io) tool for fetching your own receipts
 from supported sources.
 
-> **Status: `0.1.0` scaffold.** This is the foundational monorepo skeleton — workspace, packages,
-> toolchain, and a green build/test/typecheck/lint baseline. There is **no product logic yet**;
-> adapters, auth, CLI commands, and MCP tools land in later issues.
+## Install
+
+Install the umbrella globally, or run it on demand with `npx` — both ship the `getreceipt` binary
+(CLI + MCP server), self-contained:
+
+```sh
+npm install -g getreceipt      # then: getreceipt --help
+npx getreceipt --help          # no install
+```
+
+Requires **Node.js ≥ 24**.
+
+## Quickstart
+
+1. **Create `~/.getreceipt.yaml`** with one source under the `default` profile. Substitute a real
+   source from `getreceipt sources` for the `example.com` placeholder:
+
+   ```yaml
+   profiles:
+     default:
+       sources:
+         example.com:
+           auth:
+             kind: password
+             username: you@example.com
+             secret:
+               ref: op://Personal/example.com/password # a 1Password reference, not the secret itself
+   ```
+
+2. **Check it parses**, see what is configured, then **collect** receipts into a local folder:
+
+   ```sh
+   getreceipt config validate                 # non-zero exit if the file is invalid
+   getreceipt sources                          # bundled sources + verification state
+   getreceipt from example.com --since 2024-01-01 --until 2024-01-31 --out ./receipts
+   ```
+
+Receipts are written to `./receipts/<domain>/<receipt-id>.<ext>` with owner-only (`0600`)
+permissions; an identical re-run re-writes nothing. The full schema, profiles, and the other
+credential forms are in the **[configuration guide](docs/configuration.md)**.
+
+## Commands
+
+`getreceipt <verb>` — run `getreceipt --help` (or `getreceipt <verb> --help`) for the full surface.
+`--version` prints the version together with the unofficial-use disclaimer.
+
+| Verb                                | Purpose                                                                       |
+| ----------------------------------- | ----------------------------------------------------------------------------- |
+| `from <domain>`                     | Collect receipts from one configured source into `<out>/<domain>/`.           |
+| `all`                               | Collect from **every** configured source (continue-on-error, capped fan-out). |
+| `sources`                           | List bundled sources, their declared capabilities, and verification state.    |
+| `status`                            | Show the stored-session / auth status of each configured source.              |
+| `config show` / `validate` / `path` | Inspect the resolved configuration (read-only; secrets redacted).             |
+
+The collection verbs (`from`, `all`) share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied
+together), `--profile <name>` (default `default`), `--out <dir>` (default `.`), `--json`, and
+`--verbose`; `all` adds `--concurrency <n>` (default `3`). The introspection verbs (`sources`,
+`status`, `config`) are read-only and never reveal a secret.
+
+`from` exits `0` success · `1` usage/config · `3` partial · `4` failed · `5` re-auth required; `all`
+reflects the batch outcome (`0` all ok · `3` partial · `4` none · `1` usage). The
+[`@getreceipt/cli`](packages/cli) README carries the per-verb detail.
+
+## Configuration
+
+`getreceipt` reads `~/.getreceipt.yaml`. It holds named **profiles** (default: `default`), each
+mapping a **source domain** to its **auth** — a `kind`, an optional `username`, and a `secret`
+supplied as a **reference**, so the value itself never lives in the config file:
+
+- **`op://…`** — resolved through the [1Password CLI](https://developer.1password.com/docs/cli/) (`op read`).
+- **`encrypted-file:<path>`** — an AES-256-GCM file unlocked by `GETRECEIPT_SECRET_PASSPHRASE`.
+- **inline string** — a raw literal; supported, but discouraged (it triggers a security warning).
+
+The **[configuration guide](docs/configuration.md)** covers the full schema, every credential form,
+where receipts land, and how sources are resolved.
+
+> The two bundled sources (`grandfrais.com`, `monoprix.fr`) are currently **`unverified`** — their
+> reverse-engineered flows have not been machine-confirmed against the live services, so results are
+> best-effort. `getreceipt sources` shows each source's state.
 
 ## Personal use & non-goals
 
@@ -52,12 +128,12 @@ verify the no-telemetry claim yourself.
 
 Internal dependencies are linked with pnpm `workspace:^`.
 
-## Requirements
+## Development
 
-- **Node.js** `>=24` (see [`.nvmrc`](.nvmrc) — `nvm use`)
-- **pnpm** `11` (managed via the `packageManager` field / Corepack)
+Building from source (contributors). End users only need the [Install](#install) step above.
 
-## Getting started
+**Toolchain:** **Node.js** `>=24` (see [`.nvmrc`](.nvmrc) — `nvm use`) · **pnpm** `11` (managed via
+the `packageManager` field / Corepack).
 
 ```sh
 pnpm install        # install + link the workspace
