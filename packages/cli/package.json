@@ -27,22 +27,24 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -b tsconfig.build.json",
+    "build": "tsc -p tsconfig.json --noEmit && tsup",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "lint": "eslint ."
   },
   "dependencies": {
+    "commander": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
     "@getreceipt/adapter-grandfrais": "workspace:^",
     "@getreceipt/adapter-monoprix": "workspace:^",
     "@getreceipt/auth": "workspace:^",
     "@getreceipt/core": "workspace:^",
-    "commander": "catalog:",
-    "yaml": "catalog:"
-  },
-  "devDependencies": {
     "@getreceipt/testing": "workspace:^",
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "tsup": "catalog:"
   },
   "publishConfig": {
     "access": "public"

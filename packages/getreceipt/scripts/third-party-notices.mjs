@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Generate THIRD-PARTY-NOTICES for the self-contained umbrella bundle.
 //
-// The umbrella inlines its third-party runtime deps into dist/ (tsup `noExternal`). Permissive
-// licenses (MIT/ISC/BSD) require their copyright + license text to travel with the redistributed
-// copy — so the published tarball must ship attribution for everything bundled. The source of truth
-// is the built artifact itself: esbuild annotates each inlined module with a `// <path>` comment, so
-// parsing dist/*.js yields exactly what ships (tree-shaken reality, not the declared dep list).
+// The umbrella is the only published package that inlines THIRD-PARTY code: tsup `noExternal` bundles the
+// workspace packages PLUS their permissive-licensed deps (commander/yaml/zod/@modelcontextprotocol/sdk)
+// into dist/. MIT/ISC/BSD require their copyright + license text to travel with the redistributed copy,
+// so the published tarball must ship attribution. The source of truth is the built artifact itself:
+// esbuild annotates each inlined module with a `// <path>` comment, so parsing dist/*.js yields exactly
+// what ships (tree-shaken reality, not the declared dep list). (cli/mcp inline only first-party
+// `@getreceipt/*` and keep their third-party as normal deps, so they redistribute nothing third-party
+// and ship no notices — #77.)
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
@@ -16,8 +19,8 @@ const REPO_ROOT = resolve(PACKAGE_ROOT, '..', '..');
 
 // esbuild annotates each inlined module with a `// <path>` comment relative to the build cwd. Capture
 // from `node_modules/` onward (pnpm or flat layout) and re-anchor to REPO_ROOT — robust to the `../`
-// depth esbuild happens to emit.
-const MARKER = /\/\/ .*?(node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?(?:@[^/]+\/)?[^/]+)\//g;
+// depth esbuild happens to emit. `@getreceipt/*` markers are skipped (first-party, same AGPL license).
+const NODE_MODULES_MARKER = /\/\/ .*?(node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?(?:@[^/]+\/)?[^/]+)\//g;
 const LICENSE_FILE = /^(?:licen[sc]e|copying|notice)(?:\..*)?$/i;
 
 /** Resolve a bundled package's manifest + license text from its on-disk directory. */
@@ -39,26 +42,23 @@ function readPackage(pkgDir) {
 }
 
 /**
- * Collect attribution for every third-party package inlined into the umbrella's built `dist/`.
- * Pure read; throws if `dist/` is missing (build must run first). Returns sorted, de-duplicated
- * package records — exported so the e2e suite can assert coverage without re-implementing the parse.
+ * Collect attribution for every third-party package inlined into the umbrella's built `dist/`. Pure
+ * read; throws if `dist/` is missing (build must run first). Returns sorted, de-duplicated records —
+ * exported so the e2e suite can assert coverage.
  */
 export function collectThirdPartyNotices(distDir = join(PACKAGE_ROOT, 'dist')) {
-    // Scan every emitted .js (entries AND the shared chunk that actually holds the inlined deps), so
-    // the result is independent of tsup's code-splitting layout.
-    const jsFiles = existsSync(distDir)
-        ? readdirSync(distDir)
-              .filter((name) => name.endsWith('.js'))
-              .map((name) => join(distDir, name))
-        : [];
-    if (jsFiles.length === 0) {
-        throw new Error(`Cannot generate notices: build the umbrella first (no built .js in ${distDir})`);
+    const start = resolve(distDir);
+    if (!existsSync(start) || !readdirSync(start).some((name) => name.endsWith('.js'))) {
+        throw new Error(`Cannot generate notices: build the umbrella first (no built .js in ${start})`);
     }
 
-    const pkgDirs = new Map(); // absolute pkg dir → record (dedupe across all emitted files)
-    for (const entry of jsFiles) {
-        const source = readFileSync(entry, 'utf8');
-        for (const [, nodeModulesPath] of source.matchAll(MARKER)) {
+    const pkgDirs = new Map(); // absolute third-party pkg dir → record (dedupe across the dist files)
+    for (const name of readdirSync(start)) {
+        if (!name.endsWith('.js')) {
+            continue;
+        }
+        const source = readFileSync(join(start, name), 'utf8');
+        for (const [, nodeModulesPath] of source.matchAll(NODE_MODULES_MARKER)) {
             const pkgDir = join(REPO_ROOT, nodeModulesPath);
             if (nodeModulesPath.includes('@getreceipt/') || pkgDirs.has(pkgDir)) {
                 continue;

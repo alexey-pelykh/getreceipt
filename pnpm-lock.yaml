@@ -140,6 +140,16 @@ importers:
 
   packages/cli:
     dependencies:
+      commander:
+        specifier: 'catalog:'
+        version: 15.0.0
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
       '@getreceipt/adapter-grandfrais':
         specifier: workspace:^
         version: link:../adapter-grandfrais
@@ -152,19 +162,15 @@ importers:
       '@getreceipt/core':
         specifier: workspace:^
         version: link:../core
-      commander:
-        specifier: 'catalog:'
-        version: 15.0.0
-      yaml:
-        specifier: 'catalog:'
-        version: 2.9.0
-    devDependencies:
       '@getreceipt/testing':
         specifier: workspace:^
         version: link:../testing
       '@types/node':
         specifier: 'catalog:'
         version: 26.0.0
+      tsup:
+        specifier: 'catalog:'
+        version: 8.5.1(postcss@8.5.15)(typescript@6.0.3)(yaml@2.9.0)
 
   packages/core:
     dependencies:
@@ -229,15 +235,15 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@getreceipt/cli':
-        specifier: workspace:^
-        version: link:../cli
-      '@getreceipt/core':
-        specifier: workspace:^
-        version: link:../core
       '@modelcontextprotocol/sdk':
         specifier: 'catalog:'
         version: 1.29.0(zod@4.4.3)
+      commander:
+        specifier: 'catalog:'
+        version: 15.0.0
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -245,12 +251,21 @@ importers:
       '@getreceipt/auth':
         specifier: workspace:^
         version: link:../auth
+      '@getreceipt/cli':
+        specifier: workspace:^
+        version: link:../cli
+      '@getreceipt/core':
+        specifier: workspace:^
+        version: link:../core
       '@getreceipt/testing':
         specifier: workspace:^
         version: link:../testing
       '@types/node':
         specifier: 'catalog:'
         version: 26.0.0
+      tsup:
+        specifier: 'catalog:'
+        version: 8.5.1(postcss@8.5.15)(typescript@6.0.3)(yaml@2.9.0)
 
   packages/release:
     devDependencies:

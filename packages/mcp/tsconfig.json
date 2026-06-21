@@ -1,7 +1,13 @@
 {
+  "//": "ignoreDeprecations: tsup's dts build (rollup-plugin-dts) injects `baseUrl: \".\"`, which TypeScript 6.0.3 flags as a 7.0-removal deprecation (TS5101). Acknowledge it so the bundled `.d.ts` emit succeeds (#77).",
+  "//paths": "Type-level twin of the vitest alias: the published cli `.d.ts` inlines its own copy of @getreceipt/core's types (#77), so cli-via-dist loses nominal identity with the standalone @getreceipt/core the tests import directly. Resolve @getreceipt/cli to SOURCE for typecheck (as vitest does for runtime) so the integration tests check one shared type graph; the published bundled `.d.ts` is covered by the e2e suite.",
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@getreceipt/cli": ["../cli/src/index.ts"]
+    }
   },
   "include": ["src/**/*"]
 }

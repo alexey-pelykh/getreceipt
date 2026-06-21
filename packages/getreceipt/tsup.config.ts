@@ -7,10 +7,10 @@ export default defineConfig({
     },
     format: ['esm'],
     target: 'node24',
-    // Inline the workspace packages AND their third-party runtime deps (zod, via
-    // core's trust-boundary validation) so the published umbrella stays self-contained
-    // (a global / `npx` install needs nothing else) — it declares no runtime deps.
-    noExternal: [/^@getreceipt\//, 'zod'],
+    // The umbrella is the zero-dep binary, so it inlines EVERYTHING cli/mcp leave as runtime deps: the
+    // workspace packages plus their third-party (commander, yaml, zod, @modelcontextprotocol/sdk). A
+    // global / `npx` install then needs nothing else — the umbrella declares no runtime deps (#11, #77).
+    noExternal: [/^@getreceipt\//, 'commander', 'yaml', 'zod', '@modelcontextprotocol/sdk'],
     // Bundled CJS deps (e.g. `yaml`, via @getreceipt/auth) use dynamic `require`, which esbuild shims
     // to a throwing `__require` in ESM unless a real `require` is in module scope. Inject one via
     // createRequire so the bin resolves them instead of crashing at startup (#11). tsup prepends the
