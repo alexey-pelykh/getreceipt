@@ -7,7 +7,18 @@ The [MCP](https://modelcontextprotocol.io) server and tools for [getreceipt](htt
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by any of the services it integrates with. See the [project README](https://github.com/alexey-pelykh/getreceipt#readme) for the full disclaimer.
 
-> **Status: `0.1.0` scaffold.** No MCP tools yet — they land in later issues.
+## Tools
+
+Four tools, served over stdio, each mapping 1:1 to a CLI verb and returning the **same** structured result the verb emits under `--json` (one shared operation layer — kept in lock-step by a parity test):
+
+| Tool           | CLI verb  | Does                                                          |
+| -------------- | --------- | ------------------------------------------------------------- |
+| `collect`      | `from`    | Collect receipts from one source (`reauth-required` is data). |
+| `collect_all`  | `all`     | Collect from every configured source (per-source results).    |
+| `list_sources` | `sources` | List registered sources, capabilities, and configured state.  |
+| `auth_status`  | `status`  | Per-source session disposition (never reveals a token).       |
+
+Every tool description carries the unofficial / own-accounts-only disclaimer, and the consent acknowledgment gates `collect` / `collect_all` (pass `acceptConsent: true` for unattended use).
 
 ## Install
 

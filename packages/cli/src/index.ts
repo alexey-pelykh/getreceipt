@@ -24,6 +24,9 @@ export type { StatusCommandEnv } from './status-command.js';
 export { createConfigCommand } from './config-command.js';
 export type { ConfigCommandEnv } from './config-command.js';
 
+export { createMcpCommand } from './mcp-command.js';
+export type { McpCommandEnv } from './mcp-command.js';
+
 export { createLoginCommand } from './login-command.js';
 export type { LoginCommandEnv } from './login-command.js';
 
@@ -45,7 +48,27 @@ export {
 export type { ConsentBlockReason, ConsentDecision, ConsentGate, ConsentGateDeps } from './consent-gate.js';
 
 export { runOperation, OperationError } from './operation-runner.js';
-export type { OperationErrorKind, OperationRunnerDeps } from './operation-runner.js';
+export type { OperationErrorKind, OperationRunnerDeps, ResolveSourceDeps } from './operation-runner.js';
+
+export {
+    DEFAULT_CONCURRENCY,
+    defaultAuthStatusDeps,
+    defaultCollectionDeps,
+    defaultListSourcesDeps,
+    runAuthStatus,
+    runCollect,
+    runCollectAll,
+    runListSources,
+} from './operations.js';
+export type {
+    AuthStatusDeps,
+    AuthStatusParams,
+    CollectAllParams,
+    CollectionDeps,
+    CollectParams,
+    ListSourcesDeps,
+    ListSourcesParams,
+} from './operations.js';
 
 export { EXIT_CODES, exitCodeFor, reauthRemedy, renderResultsTable } from './from-render.js';
 
@@ -58,4 +81,8 @@ export type { SourcesReport, SourceView } from './sources-render.js';
 export { renderStatusJson, renderStatusText } from './status-render.js';
 export type { SessionState, SourceSessionView, StatusReport } from './status-render.js';
 
+export { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
 export type { ConfigPathInfo, ConfigValidateVerdict, ConfigWarningView } from './config-render.js';
+
+export { validateWindow } from './window.js';
+export type { WindowErrorKind, WindowValidation } from './window.js';

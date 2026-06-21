@@ -58,6 +58,7 @@ describe('getreceipt bundled CLI', () => {
             'from',
             'login',
             'logout',
+            'mcp',
             'sources',
             'status',
         ]);
@@ -71,6 +72,7 @@ describe('getreceipt bundled CLI', () => {
         expect(help).toContain('login');
         expect(help).toContain('logout');
         expect(help).toContain('config');
+        expect(help).toContain('mcp');
         // The CLI channel carries the unofficial disclaimer + personal-use posture as shipped text
         // (issues #10/#9). The constants' wording is pinned independently by @getreceipt/core.
         expect(help).toContain('affiliated with, endorsed by, or supported by any of the services it integrates with');

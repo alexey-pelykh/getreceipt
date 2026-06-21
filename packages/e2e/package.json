@@ -21,7 +21,9 @@
     "@getreceipt/auth": "workspace:^",
     "@getreceipt/cli": "workspace:^",
     "@getreceipt/core": "workspace:^",
+    "@getreceipt/mcp": "workspace:^",
     "@getreceipt/testing": "workspace:^",
+    "@modelcontextprotocol/sdk": "catalog:",
     "@types/node": "catalog:",
     "getreceipt": "workspace:^",
     "yaml": "catalog:"
