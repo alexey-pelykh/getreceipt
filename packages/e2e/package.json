@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end / integration smoke tests for the bundled umbrella.",
+  "description": "End-to-end tests for the bundled umbrella: posture/integration smoke tests plus the gated live-source verification harness.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
@@ -18,6 +18,8 @@
     "lint": "eslint ."
   },
   "devDependencies": {
+    "@getreceipt/auth": "workspace:^",
+    "@getreceipt/cli": "workspace:^",
     "@getreceipt/core": "workspace:^",
     "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:",
