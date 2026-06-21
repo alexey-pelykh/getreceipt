@@ -1,7 +1,9 @@
 {
+  "//": "ignoreDeprecations: tsup's dts build (rollup-plugin-dts) injects `baseUrl: \".\"`, which TypeScript 6.0.3 flags as a 7.0-removal deprecation (TS5101). Acknowledge it so the bundled `.d.ts` emit succeeds (#77).",
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src/**/*"]
 }

@@ -1,10 +1,8 @@
 {
-  "//": "Build-mode solution for editors and `tsc -b`: references the composite BUILD configs only (emits dist/, tests excluded). This is NOT the full typecheck surface — run `pnpm typecheck` (turbo type-checks every package's tsconfig.json, including tests and the non-built testing/e2e/umbrella packages).",
+  "//": "Build-mode solution for editors and `tsc -b`: references the composite BUILD configs only (emits dist/, tests excluded). cli + mcp are bundled via tsup (not tsc -b), so they are NOT referenced here — they expose no composite build config. This is NOT the full typecheck surface — run `pnpm typecheck` (turbo type-checks every package's tsconfig.json, including tests and the bundled cli/mcp/umbrella packages).",
   "files": [],
   "references": [
     { "path": "packages/core/tsconfig.build.json" },
-    { "path": "packages/cli/tsconfig.build.json" },
-    { "path": "packages/mcp/tsconfig.build.json" },
     { "path": "packages/auth/tsconfig.build.json" },
     { "path": "packages/adapter-grandfrais/tsconfig.build.json" },
     { "path": "packages/adapter-monoprix/tsconfig.build.json" }
