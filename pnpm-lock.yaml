@@ -178,6 +178,12 @@ importers:
 
   packages/e2e:
     devDependencies:
+      '@getreceipt/auth':
+        specifier: workspace:^
+        version: link:../auth
+      '@getreceipt/cli':
+        specifier: workspace:^
+        version: link:../cli
       '@getreceipt/core':
         specifier: workspace:^
         version: link:../core
