@@ -23,10 +23,11 @@ export interface PasswordAuthRequest {
 }
 
 /**
- * An established session. The token authorizes later `list` / `fetch` calls, so it
- * is itself credential material — fenced in a {@link Secret} so it never serializes
- * into logs, errors, artifacts, or the manifest. Session persistence / reuse is out
- * of scope for 0.1.0, so this stays intentionally minimal.
+ * A freshly established session: the token authorizes later `list` / `fetch` calls,
+ * so it is itself credential material — fenced in a {@link Secret} so it never
+ * serializes into logs, errors, artifacts, or the manifest. This is the just-
+ * authenticated shape; the persisted, reusable form (with expiry) is `StoredSession`,
+ * which a `SessionStore` encrypts at rest.
  */
 export interface AuthSession {
     readonly token: Secret;
