@@ -1,0 +1,24 @@
+# Multi-profile config exercised by the config-command tests.
+# `default` mixes an op:// reference (shown unresolved) with an inline literal
+# (masked); `work` exists so the --profile selector has something to switch to.
+profiles:
+  default:
+    sources:
+      free.fr:
+        auth:
+          kind: password
+          username: alice@free.fr
+          secret:
+            ref: op://Personal/free.fr/password
+      amazon.fr:
+        auth:
+          kind: api-token
+          secret: inline-token-value
+  work:
+    sources:
+      corp.example:
+        auth:
+          kind: password
+          username: bob@corp.example
+          secret:
+            ref: WORK_PASSWORD

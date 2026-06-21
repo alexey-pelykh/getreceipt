@@ -2,7 +2,7 @@
   "name": "@getreceipt/cli",
   "version": "0.0.0",
   "type": "module",
-  "description": "Unofficial @getreceipt CLI library (scaffold; no commands yet).",
+  "description": "Unofficial @getreceipt CLI library — composable command surfaces (commander).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
@@ -29,12 +29,17 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
     "lint": "eslint ."
   },
   "dependencies": {
-    "@getreceipt/core": "workspace:^"
+    "@getreceipt/auth": "workspace:^",
+    "@getreceipt/core": "workspace:^",
+    "commander": "catalog:",
+    "yaml": "catalog:"
   },
   "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:"
   },
   "publishConfig": {
