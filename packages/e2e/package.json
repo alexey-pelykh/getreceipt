@@ -18,6 +18,7 @@
     "lint": "eslint ."
   },
   "devDependencies": {
+    "@getreceipt/core": "workspace:^",
     "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:",
     "getreceipt": "workspace:^",
