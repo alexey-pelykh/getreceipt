@@ -27,6 +27,17 @@ Explicit non-goals:
 
 The fuller posture and rationale will live in `docs/legitimacy.md`.
 
+## Privacy
+
+`getreceipt` runs entirely on your machine and **collects nothing**: no telemetry, no analytics, no
+tracking, and no `getreceipt` server in the loop. Your credentials and the documents you fetch stay
+local, and the only runtime traffic `getreceipt` is designed to make is to the service whose receipts
+you requested. You are the data controller of what you download; the maintainer receives, sees, and
+stores none of it.
+
+See [PRIVACY.md](PRIVACY.md) for the full posture, the exhaustive network-scope list, and how to
+verify the no-telemetry claim yourself.
+
 ## Packages
 
 | Package                                   | Published | Purpose                                                                                              |
