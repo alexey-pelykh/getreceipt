@@ -2,8 +2,9 @@
 import type { OperationOutcome, OperationResult, ReceiptSummary } from '@getreceipt/core';
 
 /**
- * The `from` exit-code ladder — documented and exported so scripts can branch on a
- * run's outcome (AC: re-auth-required and failures map to distinct exit codes).
+ * The CLI exit-code ladder — documented and exported so scripts can branch on a run's outcome
+ * (AC: re-auth-required and failures map to distinct exit codes). Shared by `from` and `all`
+ * (and the consent gate); it lives here for historical reasons, not because it is `from`-only.
  *
  *  - `0` success — every listed receipt was written or already present.
  *  - `1` usage — the run never started: bad invocation, unreadable/!configured source,
@@ -11,6 +12,9 @@ import type { OperationOutcome, OperationResult, ReceiptSummary } from '@getrece
  *  - `3` partial — some receipts were written, then the run failed before completing.
  *  - `4` failed — the run failed with no receipts written.
  *  - `5` reauth-required — the source needs fresh credentials; re-authenticate and retry.
+ *  - `6` consent-required — the runtime consent gate (#32) could not obtain consent
+ *        non-interactively; re-run in a terminal or pass `--accept-consent`.
+ *  - `7` consent-declined — the user explicitly declined the consent prompt.
  *
  * `2` is intentionally unused (avoids implying POSIX EX_USAGE semantics Commander does
  * not follow); the outcome codes start at `3` so they never collide with a parse error.
@@ -21,6 +25,8 @@ export const EXIT_CODES = {
     partial: 3,
     failed: 4,
     reauthRequired: 5,
+    consentRequired: 6,
+    consentDeclined: 7,
 } as const;
 
 /** Map a collection outcome to its {@link EXIT_CODES} value. Pre-flight (usage) errors are handled at the call site, not here. */

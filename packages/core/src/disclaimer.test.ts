@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 
-import { PERSONAL_USE_NOTICE, UNOFFICIAL_DISCLAIMER } from './index.js';
+import { CONSENT_ACKNOWLEDGMENT, CONSENT_VERSION, PERSONAL_USE_NOTICE, UNOFFICIAL_DISCLAIMER } from './index.js';
 
 /**
  * The canonical clause every channel must surface (issue #10). Kept byte-identical to the wording
@@ -32,5 +32,25 @@ describe('PERSONAL_USE_NOTICE', () => {
         for (const nonGoal of ['third-party data', 'scraping', 'bulk automation']) {
             expect(PERSONAL_USE_NOTICE).toContain(nonGoal);
         }
+    });
+});
+
+describe('CONSENT_ACKNOWLEDGMENT', () => {
+    it('is phrased first-person (binds the acknowledger, not the tool)', () => {
+        expect(CONSENT_ACKNOWLEDGMENT).toMatch(/^I confirm/);
+    });
+
+    it('affirms each consent pillar: own receipts, own accounts, own credentials, own responsibility', () => {
+        expect(CONSENT_ACKNOWLEDGMENT).toContain('my own receipts');
+        expect(CONSENT_ACKNOWLEDGMENT).toContain('accounts I own');
+        expect(CONSENT_ACKNOWLEDGMENT).toContain('my own credentials');
+        expect(CONSENT_ACKNOWLEDGMENT).toContain('responsible for complying with the terms');
+    });
+});
+
+describe('CONSENT_VERSION', () => {
+    it('is a positive integer (so a material terms change can re-prompt)', () => {
+        expect(Number.isInteger(CONSENT_VERSION)).toBe(true);
+        expect(CONSENT_VERSION).toBeGreaterThanOrEqual(1);
     });
 });

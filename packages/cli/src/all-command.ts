@@ -21,6 +21,7 @@ import {
     type BatchSourceResult,
 } from './all-render.js';
 import { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
+import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
@@ -39,6 +40,8 @@ const DEFAULT_CONCURRENCY = 3;
  */
 export interface AllCommandEnv {
     readonly io: CliIO;
+    /** Runtime consent pre-flight (#32): gates the batch BEFORE any service is touched with credentials. */
+    readonly consent: ConsentGate;
     readonly resolveConfigPath: () => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     readonly resolver: SourceResolver;
@@ -57,12 +60,14 @@ interface AllOptions {
     readonly concurrency?: string;
     readonly verbose?: boolean;
     readonly debug?: boolean;
+    readonly acceptConsent?: boolean;
 }
 
 function defaultEnv(): AllCommandEnv {
     const credentialResolver = new CredentialResolver();
     return {
         io: processStreamsIO(),
+        consent: createConsentGate(),
         resolveConfigPath: defaultConfigPath,
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
@@ -111,7 +116,22 @@ export function createAllCommand(overrides: Partial<AllCommandEnv> = {}): Comman
         .option('--json', 'emit the structured batch report as JSON')
         .option('--verbose', 'stream secret-fenced stage diagnostics to stderr')
         .option('--debug', 'alias for --verbose')
+        .option('--accept-consent', 'record the one-time consent acknowledgment non-interactively (for CI / piped use)')
         .action(async (options: AllOptions) => {
+            // Consent gate FIRST — ONCE, before the fan-out touches any service with credentials (#32).
+            try {
+                await env.consent.ensure({ acceptFlag: options.acceptConsent === true });
+            } catch (error) {
+                if (error instanceof ConsentRequiredError) {
+                    throw new CommanderError(
+                        consentExitCodeFor(error.reason),
+                        `getreceipt.all.consent-${error.reason}`,
+                        '',
+                    );
+                }
+                throw error;
+            }
+
             const window = parseWindow(env.io, options.since, options.until, 'getreceipt.all');
             const concurrency = parseConcurrency(env.io, options.concurrency);
             const profile = resolveActiveProfile(options.profile);

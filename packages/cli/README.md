@@ -12,10 +12,10 @@ The command surface for [getreceipt](https://github.com/alexey-pelykh/getreceipt
 ## `from <domain>`
 
 ```sh
-getreceipt from <domain> [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--json] [--verbose]
+getreceipt from <domain> [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--json] [--verbose] [--accept-consent]
 ```
 
-Resolves the source adapter for `<domain>`, loads the credentials configured under `--profile` (default `default`), runs one collection over the window, and writes the receipts under `<out>/<domain>/`. `--since`/`--until` are strict ISO dates (`YYYY-MM-DD`) and must be supplied together; omit both to use the adapter's default window. `--json` emits the structured result object the MCP surface also returns (CLI↔MCP parity). `--verbose` (alias `--debug`) streams stage-level diagnostics to stderr, each line passed through the secret fence; silent by default.
+Resolves the source adapter for `<domain>`, loads the credentials configured under `--profile` (default `default`), runs one collection over the window, and writes the receipts under `<out>/<domain>/`. `--since`/`--until` are strict ISO dates (`YYYY-MM-DD`) and must be supplied together; omit both to use the adapter's default window. `--json` emits the structured result object the MCP surface also returns (CLI↔MCP parity). `--verbose` (alias `--debug`) streams stage-level diagnostics to stderr, each line passed through the secret fence; silent by default. On the first fetch run it surfaces a one-time consent acknowledgment (see [First-run consent](#first-run-consent)).
 
 ### Exit codes
 
@@ -26,14 +26,22 @@ Resolves the source adapter for `<domain>`, loads the credentials configured und
 | `3`  | Partial — some receipts were written, then the run failed before completing.                                                                                 |
 | `4`  | Failed — the run failed with no receipts written.                                                                                                            |
 | `5`  | Re-auth required — the source needs fresh credentials; re-authenticate and retry.                                                                            |
+| `6`  | Consent required — the one-time consent could not be obtained non-interactively; re-run in a terminal or pass `--accept-consent`.                            |
+| `7`  | Consent declined — the consent prompt was answered no; nothing was fetched.                                                                                  |
 
 ## `all`
 
 ```sh
-getreceipt all [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--concurrency <n>] [--json] [--verbose]
+getreceipt all [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--concurrency <n>] [--json] [--verbose] [--accept-consent]
 ```
 
-Runs `collect()` for **every** source configured under `--profile`, continuing past a failing source and printing a per-source report. Fan-out is capped by `--concurrency` (default `3`) so heavier/browser sources never run unbounded. `--json` emits the structured batch report (the same shape the MCP surface will return). The exit code reflects the batch outcome: `0` all sources succeeded, `3` some succeeded (partial), `4` none succeeded (`1` for a usage error — unreadable config, undefined profile, or a bad `--concurrency`).
+Runs `collect()` for **every** source configured under `--profile`, continuing past a failing source and printing a per-source report. Fan-out is capped by `--concurrency` (default `3`) so heavier/browser sources never run unbounded. `--json` emits the structured batch report (the same shape the MCP surface will return). The exit code reflects the batch outcome: `0` all sources succeeded, `3` some succeeded (partial), `4` none succeeded (`1` for a usage error — unreadable config, undefined profile, or a bad `--concurrency`); the consent gate (`6` / `7`, above) applies here too. The consent check runs once, before the fan-out.
+
+## First-run consent
+
+The first time a fetch verb (`from` / `all`) runs, getreceipt shows the unofficial / personal-use disclosure and asks you to acknowledge — once — that you are collecting only your own receipts, from accounts you own, with your own credentials, and that you are responsible for each service's terms. The acknowledgment is recorded at `~/.getreceipt/consent.json` and is **not** re-prompted afterwards.
+
+In a non-interactive context (piped, CI, no TTY) the command does **not** hang waiting for input: it prints how to proceed and exits `6`. Pass `--accept-consent` to record the acknowledgment non-interactively (the disclosure is still printed). The read-only verbs (`sources`, `status`, `config`) never touch a service and are not gated.
 
 ## `sources`
 
