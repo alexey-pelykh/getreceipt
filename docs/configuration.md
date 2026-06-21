@@ -18,6 +18,31 @@ use, the active profile, and whether the file exists:
 getreceipt config path
 ```
 
+## Creating and editing the file
+
+Scaffold a starter `~/.getreceipt.yaml` — a commented template with one example source, ready to
+edit — with:
+
+```sh
+getreceipt config init
+```
+
+`init` writes the file only when none exists; an existing file is **never overwritten without
+explicit confirmation** (pass `--force`, or answer `y` at the interactive prompt). `--profile <name>`
+names the scaffolded profile (default `default`). The starter validates cleanly out of the box —
+replace the `example.com` placeholder with a real source (`getreceipt sources`).
+
+To change the configuration later, open it in your editor:
+
+```sh
+getreceipt config edit
+```
+
+`edit` opens the file in `$VISUAL` (then `$EDITOR`) — set one to your editor command, e.g.
+`export EDITOR=vim`. On save it **re-validates**, and refuses to leave an invalid file in place: a
+non-parsing edit is rolled back to the previous valid contents rather than silently persisted.
+Secrets are redacted in any echoed output, exactly as for `config show`.
+
 ## Schema
 
 The file is a set of named **profiles**. Each profile maps a **source domain** to an **auth** block:

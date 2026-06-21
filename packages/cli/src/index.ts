@@ -22,7 +22,10 @@ export { createStatusCommand } from './status-command.js';
 export type { StatusCommandEnv } from './status-command.js';
 
 export { createConfigCommand } from './config-command.js';
-export type { ConfigCommandEnv } from './config-command.js';
+export type { ConfigCommandEnv, EditorLaunchResult } from './config-command.js';
+
+export { decideInitDisposition, parseEditorCommand, renderStarterConfig } from './config-init.js';
+export type { EditorCommand, InitDisposition } from './config-init.js';
 
 export { createMcpCommand } from './mcp-command.js';
 export type { McpCommandEnv } from './mcp-command.js';

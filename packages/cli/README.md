@@ -7,7 +7,7 @@ The command surface for [getreceipt](https://github.com/alexey-pelykh/getreceipt
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by any of the services it integrates with. See the [project README](https://github.com/alexey-pelykh/getreceipt#readme) for the full disclaimer.
 
-> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the read-only `config` surface (`show` / `validate` / `path`) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
+> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the `config` surface — read-only `show` / `validate` / `path` plus mutating `init` (scaffold a starter file, never clobbering without confirmation) / `edit` (open `$EDITOR`, re-validate on save) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
 
 ## `from <domain>`
 
@@ -41,7 +41,7 @@ Runs `collect()` for **every** source configured under `--profile`, continuing p
 
 The first time a fetch verb (`from` / `all`) runs, getreceipt shows the unofficial / personal-use disclosure and asks you to acknowledge — once — that you are collecting only your own receipts, from accounts you own, with your own credentials, and that you are responsible for each service's terms. The acknowledgment is recorded at `~/.getreceipt/consent.json` and is **not** re-prompted afterwards.
 
-In a non-interactive context (piped, CI, no TTY) the command does **not** hang waiting for input: it prints how to proceed and exits `6`. Pass `--accept-consent` to record the acknowledgment non-interactively (the disclosure is still printed). The read-only verbs (`sources`, `status`, `config`) never touch a service and are not gated.
+In a non-interactive context (piped, CI, no TTY) the command does **not** hang waiting for input: it prints how to proceed and exits `6`. Pass `--accept-consent` to record the acknowledgment non-interactively (the disclosure is still printed). The introspection verbs (`sources`, `status`) and the `config` verbs (which only read or write the local config file) never touch a service and are not gated.
 
 ## `sources`
 

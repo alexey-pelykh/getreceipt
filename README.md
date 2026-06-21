@@ -20,8 +20,10 @@ Requires **Node.js ≥ 24**.
 
 ## Quickstart
 
-1. **Create `~/.getreceipt.yaml`** with one source under the `default` profile. Substitute a real
-   source from `getreceipt sources` for the `example.com` placeholder:
+1. **Create `~/.getreceipt.yaml`.** Run `getreceipt config init` to scaffold a commented starter (it
+   never overwrites an existing file without `--force`), or write it by hand — one source under the
+   `default` profile. Substitute a real source from `getreceipt sources` for the `example.com`
+   placeholder:
 
    ```yaml
    profiles:
@@ -34,6 +36,9 @@ Requires **Node.js ≥ 24**.
              secret:
                ref: op://Personal/example.com/password # a 1Password reference, not the secret itself
    ```
+
+   Reopen it in `$EDITOR` at any time with `getreceipt config edit`, which re-validates on save and
+   refuses to leave an invalid file in place.
 
 2. **Check it parses**, see what is configured, then **collect** receipts into a local folder:
 
@@ -52,21 +57,22 @@ credential forms are in the **[configuration guide](docs/configuration.md)**.
 `getreceipt <verb>` — run `getreceipt --help` (or `getreceipt <verb> --help`) for the full surface.
 `--version` prints the version together with the unofficial-use disclaimer.
 
-| Verb                                | Purpose                                                                       |
-| ----------------------------------- | ----------------------------------------------------------------------------- |
-| `from <domain>`                     | Collect receipts from one configured source into `<out>/<domain>/`.           |
-| `all`                               | Collect from **every** configured source (continue-on-error, capped fan-out). |
-| `sources`                           | List bundled sources, their declared capabilities, and verification state.    |
-| `status`                            | Show the stored-session / auth status of each configured source.              |
-| `login <domain>`                    | Authenticate to a source and store a reusable session for later runs.         |
-| `logout <domain>`                   | Clear a source's stored session (rotate, switch account, or recover).         |
-| `config show` / `validate` / `path` | Inspect the resolved configuration (read-only; secrets redacted).             |
-| `mcp`                               | Serve the receipt-collection tools to an MCP client over stdio.               |
+| Verb                                            | Purpose                                                                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `from <domain>`                                 | Collect receipts from one configured source into `<out>/<domain>/`.                                                             |
+| `all`                                           | Collect from **every** configured source (continue-on-error, capped fan-out).                                                   |
+| `sources`                                       | List bundled sources, their declared capabilities, and verification state.                                                      |
+| `status`                                        | Show the stored-session / auth status of each configured source.                                                                |
+| `login <domain>`                                | Authenticate to a source and store a reusable session for later runs.                                                           |
+| `logout <domain>`                               | Clear a source's stored session (rotate, switch account, or recover).                                                           |
+| `config` `show`/`validate`/`path`/`init`/`edit` | Inspect (read-only, redacted) and manage the config file — `init` scaffolds a starter, `edit` opens `$EDITOR` and re-validates. |
+| `mcp`                                           | Serve the receipt-collection tools to an MCP client over stdio.                                                                 |
 
 The collection verbs (`from`, `all`) share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied
 together), `--profile <name>` (default `default`), `--out <dir>` (default `.`), `--json`, and
 `--verbose`; `all` adds `--concurrency <n>` (default `3`). The introspection verbs (`sources`,
-`status`, `config`) are read-only and never reveal a secret.
+`status`) and the read-only `config` sub-verbs (`show` / `validate` / `path`) never reveal a secret;
+`config init` / `config edit` write the file but redact secrets in any echoed output.
 
 The session verbs persist auth between runs: `getreceipt login <domain>` authenticates once and
 stores a reusable session; `getreceipt logout <domain>` clears it (to rotate, switch account, or
