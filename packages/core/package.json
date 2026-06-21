@@ -32,6 +32,9 @@
     "test": "vitest run",
     "lint": "eslint ."
   },
+  "dependencies": {
+    "zod": "catalog:"
+  },
   "devDependencies": {
     "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:"

@@ -42,6 +42,9 @@ catalogs:
     yaml:
       specifier: 2.9.0
       version: 2.9.0
+    zod:
+      specifier: 4.4.3
+      version: 4.4.3
 
 importers:
 
@@ -102,6 +105,10 @@ importers:
         version: 26.0.0
 
   packages/core:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
     devDependencies:
       '@getreceipt/testing':
         specifier: workspace:^
@@ -112,6 +119,9 @@ importers:
 
   packages/e2e:
     devDependencies:
+      '@getreceipt/core':
+        specifier: workspace:^
+        version: link:../core
       '@getreceipt/testing':
         specifier: workspace:^
         version: link:../testing
@@ -1680,6 +1690,9 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
 snapshots:
 
   '@emnapi/core@1.10.0':
@@ -2954,3 +2967,5 @@ snapshots:
       yargs-parser: 21.1.1
 
   yocto-queue@0.1.0: {}
+
+  zod@4.4.3: {}
