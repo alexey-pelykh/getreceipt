@@ -6,6 +6,7 @@
     { "path": "packages/cli/tsconfig.build.json" },
     { "path": "packages/mcp/tsconfig.build.json" },
     { "path": "packages/auth/tsconfig.build.json" },
-    { "path": "packages/adapter-grandfrais/tsconfig.build.json" }
+    { "path": "packages/adapter-grandfrais/tsconfig.build.json" },
+    { "path": "packages/adapter-monoprix/tsconfig.build.json" }
   ]
 }
