@@ -58,12 +58,19 @@ credential forms are in the **[configuration guide](docs/configuration.md)**.
 | `all`                               | Collect from **every** configured source (continue-on-error, capped fan-out). |
 | `sources`                           | List bundled sources, their declared capabilities, and verification state.    |
 | `status`                            | Show the stored-session / auth status of each configured source.              |
+| `login <domain>`                    | Authenticate to a source and store a reusable session for later runs.         |
+| `logout <domain>`                   | Clear a source's stored session (rotate, switch account, or recover).         |
 | `config show` / `validate` / `path` | Inspect the resolved configuration (read-only; secrets redacted).             |
 
 The collection verbs (`from`, `all`) share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied
 together), `--profile <name>` (default `default`), `--out <dir>` (default `.`), `--json`, and
 `--verbose`; `all` adds `--concurrency <n>` (default `3`). The introspection verbs (`sources`,
 `status`, `config`) are read-only and never reveal a secret.
+
+The session verbs persist auth between runs: `getreceipt login <domain>` authenticates once and
+stores a reusable session; `getreceipt logout <domain>` clears it (to rotate, switch account, or
+recover a stuck session). When a stored session expires, a collection reports `re-auth required`
+and names `getreceipt login <domain>` as the remedy. Neither verb ever prints the token.
 
 `from` exits `0` success · `1` usage/config · `3` partial · `4` failed · `5` re-auth required; `all`
 reflects the batch outcome (`0` all ok · `3` partial · `4` none · `1` usage). The

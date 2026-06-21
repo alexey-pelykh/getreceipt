@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError, fromCredentialContext, PasswordAuthDriver, Secret } from '@getreceipt/auth';
+import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
 import { ReauthRequiredError, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
@@ -57,7 +58,7 @@ interface MonoprixSession {
  * AVAILABLE document) minted by `list`; an order with no available documents contributes none, so
  * "zero documents" is a success.
  */
-export class MonoprixAdapter implements SourceAdapter {
+export class MonoprixAdapter implements SourceAdapter, SessionPersistableAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
@@ -89,6 +90,11 @@ export class MonoprixAdapter implements SourceAdapter {
     async fetch(auth: AuthHandle, ref: ReceiptRef): Promise<ArtifactHandle> {
         const { token } = fromAuthHandle(auth);
         return fetchDocument(token, ref);
+    }
+
+    toStoredSession(auth: AuthHandle): StoredSession {
+        // Re-home the minted session token (post two-step auth) into the persistable shape (#17).
+        return { token: fromAuthHandle(auth).token };
     }
 }
 

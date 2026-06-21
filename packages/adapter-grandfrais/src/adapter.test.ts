@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 
-import { asCredentialContext, AuthenticationError, Secret } from '@getreceipt/auth';
+import { asCredentialContext, AuthenticationError, isSessionPersistable, Secret } from '@getreceipt/auth';
 import {
     asReceiptArtifact,
     collect,
@@ -161,6 +161,18 @@ describe('GrandfraisAdapter — AC2: authenticate', () => {
         const error: unknown = await grandfraisAdapter.authenticate(incomplete).catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(AuthenticationError);
+    });
+
+    it('projects the authenticated session into a persistable StoredSession (#17 login ceremony)', async () => {
+        server.use(loginOk());
+
+        const auth = await grandfraisAdapter.authenticate(creds());
+
+        expect(isSessionPersistable(grandfraisAdapter)).toBe(true);
+        if (isSessionPersistable(grandfraisAdapter)) {
+            const session = grandfraisAdapter.toStoredSession(auth);
+            expect(session.token.expose()).toBe(TOKEN);
+        }
     });
 });
 

@@ -52,7 +52,15 @@ describe('getreceipt bundled CLI', () => {
         // `--help` throws a zero-exit CommanderError under exitOverride after writing the help text.
         await program.parseAsync(['--help'], { from: 'user' }).catch(() => {});
 
-        expect(program.commands.map((c) => c.name()).sort()).toEqual(['all', 'config', 'from', 'sources', 'status']);
+        expect(program.commands.map((c) => c.name()).sort()).toEqual([
+            'all',
+            'config',
+            'from',
+            'login',
+            'logout',
+            'sources',
+            'status',
+        ]);
 
         const help = captured.join('');
         expect(help).toContain('getreceipt');
@@ -60,6 +68,8 @@ describe('getreceipt bundled CLI', () => {
         expect(help).toContain('all');
         expect(help).toContain('sources');
         expect(help).toContain('status');
+        expect(help).toContain('login');
+        expect(help).toContain('logout');
         expect(help).toContain('config');
         // The CLI channel carries the unofficial disclaimer + personal-use posture as shipped text
         // (issues #10/#9). The constants' wording is pinned independently by @getreceipt/core.

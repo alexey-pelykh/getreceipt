@@ -91,6 +91,13 @@ describe('renderAllText', () => {
         expect(text).not.toContain('written:'); // counts are omitted for a reauth-required source
     });
 
+    it('names the `login` remedy verb for a reauth-required source (#17 [AC3])', () => {
+        const text = renderAllText(
+            report([ran('shop.example', 'reauth-required', { reason: 'session expired' })], 'failed'),
+        );
+        expect(text).toContain('getreceipt login shop.example');
+    });
+
     it('renders a pre-flight error source with its kind and message', () => {
         const text = renderAllText(report([failed('ghost.example', 'unknown-source')], 'failed'));
         expect(text).toContain('ghost.example — error (unknown-source)');

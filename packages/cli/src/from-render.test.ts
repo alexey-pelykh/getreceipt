@@ -2,7 +2,7 @@
 import type { OperationResult } from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
 
-import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
+import { EXIT_CODES, exitCodeFor, reauthRemedy, renderResultsTable } from './from-render.js';
 
 const isoWindow = { from: '2024-01-01T00:00:00.000Z', to: '2024-01-31T00:00:00.000Z' };
 
@@ -78,5 +78,25 @@ describe('renderResultsTable', () => {
         expect(text).toContain('shop.example — reauth-required');
         expect(text).toContain('re-authentication required: session expired');
         expect(text).not.toContain('written:');
+    });
+
+    it('names the `login` remedy verb on a reauth-required outcome (#17 [AC3])', () => {
+        const result: OperationResult = {
+            source: 'grandfrais.com',
+            outcome: 'reauth-required',
+            window: isoWindow,
+            written: [],
+            skipped: [],
+            reason: 'session expired',
+        };
+        expect(renderResultsTable(result)).toContain('getreceipt login grandfrais.com');
+    });
+});
+
+describe('reauthRemedy (#17 [AC3])', () => {
+    it('names the login verb for the given source', () => {
+        const remedy = reauthRemedy('grandfrais.com');
+        expect(remedy).toContain('login');
+        expect(remedy).toContain('getreceipt login grandfrais.com');
     });
 });

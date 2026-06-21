@@ -43,6 +43,15 @@ export function exitCodeFor(outcome: OperationOutcome): number {
     }
 }
 
+/**
+ * The remedy line a `reauth-required` outcome shows: it names the `login` verb (#17) — which now
+ * exists — the user runs to re-establish the source's session. Shared by the `from` and `all`
+ * renderers. Pure; carries no secret material.
+ */
+export function reauthRemedy(source: string): string {
+    return `→ run \`getreceipt login ${source}\` to re-authenticate`;
+}
+
 /** ISO-8601 timestamp → date-only `YYYY-MM-DD` for compact human display. */
 function dateOnly(iso: string): string {
     return iso.slice(0, 10);
@@ -80,6 +89,7 @@ export function renderResultsTable(result: OperationResult): string {
 
     if (result.outcome === 'reauth-required') {
         lines.push(`re-authentication required${result.reason === undefined ? '' : `: ${result.reason}`}`);
+        lines.push(reauthRemedy(result.source));
     } else if (result.reason !== undefined) {
         lines.push(`${result.outcome}: ${result.reason}`);
     }

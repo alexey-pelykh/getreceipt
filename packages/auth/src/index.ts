@@ -41,6 +41,8 @@ export {
 export type { CreateSessionStoreOptions, EncryptedFileSessionStoreOptions, Keyring } from './session-store.js';
 export { reuseStoredSession, toReauthRequiredError } from './session-reuse.js';
 export type { ReuseStoredSessionRequest, SessionReuse } from './session-reuse.js';
+export { isSessionPersistable } from './session-persistable.js';
+export type { SessionPersistableAdapter } from './session-persistable.js';
 export {
     AuthenticationError,
     ConfigError,

@@ -5,6 +5,7 @@ import { toOperationResult, UnknownSourceError } from '@getreceipt/core';
 import type {
     CollectRequest,
     CollectResult,
+    CredentialContext,
     DateRange,
     OperationResult,
     OperationSpec,
@@ -36,18 +37,26 @@ export class OperationError extends Error {
 }
 
 /**
- * Construction-time collaborators for {@link runOperation}. Every field is injected so the
- * runner is exercisable with a fake adapter and captured writer — no network, no real home
- * dir, no `op` CLI. The production wiring (real resolver/config/credential-resolver/writer)
- * is assembled by the `from` command's default env.
+ * The collaborators the source-resolution front-half needs — shared by the `from`/`all`
+ * collection path and the `login` ceremony (#17). Injected so resolution is exercisable with a
+ * fake adapter and stub credential resolver: no network, no real home dir, no `op` CLI.
  */
-export interface OperationRunnerDeps {
+export interface ResolveSourceDeps {
     /** Resolves a domain (canonical or alias) to its adapter. */
     readonly resolver: SourceResolver;
     readonly resolveConfigPath: () => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Resolves a configured credential reference to its fenced secret value. */
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
+}
+
+/**
+ * Construction-time collaborators for {@link runOperation}: the shared {@link ResolveSourceDeps}
+ * plus the collection-only seams (writer, collect, clock, optional instrument). The production
+ * wiring (real resolver/config/credential-resolver/writer) is assembled by the `from` command's
+ * default env.
+ */
+export interface OperationRunnerDeps extends ResolveSourceDeps {
     /** Mints the writer for this run (already bound to the target directory). */
     readonly createWriter: () => ReceiptWriter;
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
@@ -65,17 +74,29 @@ export interface OperationRunnerDeps {
  * contract).
  */
 export async function runOperation(spec: OperationSpec, deps: OperationRunnerDeps): Promise<OperationResult> {
-    const adapter = resolveAdapter(deps.resolver, spec.source);
-
-    const path = deps.resolveConfigPath();
-    const parsed = loadConfigOrThrow(deps.loadConfig, path);
-
-    const sourceConfig = findSourceConfig(parsed, spec, adapter, path);
-    const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
-
+    const { adapter, credentials } = await resolveSourceContext(spec, deps);
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     const request = buildRequest(spec.window, runAdapter, credentials, deps);
     return toOperationResult(await deps.collect(request));
+}
+
+/**
+ * Resolve a source to its adapter and a ready-to-use {@link CredentialContext} — the shared
+ * front-half of every credentialed operation: the `from`/`all` collection path AND the `login`
+ * ceremony (#17). Resolves the adapter, loads + validates config, finds the source's auth under
+ * the requested profile, and resolves its credentials. Throws {@link OperationError} for any
+ * pre-flight failure; carries no secret material.
+ */
+export async function resolveSourceContext(
+    spec: { readonly source: string; readonly profile: string },
+    deps: ResolveSourceDeps,
+): Promise<{ readonly adapter: SourceAdapter; readonly credentials: CredentialContext }> {
+    const adapter = resolveAdapter(deps.resolver, spec.source);
+    const path = deps.resolveConfigPath();
+    const parsed = loadConfigOrThrow(deps.loadConfig, path);
+    const sourceConfig = findSourceConfig(parsed, spec, adapter, path);
+    const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
+    return { adapter, credentials };
 }
 
 function resolveAdapter(resolver: SourceResolver, source: string): SourceAdapter {
@@ -106,7 +127,7 @@ function findSourceConfig(parsed: ConfigParseResult, spec: OperationSpec, adapte
     if (profile === undefined) {
         throw new OperationError('not-configured', `profile "${spec.profile}" is not defined in ${path}`);
     }
-    // Accept the source under the requested domain OR the adapter's canonical domain (an alias was requested).
+    // Fall back to the canonical domain when an alias was requested.
     const sourceConfig = profile.sources[spec.source] ?? profile.sources[adapter.descriptor.canonicalDomain];
     if (sourceConfig === undefined) {
         throw new OperationError(
@@ -118,7 +139,7 @@ function findSourceConfig(parsed: ConfigParseResult, spec: OperationSpec, adapte
 }
 
 async function resolveCredentials(
-    deps: OperationRunnerDeps,
+    deps: ResolveSourceDeps,
     sourceConfig: { kind: ResolvedCredentials['kind']; username?: string; secret?: CredentialValue },
 ): Promise<ResolvedCredentials> {
     const resolved: { kind: ResolvedCredentials['kind']; username?: string; secret?: Secret } = {

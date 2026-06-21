@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 
 import {
     createSessionStore,
@@ -18,6 +16,7 @@ import { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
 import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
+import { defaultSessionsDir } from './sessions.js';
 import {
     renderStatusJson,
     renderStatusText,
@@ -46,11 +45,6 @@ export interface StatusCommandEnv {
     readonly clockSkewMs?: number;
 }
 
-/** The directory the encrypted-file session store reads from — sibling of the `~/.getreceipt.yaml` config. */
-function defaultSessionsDir(): string {
-    return join(homedir(), '.getreceipt', 'sessions');
-}
-
 /** A session store that holds nothing — every source reports `none`. Used before any session has been persisted. */
 const NULL_SESSION_STORE: SessionStore = {
     load: () => Promise.resolve(undefined),
@@ -60,8 +54,8 @@ const NULL_SESSION_STORE: SessionStore = {
 
 /**
  * The production default session store: the encrypted-file store under {@link defaultSessionsDir}
- * once it exists, else a {@link NULL_SESSION_STORE}. The directory is created by the future
- * `login` ceremony (#17); until then there are no sessions, so every source honestly reports
+ * once it exists, else a {@link NULL_SESSION_STORE}. The directory is created by the `login`
+ * ceremony (#17); until a first login, there are no sessions, so every source honestly reports
  * `none` rather than `unknown`.
  */
 function resolveDefaultSessionStore(): SessionStore {
