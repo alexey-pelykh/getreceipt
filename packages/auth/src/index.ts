@@ -12,6 +12,8 @@ export type {
 } from './config.js';
 export { AuthOrchestrator } from './auth-orchestrator.js';
 export type { AuthDriver } from './auth-orchestrator.js';
+export { PasswordAuthDriver } from './password-driver.js';
+export type { AuthSession, PasswordAuthRequest, PasswordCredentials } from './password-driver.js';
 export { CredentialResolver, ENCRYPTED_FILE_PASSPHRASE_ENV, defaultCommandRunner } from './credential-resolver.js';
 export type {
     CommandResult,
@@ -21,10 +23,13 @@ export type {
 } from './credential-resolver.js';
 export { Secret } from './secret.js';
 export { sealEnvelope } from './secret-envelope.js';
+export { assertNoSecretLeaks, scanForSecrets, SecretLeakDetectedError } from './secret-leakage.js';
+export type { ScannableFile, SecretLeak } from './secret-leakage.js';
 export {
+    AuthenticationError,
     ConfigError,
     CredentialBackendUnavailableError,
     CredentialResolutionError,
     UnsupportedAuthKindError,
 } from './errors.js';
-export type { CredentialResolutionReason } from './errors.js';
+export type { AuthenticationFailureReason, CredentialResolutionReason } from './errors.js';
