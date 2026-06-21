@@ -25,7 +25,8 @@ Explicit non-goals:
 - **No machine-tempo affordances.** There is no `--watch` and no `--repeat`; it runs once, at human
   tempo, when you ask it to.
 
-The fuller posture and rationale will live in `docs/legitimacy.md`.
+The fuller posture and rationale — nominative service-name use, fair-use interoperability, and the
+in/out-of-scope line — live in [docs/legitimacy.md](docs/legitimacy.md).
 
 ## Privacy
 
