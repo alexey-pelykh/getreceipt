@@ -1,0 +1,409 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { scanForSecrets, Secret } from '@getreceipt/auth';
+import {
+    FilesystemReceiptWriter,
+    ReauthRequiredError,
+    SourceAdapterRegistry,
+    SourceResolver,
+    toOperationResult,
+} from '@getreceipt/core';
+import type {
+    ArtifactHandle,
+    AuthHandle,
+    CollectResult,
+    CredentialContext,
+    DateRange,
+    ReceiptRef,
+    SourceAdapter,
+} from '@getreceipt/core';
+import { fromCredentialContext } from '@getreceipt/auth';
+import { describe, expect, it } from 'vitest';
+
+import { createFromCommand } from './from-command.js';
+import type { FromCommandEnv } from './from-command.js';
+
+const configFixture = fileURLToPath(new URL('./__fixtures__/from.getreceipt.yaml', import.meta.url));
+
+const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF"
+
+function ref(id: string, day: number, title?: string): ReceiptRef {
+    const issuedAt = new Date(Date.UTC(2024, 0, day, 9, 0, 0));
+    return title === undefined ? { id, issuedAt } : { id, issuedAt, title };
+}
+
+/** Behavior knobs for the fake adapter — each stage either yields a value or throws to exercise a failure mode. */
+interface FakeAdapterOptions {
+    readonly listed?: readonly ReceiptRef[];
+    readonly onAuthenticate?: (credentials: CredentialContext) => void;
+    readonly throwOnAuthenticate?: Error;
+    readonly throwOnList?: Error;
+    readonly throwOnFetchId?: string;
+}
+
+function fakeAdapter(options: FakeAdapterOptions = {}): SourceAdapter {
+    const listed = options.listed ?? [ref('inv-1', 5, 'January invoice'), ref('inv-2', 6)];
+    return {
+        descriptor: {
+            canonicalDomain: 'shop.example',
+            aliasDomains: ['www.shop.example'],
+            authKind: 'password',
+            transportTier: 'http-api',
+            artifactMode: 'pdf-download',
+            dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+            defaultWindow: { days: 30 },
+            pagination: 'none',
+        },
+        async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
+            options.onAuthenticate?.(credentials);
+            if (options.throwOnAuthenticate !== undefined) {
+                throw options.throwOnAuthenticate;
+            }
+            return {} as unknown as AuthHandle;
+        },
+        async list(): Promise<readonly ReceiptRef[]> {
+            if (options.throwOnList !== undefined) {
+                throw options.throwOnList;
+            }
+            return listed;
+        },
+        async fetch(_auth: AuthHandle, receipt: ReceiptRef): Promise<ArtifactHandle> {
+            if (options.throwOnFetchId === receipt.id) {
+                throw new Error(`fetch failed for ${receipt.id}`);
+            }
+            return {
+                bytes: PDF_BYTES,
+                contentType: 'application/pdf',
+                filename: `${receipt.id}.pdf`,
+            } as unknown as ArtifactHandle;
+        },
+    };
+}
+
+function resolverWith(adapter: SourceAdapter): SourceResolver {
+    const registry = new SourceAdapterRegistry();
+    registry.register(adapter);
+    return new SourceResolver(registry);
+}
+
+interface RunResult {
+    out: string;
+    err: string;
+    error: unknown;
+}
+
+/**
+ * Build the `from` command and genuinely execute it through Commander — capturing output
+ * and any non-zero-exit signal — so each test drives the real parse → action → render path.
+ * Defaults wire a fake adapter + stub credential resolver; individual seams are overridable.
+ */
+async function runFrom(args: string[], overrides: Partial<FromCommandEnv> = {}): Promise<RunResult> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const env: Partial<FromCommandEnv> = {
+        io: { writeOut: (t) => out.push(t), writeErr: (t) => err.push(t) },
+        resolveConfigPath: () => configFixture,
+        resolver: resolverWith(fakeAdapter()),
+        resolveCredential: (value) =>
+            Promise.resolve(value instanceof Object ? new Secret('resolved') : new Secret(value)),
+        ...overrides,
+    };
+    const cmd = createFromCommand(env);
+    cmd.exitOverride();
+
+    let error: unknown;
+    try {
+        await cmd.parseAsync([...args], { from: 'user' });
+    } catch (caught) {
+        error = caught;
+    }
+    return { out: out.join(''), err: err.join(''), error };
+}
+
+describe('from <domain> — collection (AC #1)', () => {
+    it('collects from a configured source and writes its PDFs to disk', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-'));
+        try {
+            const { out, error } = await runFrom(['shop.example', '--out', dir], {
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+
+            expect(error).toBeUndefined();
+            // Genuine writes landed on disk under <out>/<source>/<id>.pdf.
+            expect(existsSync(join(dir, 'shop.example', 'inv-1.pdf'))).toBe(true);
+            expect(existsSync(join(dir, 'shop.example', 'inv-2.pdf'))).toBe(true);
+            expect(readFileSync(join(dir, 'shop.example', 'inv-1.pdf'))).toEqual(Buffer.from(PDF_BYTES));
+            expect(out).toContain('shop.example — succeeded');
+            expect(out).toContain('written: 2');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('resolves the configured credential and hands it to the adapter', async () => {
+        let received: CredentialContext | undefined;
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-cred-'));
+        try {
+            await runFrom(['shop.example', '--out', dir], {
+                resolver: resolverWith(fakeAdapter({ onAuthenticate: (c) => (received = c) })),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+                resolveCredential: () => Promise.resolve(new Secret('resolved-token')),
+            });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+
+        expect(received).toBeDefined();
+        const creds = fromCredentialContext(received!);
+        expect(creds.kind).toBe('password');
+        expect(creds.username).toBe('alice@shop.example');
+        expect(creds.secret?.expose()).toBe('resolved-token');
+    });
+
+    it('honors --since/--until as the collection window', async () => {
+        let listRange: DateRange | undefined;
+        const adapter = fakeAdapter();
+        const wrapped: SourceAdapter = {
+            ...adapter,
+            list: async (auth, range) => {
+                listRange = range;
+                return adapter.list(auth, range);
+            },
+        };
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-win-'));
+        try {
+            const { error } = await runFrom(
+                ['shop.example', '--since', '2024-01-01', '--until', '2024-01-31', '--out', dir],
+                {
+                    resolver: resolverWith(wrapped),
+                    createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+                },
+            );
+            expect(error).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        expect(listRange?.from.toISOString()).toBe('2024-01-01T00:00:00.000Z');
+        expect(listRange?.to.toISOString()).toBe('2024-01-31T00:00:00.000Z');
+    });
+
+    it('resolves an alias domain and finds its credentials under the canonical key', async () => {
+        // `www.shop.example` is an alias of `shop.example`; the config keys only the canonical domain,
+        // so this exercises the alias → canonical credential fallback end-to-end.
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-alias-'));
+        try {
+            const { out, error } = await runFrom(['www.shop.example', '--out', dir], {
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(error).toBeUndefined();
+            // Written under the canonical domain the adapter reports, not the requested alias.
+            expect(existsSync(join(dir, 'shop.example', 'inv-1.pdf'))).toBe(true);
+            expect(out).toContain('shop.example — succeeded');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('from --json — structured result parity (AC #2)', () => {
+    it('emits exactly toOperationResult(collectResult) — the shared CLI↔MCP shape', async () => {
+        const collectResult: CollectResult = {
+            outcome: 'succeeded',
+            source: 'shop.example',
+            window: { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') },
+            written: [ref('inv-1', 5, 'January invoice')],
+            skipped: [ref('inv-0', 4)],
+        };
+
+        // Inject collect so the CLI's emitted JSON can be compared against the SAME mapper the MCP surface uses.
+        const { out, error } = await runFrom(['shop.example', '--json'], {
+            collect: () => Promise.resolve(collectResult),
+        });
+
+        expect(error).toBeUndefined();
+        expect(JSON.parse(out)).toEqual(toOperationResult(collectResult));
+    });
+});
+
+describe('from — exit-code ladder (AC #3)', () => {
+    function collectReturning(result: CollectResult): Partial<FromCommandEnv> {
+        return { collect: () => Promise.resolve(result) };
+    }
+    const window = { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') };
+
+    it('exits 0 on success', async () => {
+        const { error } = await runFrom(
+            ['shop.example'],
+            collectReturning({ outcome: 'succeeded', source: 'shop.example', window, written: [], skipped: [] }),
+        );
+        expect(error).toBeUndefined();
+    });
+
+    it('exits 3 on partial (some written, then failed)', async () => {
+        const { error } = await runFrom(
+            ['shop.example'],
+            collectReturning({
+                outcome: 'failed',
+                source: 'shop.example',
+                window,
+                reason: 'fetch failed for inv-2',
+                cause: new Error('boom'),
+                written: [ref('inv-1', 5)],
+                skipped: [],
+            }),
+        );
+        expect(error).toMatchObject({ exitCode: 3 });
+    });
+
+    it('exits 4 on failure with no progress', async () => {
+        const { error } = await runFrom(
+            ['shop.example'],
+            collectReturning({
+                outcome: 'failed',
+                source: 'shop.example',
+                window,
+                reason: 'auth endpoint unreachable',
+                cause: new Error('ENOTFOUND'),
+                written: [],
+                skipped: [],
+            }),
+        );
+        expect(error).toMatchObject({ exitCode: 4 });
+    });
+
+    it('exits 5 on reauth-required', async () => {
+        const { error } = await runFrom(
+            ['shop.example'],
+            collectReturning({ outcome: 'reauth-required', source: 'shop.example', window, reason: 'session expired' }),
+        );
+        expect(error).toMatchObject({ exitCode: 5 });
+    });
+
+    it('drives the real pipeline: a dead session surfaces as reauth-required (exit 5)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-reauth-'));
+        try {
+            const { error } = await runFrom(['shop.example', '--out', dir], {
+                resolver: resolverWith(
+                    fakeAdapter({ throwOnAuthenticate: new ReauthRequiredError('shop.example', 'session expired') }),
+                ),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(error).toMatchObject({ exitCode: 5 });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('exits 1 (usage) for an unknown source', async () => {
+        const { err, error } = await runFrom(['no-such.example'], {
+            resolver: new SourceResolver(new SourceAdapterRegistry()), // empty: nothing resolves
+        });
+        expect(error).toMatchObject({ exitCode: 1 });
+        expect(err).toContain('No source adapter is registered');
+    });
+
+    it('exits 1 (usage) when the requested profile is not defined', async () => {
+        const { err, error } = await runFrom(['shop.example', '--profile', 'absent']);
+        expect(error).toMatchObject({ exitCode: 1 });
+        expect(err).toContain('profile "absent" is not defined');
+    });
+
+    it('exits 1 (usage) on an incomplete window', async () => {
+        const { err, error } = await runFrom(['shop.example', '--since', '2024-01-01']);
+        expect(error).toMatchObject({ exitCode: 1 });
+        expect(err).toContain('together');
+    });
+
+    // `2024-02-30`/`2024-04-31` (impossible day) and `2024-1-1`/`01/15/2024` (locale-dependent
+    // legacy formats) would all silently parse to the WRONG window via bare `new Date(...)`;
+    // strict YYYY-MM-DD validation rejects them as usage errors instead.
+    it.each(['2024-02-30', '2024-04-31', '2024-1-1', '01/15/2024', 'last-tuesday'])(
+        'exits 1 (usage) rejecting a malformed --since date: %s',
+        async (bad) => {
+            const { err, error } = await runFrom(['shop.example', '--since', bad, '--until', '2024-01-31']);
+            expect(error).toMatchObject({ exitCode: 1 });
+            expect(err).toContain('not a valid ISO date');
+        },
+    );
+});
+
+describe('from — human output names the outcome on a non-success run', () => {
+    it('reports the source + outcome in human output for a non-success run', async () => {
+        const { out, error } = await runFrom(['shop.example'], {
+            collect: () =>
+                Promise.resolve({
+                    outcome: 'reauth-required',
+                    source: 'shop.example',
+                    window: { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') },
+                    reason: 'session expired',
+                }),
+        });
+        expect(error).toMatchObject({ exitCode: 5 });
+        expect(out).toContain('reauth-required');
+    });
+});
+
+describe('from --verbose/--debug — secret-fenced diagnostics (AC #5)', () => {
+    it('is silent by default (no stage diagnostics on stderr)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-quiet-'));
+        try {
+            const { err } = await runFrom(['shop.example', '--out', dir], {
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(err).toBe('');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('--verbose streams stage-level diagnostics to stderr', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-verbose-'));
+        try {
+            const { err } = await runFrom(['shop.example', '--out', dir, '--verbose'], {
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(err).toContain('authenticate: start');
+            expect(err).toContain('list: 2 receipt(s)');
+            expect(err).toContain('fetch: inv-1');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('--debug behaves as a --verbose alias', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-debug-'));
+        try {
+            const { err } = await runFrom(['shop.example', '--out', dir, '--debug'], {
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(err).toContain('authenticate: start');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('redacts a secret-shaped value from diagnostics, and the credential never appears', async () => {
+        // A receipt id that matches a credential format must not survive into the trace.
+        const secretShapedId = 'sk' + '_live_' + 'A'.repeat(28);
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-fence-'));
+        try {
+            const { err } = await runFrom(['shop.example', '--out', dir, '--verbose'], {
+                resolver: resolverWith(fakeAdapter({ listed: [ref(secretShapedId, 5)] })),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+                resolveCredential: () => Promise.resolve(new Secret('sk' + '_live_' + 'B'.repeat(28))),
+            });
+
+            expect(err).toContain('authenticate: start');
+            expect(err).toContain('suppressed');
+            // No secret-shaped value reaches any diagnostic line.
+            expect(scanForSecrets([{ path: 'verbose-stderr', content: err }])).toEqual([]);
+            expect(err).not.toContain(secretShapedId);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});

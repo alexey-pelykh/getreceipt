@@ -34,6 +34,14 @@ export type {
     CollectResult,
     CollectSucceeded,
 } from './collect.js';
+export { toOperationResult } from './operation-spec.js';
+export type {
+    OperationOutcome,
+    OperationResult,
+    OperationSpec,
+    OperationWindow,
+    ReceiptSummary,
+} from './operation-spec.js';
 export type { ReceiptWriter } from './writer.js';
 export { asReceiptArtifact } from './artifact.js';
 export type { ArtifactDescriptor, ReceiptArtifact } from './artifact.js';
