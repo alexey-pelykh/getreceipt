@@ -29,6 +29,15 @@ export { BUNDLED_ADAPTERS, createDefaultRegistry, createDefaultResolver } from '
 export { processStreamsIO } from './io.js';
 export type { CliIO } from './io.js';
 
+export {
+    consentExitCodeFor,
+    ConsentRequiredError,
+    createConsentGate,
+    decideConsent,
+    ensureConsent,
+} from './consent-gate.js';
+export type { ConsentBlockReason, ConsentDecision, ConsentGate, ConsentGateDeps } from './consent-gate.js';
+
 export { runOperation, OperationError } from './operation-runner.js';
 export type { OperationErrorKind, OperationRunnerDeps } from './operation-runner.js';
 

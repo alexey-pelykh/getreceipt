@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { scanForSecrets, Secret } from '@getreceipt/auth';
+import { createConsentStore, scanForSecrets, Secret } from '@getreceipt/auth';
 import {
     FilesystemReceiptWriter,
     ReauthRequiredError,
@@ -22,8 +22,9 @@ import type {
     SourceAdapter,
 } from '@getreceipt/core';
 import { fromCredentialContext } from '@getreceipt/auth';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { ConsentRequiredError, createConsentGate } from './consent-gate.js';
 import { createFromCommand } from './from-command.js';
 import type { FromCommandEnv } from './from-command.js';
 
@@ -106,6 +107,9 @@ async function runFrom(args: string[], overrides: Partial<FromCommandEnv> = {}):
     const err: string[] = [];
     const env: Partial<FromCommandEnv> = {
         io: { writeOut: (t) => out.push(t), writeErr: (t) => err.push(t) },
+        // Consent is its own concern (consent-gate.test.ts); pass it through here so these tests
+        // exercise the collection path. Tests that target the gate override this seam.
+        consent: { ensure: () => Promise.resolve() },
         resolveConfigPath: () => configFixture,
         resolver: resolverWith(fakeAdapter()),
         resolveCredential: (value) =>
@@ -344,6 +348,94 @@ describe('from — human output names the outcome on a non-success run', () => {
         });
         expect(error).toMatchObject({ exitCode: 5 });
         expect(out).toContain('reauth-required');
+    });
+});
+
+describe('from — consent gate (#32)', () => {
+    it('blocks with exit 6 and never fetches when consent is required non-interactively', async () => {
+        const collect = vi.fn(
+            (): Promise<CollectResult> =>
+                Promise.resolve({
+                    outcome: 'succeeded',
+                    source: 'shop.example',
+                    window: { from: new Date(), to: new Date() },
+                    written: [],
+                    skipped: [],
+                }),
+        );
+        const { error } = await runFrom(['shop.example'], {
+            consent: { ensure: () => Promise.reject(new ConsentRequiredError('non-interactive')) },
+            collect,
+        });
+        expect(error).toMatchObject({ exitCode: 6, code: 'getreceipt.from.consent-non-interactive' });
+        expect(collect).not.toHaveBeenCalled();
+    });
+
+    it('exits 7 when the user declines consent', async () => {
+        const { error } = await runFrom(['shop.example'], {
+            consent: { ensure: () => Promise.reject(new ConsentRequiredError('declined')) },
+        });
+        expect(error).toMatchObject({ exitCode: 7, code: 'getreceipt.from.consent-declined' });
+    });
+
+    // These two assert ONLY the flag wiring; stub `collect` so the gate-passed run does no real fetch/write.
+    const noopCollect = (): Promise<CollectResult> =>
+        Promise.resolve({
+            outcome: 'succeeded',
+            source: 'shop.example',
+            window: { from: new Date(), to: new Date() },
+            written: [],
+            skipped: [],
+        });
+
+    it('passes --accept-consent through to the gate as acceptFlag', async () => {
+        const ensure = vi.fn(() => Promise.resolve());
+        await runFrom(['shop.example', '--accept-consent'], { consent: { ensure }, collect: noopCollect });
+        expect(ensure).toHaveBeenCalledWith({ acceptFlag: true });
+    });
+
+    it('defaults acceptFlag to false without the flag', async () => {
+        const ensure = vi.fn(() => Promise.resolve());
+        await runFrom(['shop.example'], { consent: { ensure }, collect: noopCollect });
+        expect(ensure).toHaveBeenCalledWith({ acceptFlag: false });
+    });
+
+    it('end-to-end with the REAL gate + file store: blocks (6) non-interactively, then --accept-consent records and persists', async () => {
+        // vitest is non-interactive (no TTY), so the real gate exercises the CI / piped path.
+        const dir = mkdtempSync(join(tmpdir(), 'gr-consent-e2e-'));
+        const consentPath = join(dir, 'consent.json');
+        try {
+            const notices: string[] = [];
+            const consent = createConsentGate({
+                store: createConsentStore(consentPath),
+                io: { writeOut: () => {}, writeErr: (t) => notices.push(t) },
+            });
+
+            // No record + non-interactive + no flag → blocked with exit 6; nothing recorded, nothing fetched.
+            const blocked = await runFrom(['shop.example', '--out', dir], { consent });
+            expect(blocked.error).toMatchObject({ exitCode: 6 });
+            expect(existsSync(consentPath)).toBe(false);
+            expect(notices.join('')).toContain('--accept-consent'); // tells the user how to proceed
+
+            // --accept-consent records the acknowledgment (genuinely on disk) and the run proceeds.
+            notices.length = 0;
+            const accepted = await runFrom(['shop.example', '--out', dir, '--accept-consent'], {
+                consent,
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(accepted.error).toBeUndefined();
+            expect(existsSync(consentPath)).toBe(true);
+            expect(notices.join('')).toContain('I confirm that I am collecting'); // disclosure shown before recording
+
+            // Persistence: a later run is no longer gated — even WITHOUT the flag.
+            const after = await runFrom(['shop.example', '--out', dir], {
+                consent,
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(after.error).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
 

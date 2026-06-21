@@ -13,6 +13,7 @@ import type {
 import { Command, CommanderError } from 'commander';
 
 import { DEFAULT_PROFILE } from './config-render.js';
+import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
@@ -28,6 +29,8 @@ import { parseWindow } from './window.js';
  */
 export interface FromCommandEnv {
     readonly io: CliIO;
+    /** Runtime consent pre-flight (#32): gates the fetch BEFORE any service is touched with credentials. */
+    readonly consent: ConsentGate;
     readonly resolveConfigPath: () => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Resolves a requested domain to its adapter. Defaults to the bundled-adapter resolver ({@link createDefaultResolver}). */
@@ -47,12 +50,14 @@ interface FromOptions {
     readonly json?: boolean;
     readonly verbose?: boolean;
     readonly debug?: boolean;
+    readonly acceptConsent?: boolean;
 }
 
 function defaultEnv(): FromCommandEnv {
     const credentialResolver = new CredentialResolver();
     return {
         io: processStreamsIO(),
+        consent: createConsentGate(),
         resolveConfigPath: defaultConfigPath,
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
@@ -89,7 +94,18 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
         .option('--json', 'emit the structured operation result as JSON')
         .option('--verbose', 'stream secret-fenced stage diagnostics to stderr')
         .option('--debug', 'alias for --verbose')
+        .option('--accept-consent', 'record the one-time consent acknowledgment non-interactively (for CI / piped use)')
         .action(async (domain: string, options: FromOptions) => {
+            // Consent gate FIRST — before any service is touched with the user's credentials (#32).
+            try {
+                await env.consent.ensure({ acceptFlag: options.acceptConsent === true });
+            } catch (error) {
+                if (error instanceof ConsentRequiredError) {
+                    throw exitWith(consentExitCodeFor(error.reason), `getreceipt.from.consent-${error.reason}`);
+                }
+                throw error;
+            }
+
             const window = parseWindow(env.io, options.since, options.until, 'getreceipt.from');
             const profile = options.profile ?? DEFAULT_PROFILE;
             const spec: OperationSpec =

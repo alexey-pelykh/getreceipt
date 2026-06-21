@@ -10,6 +10,8 @@ export type {
     SecretRef,
     SecurityWarning,
 } from './config.js';
+export { createConsentStore, defaultConsentPath, FileConsentStore } from './consent-store.js';
+export type { ConsentRecord, ConsentStore } from './consent-store.js';
 export { AuthOrchestrator } from './auth-orchestrator.js';
 export type { AuthDriver } from './auth-orchestrator.js';
 export { PasswordAuthDriver } from './password-driver.js';

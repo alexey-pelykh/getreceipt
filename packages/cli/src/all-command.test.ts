@@ -12,11 +12,12 @@ import type {
     DateRange,
     SourceAdapter,
 } from '@getreceipt/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createAllCommand } from './all-command.js';
 import type { AllCommandEnv } from './all-command.js';
 import type { BatchReport } from './all-render.js';
+import { ConsentRequiredError } from './consent-gate.js';
 
 const configFixture = fileURLToPath(new URL('./__fixtures__/multi.getreceipt.yaml', import.meta.url));
 const NOW = new Date('2024-06-01T00:00:00.000Z');
@@ -70,6 +71,9 @@ async function runAll(args: string[], overrides: Partial<AllCommandEnv> = {}): P
     const err: string[] = [];
     const env: Partial<AllCommandEnv> = {
         io: { writeOut: (t) => out.push(t), writeErr: (t) => err.push(t) },
+        // Consent is its own concern (consent-gate.test.ts); pass it through here so these tests
+        // exercise the batch path. Tests that target the gate override this seam.
+        consent: { ensure: () => Promise.resolve() },
         resolveConfigPath: () => configFixture,
         resolver: resolverWith('shop.example'),
         resolveCredential: (value) =>
@@ -124,6 +128,31 @@ describe('all — runs every configured source, continue-on-error (AC #1)', () =
         expect(out).toMatch(/shop\.example — succeeded/);
         expect(out).toMatch(/store\.example — error \(unexpected\)/);
         expect(error).toMatchObject({ exitCode: 3 });
+    });
+});
+
+describe('all — consent gate (#32)', () => {
+    it('blocks with exit 6 and never fetches when consent is required non-interactively', async () => {
+        const collect = vi.fn((request: CollectRequest) => Promise.resolve(succeededFor(request)));
+        const { error } = await runAll([], {
+            consent: { ensure: () => Promise.reject(new ConsentRequiredError('non-interactive')) },
+            collect,
+        });
+        expect(error).toMatchObject({ exitCode: 6, code: 'getreceipt.all.consent-non-interactive' });
+        expect(collect).not.toHaveBeenCalled();
+    });
+
+    it('runs the gate exactly ONCE before the fan-out (not once per source)', async () => {
+        const ensure = vi.fn(() => Promise.resolve());
+        await runAll([], { consent: { ensure } }); // default fixture profile has two sources
+        expect(ensure).toHaveBeenCalledOnce();
+        expect(ensure).toHaveBeenCalledWith({ acceptFlag: false });
+    });
+
+    it('passes --accept-consent through to the gate', async () => {
+        const ensure = vi.fn(() => Promise.resolve());
+        await runAll(['--accept-consent'], { consent: { ensure } });
+        expect(ensure).toHaveBeenCalledWith({ acceptFlag: true });
     });
 });
 

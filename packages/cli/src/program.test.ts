@@ -90,6 +90,7 @@ describe('createProgram — routes to the from verb with the injected env', () =
         const { error } = await runProgram(['from', 'no-such.example'], {
             fromEnv: {
                 io: { writeOut: () => {}, writeErr: (t) => err.push(t) },
+                consent: { ensure: () => Promise.resolve() },
                 // Inject an empty resolver: the only way the message below appears is if the program
                 // routed to `from` AND `from` used THIS env (resolver + io), proving env injection.
                 resolver: new SourceResolver(new SourceAdapterRegistry()),
@@ -129,6 +130,7 @@ function workingFromEnv(collected: CollectResult | (() => Promise<CollectResult>
     };
     return {
         io: { writeOut: () => {}, writeErr: () => {} },
+        consent: { ensure: () => Promise.resolve() },
         resolveConfigPath: () => '/test/.getreceipt.yaml',
         loadConfig: () => config,
         resolver: new SourceResolver(registry),
@@ -160,6 +162,7 @@ describe('runCli — exit-code mapping (the bin core; AC #3 at the program level
             await runCli(['from', 'no-such.example'], {
                 fromEnv: {
                     io: { writeOut: () => {}, writeErr: () => {} },
+                    consent: { ensure: () => Promise.resolve() },
                     resolver: new SourceResolver(new SourceAdapterRegistry()),
                 },
             }),

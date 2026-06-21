@@ -14,3 +14,17 @@ export function describeMcp(): string {
 export function mcpServerDescription(): string {
     return `getreceipt MCP server — fetch your own receipts from supported sources. ${UNOFFICIAL_DISCLAIMER}`;
 }
+
+/**
+ * The compact per-tool disclaimer (#32): every collect tool's description must carry the unofficial /
+ * own-accounts-only posture, so an MCP client surfaces it at the point of use — not only in the server
+ * metadata. Defined now, before the real collect tools land (the same "ship the text on the MCP channel
+ * early" move as {@link mcpServerDescription}), so the tools have one shared tag to append. The FULL
+ * disclaimer is {@link UNOFFICIAL_DISCLAIMER} (server metadata); this is the short inline per-tool tag.
+ */
+export const MCP_TOOL_DISCLAIMER = 'Unofficial; your own accounts only.';
+
+/** Append {@link MCP_TOOL_DISCLAIMER} to a collect tool's description, so every tool carries the posture by construction. */
+export function withToolDisclaimer(description: string): string {
+    return `${description} ${MCP_TOOL_DISCLAIMER}`;
+}

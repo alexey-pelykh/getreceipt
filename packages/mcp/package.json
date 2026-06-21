@@ -29,12 +29,14 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
     "lint": "eslint ."
   },
   "dependencies": {
     "@getreceipt/core": "workspace:^"
   },
   "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
     "@types/node": "catalog:"
   },
   "publishConfig": {
