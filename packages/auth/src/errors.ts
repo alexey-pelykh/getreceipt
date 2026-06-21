@@ -74,6 +74,34 @@ export class CredentialResolutionError extends Error {
 }
 
 /**
+ * Why a {@link SessionStoreError} happened. Lets a caller branch on the cause
+ * without parsing the message:
+ *  - `no-passphrase` — the encrypted-file fallback has no passphrase configured to seal/open sessions;
+ *  - `decryption-failed` — a session envelope's passphrase is wrong or the file is corrupt;
+ *  - `malformed` — the stored bytes are not a recognizable session envelope / session;
+ *  - `no-backend` — neither a keyring nor a fallback directory was provided to {@link createSessionStore}.
+ */
+export type SessionStoreFailureReason = 'no-passphrase' | 'decryption-failed' | 'malformed' | 'no-backend';
+
+/**
+ * Thrown when a session cannot be persisted, loaded, or unlocked. Like every error
+ * in this subsystem, it deliberately NEVER carries the session token or any other
+ * credential material — only the offending key, a human-readable message, and a
+ * machine-readable {@link reason}.
+ */
+export class SessionStoreError extends Error {
+    override readonly name = 'SessionStoreError';
+
+    constructor(
+        message: string,
+        /** The machine-readable cause; see {@link SessionStoreFailureReason}. */
+        readonly reason: SessionStoreFailureReason,
+    ) {
+        super(message);
+    }
+}
+
+/**
  * Why an {@link AuthenticationError} happened. Lets a caller branch on the cause
  * without parsing the message:
  *  - `invalid-credentials` — the source replied but rejected the email/password (HTTP 401/403);

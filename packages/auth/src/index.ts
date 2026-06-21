@@ -27,11 +27,24 @@ export type { ResolvedCredentials } from './credential-context.js';
 export { sealEnvelope } from './secret-envelope.js';
 export { assertNoSecretLeaks, scanForSecrets, SecretLeakDetectedError } from './secret-leakage.js';
 export type { ScannableFile, SecretLeak } from './secret-leakage.js';
+export type { SessionStore, StoredSession } from './session.js';
+export { ReauthDetector } from './reauth-detector.js';
+export type { ReauthAssessment, ReauthDetectorOptions } from './reauth-detector.js';
+export {
+    createSessionStore,
+    EncryptedFileSessionStore,
+    InMemoryKeyring,
+    KeyringSessionStore,
+} from './session-store.js';
+export type { CreateSessionStoreOptions, EncryptedFileSessionStoreOptions, Keyring } from './session-store.js';
+export { reuseStoredSession, toReauthRequiredError } from './session-reuse.js';
+export type { ReuseStoredSessionRequest, SessionReuse } from './session-reuse.js';
 export {
     AuthenticationError,
     ConfigError,
     CredentialBackendUnavailableError,
     CredentialResolutionError,
+    SessionStoreError,
     UnsupportedAuthKindError,
 } from './errors.js';
-export type { AuthenticationFailureReason, CredentialResolutionReason } from './errors.js';
+export type { AuthenticationFailureReason, CredentialResolutionReason, SessionStoreFailureReason } from './errors.js';
