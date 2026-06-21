@@ -7,7 +7,7 @@ The command surface for [getreceipt](https://github.com/alexey-pelykh/getreceipt
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by any of the services it integrates with. See the [project README](https://github.com/alexey-pelykh/getreceipt#readme) for the full disclaimer.
 
-> **Status: `0.1.0`.** Ships the `from` collection verb (`createFromCommand()`) and the read-only `config` surface (`show` / `validate` / `path`, via `createConfigCommand()`), assembled into the full program by `createProgram()`. The remaining verbs land in later issues. Source adapters do not ship yet, so `from` resolves an empty registry until they do.
+> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the read-only `config` surface (`show` / `validate` / `path`) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
 
 ## `from <domain>`
 
@@ -26,6 +26,30 @@ Resolves the source adapter for `<domain>`, loads the credentials configured und
 | `3`  | Partial — some receipts were written, then the run failed before completing.                                                                                 |
 | `4`  | Failed — the run failed with no receipts written.                                                                                                            |
 | `5`  | Re-auth required — the source needs fresh credentials; re-authenticate and retry.                                                                            |
+
+## `all`
+
+```sh
+getreceipt all [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--concurrency <n>] [--json] [--verbose]
+```
+
+Runs `collect()` for **every** source configured under `--profile`, continuing past a failing source and printing a per-source report. Fan-out is capped by `--concurrency` (default `3`) so heavier/browser sources never run unbounded. `--json` emits the structured batch report (the same shape the MCP surface will return). The exit code reflects the batch outcome: `0` all sources succeeded, `3` some succeeded (partial), `4` none succeeded (`1` for a usage error — unreadable config, undefined profile, or a bad `--concurrency`).
+
+## `sources`
+
+```sh
+getreceipt sources [--profile <name>] [--json]
+```
+
+Lists every registered source adapter with its declared capabilities (auth kind, transport, artifact mode), its verification state, and whether it is configured under `--profile`. Read-only; a config that cannot be read is non-fatal (every source is shown `not-configured`). `--json` emits the structured report.
+
+## `status`
+
+```sh
+getreceipt status [--profile <name>] [--json]
+```
+
+Reports the stored-session / auth status of every source configured under `--profile`: `none` (nothing stored), `valid`, `expired`, `locked` (stored but unreadable), or `unknown` (the session backend cannot be consulted). It never reveals a token — only the session disposition and, when known, a non-secret expiry. `--json` emits the structured report.
 
 ## Install
 

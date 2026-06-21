@@ -39,11 +39,11 @@ async function runProgram(args: string[], options: ProgramOptions = {}): Promise
 }
 
 describe('createProgram — assembly', () => {
-    it('wires the from and config verbs', () => {
+    it('wires the from, all, sources, status, and config verbs', () => {
         const names = createProgram()
             .commands.map((c) => c.name())
             .sort();
-        expect(names).toEqual(['config', 'from']);
+        expect(names).toEqual(['all', 'config', 'from', 'sources', 'status']);
     });
 });
 
