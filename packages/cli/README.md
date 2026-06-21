@@ -7,7 +7,7 @@ The command surface for [getreceipt](https://github.com/alexey-pelykh/getreceipt
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by any of the services it integrates with. See the [project README](https://github.com/alexey-pelykh/getreceipt#readme) for the full disclaimer.
 
-> **Status: `0.1.0` scaffold.** No commands yet — they land in later issues.
+> **Status: `0.1.0`.** Ships the read-only `config` command surface (`show` / `validate` / `path`) via `createConfigCommand()`; the remaining commands land in later issues. Command surfaces are composed onto the `getreceipt` binary as that program is assembled.
 
 ## Install
 

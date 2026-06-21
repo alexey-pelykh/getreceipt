@@ -5,3 +5,7 @@ import { PACKAGE_NAME as CORE } from '@getreceipt/core';
 export function describeCli(): string {
     return `@getreceipt/cli (backed by ${CORE})`;
 }
+
+export { createConfigCommand } from './config-command.js';
+export type { CliIO, ConfigCommandEnv } from './config-command.js';
+export type { ConfigPathInfo, ConfigValidateVerdict, ConfigWarningView } from './config-render.js';
