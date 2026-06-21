@@ -35,6 +35,10 @@ export type {
     CollectSucceeded,
 } from './collect.js';
 export type { ReceiptWriter } from './writer.js';
+export { asReceiptArtifact } from './artifact.js';
+export type { ArtifactDescriptor, ReceiptArtifact } from './artifact.js';
+export { FilesystemReceiptWriter } from './filesystem-writer.js';
+export type { FilesystemReceiptWriterOptions } from './filesystem-writer.js';
 export { Semaphore } from './semaphore.js';
 export { RateLimiter } from './rate-limiter.js';
 export type { RateLimiterOptions } from './rate-limiter.js';
