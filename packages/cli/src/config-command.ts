@@ -15,12 +15,7 @@ import {
     resolveActiveProfile,
     type ConfigPathInfo,
 } from './config-render.js';
-
-/** Where the command writes; injectable so output is captured in tests instead of hitting the process streams. */
-export interface CliIO {
-    readonly writeOut: (text: string) => void;
-    readonly writeErr: (text: string) => void;
-}
+import { processStreamsIO, type CliIO } from './io.js';
 
 /**
  * The command's collaborators. Every field has a production default, so
@@ -39,10 +34,7 @@ export interface ConfigCommandEnv {
 
 function defaultEnv(): ConfigCommandEnv {
     return {
-        io: {
-            writeOut: (text) => void process.stdout.write(text),
-            writeErr: (text) => void process.stderr.write(text),
-        },
+        io: processStreamsIO(),
         resolveConfigPath: defaultConfigPath,
         loadConfig: authLoadConfig,
         fileExists: existsSync,

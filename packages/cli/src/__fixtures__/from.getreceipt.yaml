@@ -1,0 +1,18 @@
+# Config exercised by the `from`-command tests. `shop.example` matches the fake
+# adapter's canonical domain; the inline secrets are obvious non-secrets (the #7
+# clean-tree scan ignores them) and the tests inject the credential resolver anyway.
+profiles:
+  default:
+    sources:
+      shop.example:
+        auth:
+          kind: password
+          username: alice@shop.example
+          secret: hunter2-not-real
+  work:
+    sources:
+      shop.example:
+        auth:
+          kind: password
+          username: bob@shop.example
+          secret: hunter2-work-only
