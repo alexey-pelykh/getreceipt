@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { OperationResult } from '@getreceipt/core';
 
-import { EXIT_CODES } from './from-render.js';
+import { EXIT_CODES, reauthRemedy } from './from-render.js';
 
 /**
  * One source's slot in a batch run. Either it ran — carrying the same {@link OperationResult}
@@ -87,6 +87,10 @@ function sourceLine(entry: BatchSourceResult): string {
     }
     if (result.reason !== undefined) {
         parts.push(result.reason);
+    }
+    // Name the remedy verb (#17) so a batch user knows exactly which source to re-`login`.
+    if (result.outcome === 'reauth-required') {
+        parts.push(reauthRemedy(result.source));
     }
     return parts.join('   ');
 }

@@ -6,6 +6,7 @@ import type { ArtifactHandle, AuthHandle, CollectResult, ReceiptRef, SourceAdapt
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { FromCommandEnv } from './from-command.js';
+import { reauthRemedy } from './from-render.js';
 import { createProgram, runCli, type ProgramOptions } from './program.js';
 
 interface RunResult {
@@ -39,11 +40,18 @@ async function runProgram(args: string[], options: ProgramOptions = {}): Promise
 }
 
 describe('createProgram — assembly', () => {
-    it('wires the from, all, sources, status, and config verbs', () => {
+    it('wires the from, all, sources, status, login, logout, and config verbs', () => {
         const names = createProgram()
             .commands.map((c) => c.name())
             .sort();
-        expect(names).toEqual(['all', 'config', 'from', 'sources', 'status']);
+        expect(names).toEqual(['all', 'config', 'from', 'login', 'logout', 'sources', 'status']);
+    });
+
+    it('the verb named in the reauth-required remedy is a registered command (#17 [AC3])', () => {
+        // Close the loop: the remedy tells the user to run a verb, and that verb must actually exist.
+        const verb = /getreceipt (\w+)/.exec(reauthRemedy('grandfrais.com'))?.[1];
+        expect(verb).toBe('login');
+        expect(createProgram().commands.map((c) => c.name())).toContain(verb);
     });
 });
 

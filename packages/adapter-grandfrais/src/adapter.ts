@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError, fromCredentialContext, PasswordAuthDriver } from '@getreceipt/auth';
-import type { Secret } from '@getreceipt/auth';
+import type { Secret, SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
 import { ReauthRequiredError, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
@@ -53,7 +53,7 @@ interface GrandfraisSession {
  * as multiple {@link ReceiptRef}s (one per AVAILABLE document) minted by `list`; a receipt
  * with no available documents simply contributes none, so "zero documents" is a success.
  */
-export class GrandfraisAdapter implements SourceAdapter {
+export class GrandfraisAdapter implements SourceAdapter, SessionPersistableAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
@@ -82,6 +82,11 @@ export class GrandfraisAdapter implements SourceAdapter {
     async fetch(auth: AuthHandle, ref: ReceiptRef): Promise<ArtifactHandle> {
         const { token } = fromAuthHandle(auth);
         return fetchDocument(token, ref);
+    }
+
+    toStoredSession(auth: AuthHandle): StoredSession {
+        // Re-home the fenced token from the handle this adapter minted into the persistable shape (#17).
+        return { token: fromAuthHandle(auth).token };
     }
 }
 

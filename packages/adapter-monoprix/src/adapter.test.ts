@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 
-import { asCredentialContext, AuthenticationError, Secret } from '@getreceipt/auth';
+import { asCredentialContext, AuthenticationError, isSessionPersistable, Secret } from '@getreceipt/auth';
 import {
     asReceiptArtifact,
     collect,
@@ -205,6 +205,20 @@ describe('MonoprixAdapter — AC2: authenticate (two-step token mint)', () => {
         const error: unknown = await monoprixAdapter.authenticate(incomplete).catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(AuthenticationError);
+    });
+
+    it('projects the minted session (not the grant) into a persistable StoredSession (#17 login ceremony)', async () => {
+        server.use(loginOk(), mintOk());
+
+        const auth = await monoprixAdapter.authenticate(creds());
+
+        expect(isSessionPersistable(monoprixAdapter)).toBe(true);
+        if (isSessionPersistable(monoprixAdapter)) {
+            const session = monoprixAdapter.toStoredSession(auth);
+            // The persisted token is the MINTED session token, never the intermediate grant.
+            expect(session.token.expose()).toBe(TOKEN);
+            expect(session.token.expose()).not.toBe(GRANT);
+        }
     });
 });
 

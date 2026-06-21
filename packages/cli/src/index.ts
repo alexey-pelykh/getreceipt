@@ -24,6 +24,12 @@ export type { StatusCommandEnv } from './status-command.js';
 export { createConfigCommand } from './config-command.js';
 export type { ConfigCommandEnv } from './config-command.js';
 
+export { createLoginCommand } from './login-command.js';
+export type { LoginCommandEnv } from './login-command.js';
+
+export { createLogoutCommand } from './logout-command.js';
+export type { LogoutCommandEnv } from './logout-command.js';
+
 export { BUNDLED_ADAPTERS, createDefaultRegistry, createDefaultResolver } from './default-sources.js';
 
 export { processStreamsIO } from './io.js';
@@ -41,7 +47,7 @@ export type { ConsentBlockReason, ConsentDecision, ConsentGate, ConsentGateDeps 
 export { runOperation, OperationError } from './operation-runner.js';
 export type { OperationErrorKind, OperationRunnerDeps } from './operation-runner.js';
 
-export { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
+export { EXIT_CODES, exitCodeFor, reauthRemedy, renderResultsTable } from './from-render.js';
 
 export { batchExitCode, deriveBatchOutcome, renderAllJson, renderAllText } from './all-render.js';
 export type { BatchOutcome, BatchReport, BatchSourceResult } from './all-render.js';
