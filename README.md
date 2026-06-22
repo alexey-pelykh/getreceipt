@@ -158,14 +158,14 @@ verify the no-telemetry claim yourself.
 
 ## Packages
 
-| Package                                   | Published | Purpose                                                                                              |
-| ----------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| [`@getreceipt/core`](packages/core)       | ✅        | Pipeline, registry, resolvers (the engine).                                                          |
-| [`@getreceipt/cli`](packages/cli)         | ✅        | CLI command surface.                                                                                 |
-| [`@getreceipt/mcp`](packages/mcp)         | ✅        | MCP server + tools.                                                                                  |
-| [`getreceipt`](packages/getreceipt)       | ✅        | Umbrella: carries the `bin` and bundles cli + mcp + core into a self-contained `npx`/global install. |
-| [`@getreceipt/e2e`](packages/e2e)         | —         | End-to-end / integration smoke tests.                                                                |
-| [`@getreceipt/testing`](packages/testing) | —         | Internal test support (shared MSW server + lifecycle).                                               |
+| Package                                           | Published | Purpose                                                                                              |
+| ------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| [`@getreceipt/core`](packages/core)               | ✅        | Pipeline, registry, resolvers (the engine).                                                          |
+| [`@getreceipt/cli`](packages/cli)                 | ✅        | CLI command surface.                                                                                 |
+| [`@getreceipt/mcp`](packages/mcp)                 | ✅        | MCP server + tools.                                                                                  |
+| [`getreceipt`](packages/getreceipt)               | ✅        | Umbrella: carries the `bin` and bundles cli + mcp + core into a self-contained `npx`/global install. |
+| [`@getreceipt/conformance`](packages/conformance) | —         | Conformance suite: contract, published-artifact, and repo-posture tests + a gated live e2e harness.  |
+| [`@getreceipt/testing`](packages/testing)         | —         | Internal test support (shared MSW server + lifecycle).                                               |
 
 Internal dependencies are linked with pnpm `workspace:^`.
 

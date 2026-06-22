@@ -172,20 +172,7 @@ importers:
         specifier: 'catalog:'
         version: 8.5.1(postcss@8.5.15)(typescript@6.0.3)(yaml@2.9.0)
 
-  packages/core:
-    dependencies:
-      zod:
-        specifier: 'catalog:'
-        version: 4.4.3
-    devDependencies:
-      '@getreceipt/testing':
-        specifier: workspace:^
-        version: link:../testing
-      '@types/node':
-        specifier: 'catalog:'
-        version: 26.0.0
-
-  packages/e2e:
+  packages/conformance:
     devDependencies:
       '@getreceipt/auth':
         specifier: workspace:^
@@ -214,6 +201,19 @@ importers:
       yaml:
         specifier: 'catalog:'
         version: 2.9.0
+
+  packages/core:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@getreceipt/testing':
+        specifier: workspace:^
+        version: link:../testing
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.0.0
 
   packages/getreceipt:
     devDependencies:

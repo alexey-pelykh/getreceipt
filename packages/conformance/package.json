@@ -1,13 +1,13 @@
 {
-  "name": "@getreceipt/e2e",
+  "name": "@getreceipt/conformance",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end tests for the bundled umbrella: posture/integration smoke tests plus the gated live-source verification harness.",
+  "description": "Conformance suite for the workspace: contract, published-artifact, and repo/governance-posture tests, plus the structurally-fenced live-source verification harness (run via `test:e2e`).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
-    "directory": "packages/e2e"
+    "directory": "packages/conformance"
   },
   "engines": {
     "node": ">=24"
@@ -15,6 +15,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts",
     "lint": "eslint ."
   },
   "devDependencies": {

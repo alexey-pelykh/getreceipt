@@ -1,0 +1,23 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "//": "The posture/contract tests in this package read repo-level files OUTSIDE the package (.github/**, root docs + manifests). Turbo's default input hash covers only this package's own files + globalDependencies, so a change to e.g. a workflow file would leave a stale-green cached `test` result. The inputs below add those repo-level files to the hash. $TURBO_DEFAULT$ keeps the package's own files in the hash; $TURBO_ROOT$ escapes the package to reference repo-root paths. dependsOn/outputs are redeclared because a package task definition replaces (not field-merges) the root's.",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/.github/**",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/pnpm-workspace.yaml",
+        "$TURBO_ROOT$/README.md",
+        "$TURBO_ROOT$/docs/**",
+        "$TURBO_ROOT$/SECURITY.md",
+        "$TURBO_ROOT$/PRIVACY.md",
+        "$TURBO_ROOT$/CONTRIBUTING.md",
+        "$TURBO_ROOT$/CODE_OF_CONDUCT.md"
+      ]
+    }
+  }
+}

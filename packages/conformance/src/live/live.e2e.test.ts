@@ -8,8 +8,10 @@ import type { LiveRun } from './harness.js';
 
 /**
  * THE live test — the only one here that contacts a real service, and only when an operator
- * has explicitly opted in with real credentials (#19 AC1). In CI it is SKIPPED cleanly
- * (`it.skipIf` on the pure gate): no opt-in flag → reported skipped, never failed, never a
+ * has explicitly opted in with real credentials (#19 AC1). It is fenced OUT of the CI/conformance
+ * run structurally: the default `vitest.config.ts` excludes `*.e2e.test.ts`, so CI never even
+ * collects it. It runs only via `test:e2e` (`vitest.e2e.config.ts`), and there it still self-gates —
+ * `it.skipIf` on the pure gate means no opt-in flag → reported skipped, never failed, never a
  * fabricated pass. The mechanics this leans on — the gate, the verdict mapping, the harness
  * wiring — are proven independently by the genuinely-executing self-tests alongside it.
  *
@@ -18,7 +20,7 @@ import type { LiveRun } from './harness.js';
  *   GETRECEIPT_E2E_SOURCE=grandfrais.com \
  *   GETRECEIPT_E2E_USERNAME='you@example.com' \
  *   GETRECEIPT_E2E_SECRET='op://Private/grandfrais/password' \
- *   pnpm --filter @getreceipt/e2e test
+ *   pnpm --filter @getreceipt/conformance test:e2e
  */
 
 const gate = resolveLiveGate(process.env);
