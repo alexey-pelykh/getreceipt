@@ -20,61 +20,96 @@ import { describe, expect, it } from 'vitest';
 
 import { GrandfraisAdapter, grandfraisAdapter } from './index.js';
 
-// Everything below runs against MSW-mocked HTTP — there is no live grandfrais.com in CI, so
-// these endpoints/shapes are a SYNTHETIC best-effort contract (the real one is private). All
-// fixtures are inline + synthetic with obvious leak-sentinel secrets (AC6): zero raw capture.
-const BASE = 'https://www.grandfrais.com';
-const LOGIN = `${BASE}/api/account/login`;
-const RECEIPTS = `${BASE}/api/account/receipts`;
-const DOCUMENT = `${BASE}/api/account/receipts/:receiptId/documents/:documentId`;
+// Everything below runs against MSW-mocked HTTP — there is no live bff.grandfrais.com in CI, so these
+// endpoints/shapes are the in-repo contract (wire.ts), exercised against synthetic fixtures derived from
+// that schema (#84/#88). All fixtures are inline + synthetic with obvious leak-sentinel secrets: zero raw
+// capture. The live oracle (#89) is what promotes the adapter past `unverified`.
+const BASE = 'https://bff.grandfrais.com';
+const LOGIN = `${BASE}/v1/users/login`;
+const RECEIPTS = `${BASE}/v1/receipts`;
+const DETAIL = `${BASE}/v1/receipts/:receiptId`;
+const PDF = `${BASE}/v1/receipts/:receiptId/pdf/:variant`;
 
 const USERNAME = 'shopper@grandfrais.test';
 const PASSWORD = 'gf-pa55word-LEAK-SENTINEL';
 const TOKEN = 'gf-session-token-LEAK-SENTINEL';
+const REFRESH = 'gf-refresh-token-LEAK-SENTINEL';
+const CUSTOMER_ID = 'gf-customer-1';
+
+const SHOP_NAME = 'Grand Frais Lyon';
+const SHOP_CODE = 'GF-LYON-01';
+const AMOUNT = 42.5;
 
 /** A wide window that admits every in-range synthetic receipt; the inclusivity test uses a precise one. */
 const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
 const ISSUED = '2026-06-01T10:00:00.000Z';
 
-interface WireDoc {
-    id: string;
-    available: boolean;
-    kind?: string;
-}
 interface WireReceipt {
-    id: string;
-    issuedAt: string;
-    title?: string;
-    documents: WireDoc[];
+    receiptId: string;
+    checkOutDate: string;
+    shopCode: string;
+    shopName: string;
+    amount: number;
 }
-interface WirePage {
+interface WireListPage {
     receipts: WireReceipt[];
-    nextCursor?: string;
+    paginationToken?: string;
+}
+interface WireFlags {
+    sales?: boolean;
+    creditCard?: boolean;
 }
 
 function creds(): CredentialContext {
     return asCredentialContext({ kind: 'password', username: USERNAME, secret: new Secret(PASSWORD) });
 }
 
-function loginOk() {
-    return http.post(LOGIN, () => HttpResponse.json({ token: TOKEN }));
+/** A well-formed listing item; override any field (e.g. `checkOutDate`) per test. */
+function receipt(receiptId: string, overrides: Partial<WireReceipt> = {}): WireReceipt {
+    return { receiptId, checkOutDate: ISSUED, shopCode: SHOP_CODE, shopName: SHOP_NAME, amount: AMOUNT, ...overrides };
 }
 
-/** Serve listing pages by cursor: the first request (no cursor) gets page 0, `?cursor=N` gets page N. */
-function receiptsPages(pages: readonly WirePage[], onCursor?: (cursor: string | null) => void) {
+/** The real login returns `201 { customerId, token, refreshToken }`; the password driver reads only `token`. */
+function loginOk() {
+    return http.post(LOGIN, () =>
+        HttpResponse.json({ customerId: CUSTOMER_ID, token: TOKEN, refreshToken: REFRESH }, { status: 201 }),
+    );
+}
+
+/** Serve listing pages by pagination token: the first request (no token) gets page 0, `?paginationToken=N` gets page N. */
+function receiptsPages(pages: readonly WireListPage[], onToken?: (token: string | null) => void) {
     return http.get(RECEIPTS, ({ request }) => {
-        const cursor = new URL(request.url).searchParams.get('cursor');
-        onCursor?.(cursor);
-        const index = cursor === null ? 0 : Number(cursor);
+        const token = new URL(request.url).searchParams.get('paginationToken');
+        onToken?.(token);
+        const index = token === null ? 0 : Number(token);
         return HttpResponse.json(pages[index] ?? { receipts: [] });
     });
 }
 
-function documentsPdf() {
+/** Serve every receipt's detail with only the SALE PDF downloadable (one ref per in-window receipt). */
+function detailsAllSales() {
+    return http.get(DETAIL, () =>
+        HttpResponse.json({ isDownloadablePDFSales: true, isDownloadablePDFCreditCard: false, items: [] }),
+    );
+}
+
+/** Serve each receipt's detail with per-receipt download flags (default: neither variant available). */
+function detailsByReceipt(flags: Readonly<Record<string, WireFlags>>) {
+    return http.get(DETAIL, ({ params }) => {
+        const f = flags[String(params.receiptId)] ?? {};
+        return HttpResponse.json({
+            isDownloadablePDFSales: f.sales ?? false,
+            isDownloadablePDFCreditCard: f.creditCard ?? false,
+            items: [],
+        });
+    });
+}
+
+function pdfOk() {
     return http.get(
-        DOCUMENT,
+        PDF,
         ({ params }) =>
-            new HttpResponse(pdfBytes(`${String(params.receiptId)}/${String(params.documentId)}`), {
+            new HttpResponse(pdfBytes(`${String(params.receiptId)}/${String(params.variant)}`), {
                 headers: { 'content-type': 'application/pdf' },
             }),
     );
@@ -93,18 +128,20 @@ function noopWriter(): ReceiptWriter {
 }
 
 describe('GrandfraisAdapter — AC1: registration + resolution', () => {
-    it('registers under its canonical domain and resolves by canonical, alias, and case-insensitively', () => {
+    it('registers under its canonical domain and resolves canonically + case-insensitively (no www alias)', () => {
         const registry = new SourceAdapterRegistry();
         registry.register(grandfraisAdapter);
         const resolver = new SourceResolver(registry);
 
         expect(resolver.resolve('grandfrais.com')).toBe(grandfraisAdapter);
-        expect(resolver.resolve('www.grandfrais.com')).toBe(grandfraisAdapter);
         expect(resolver.resolve('GRANDFRAIS.com')).toBe(grandfraisAdapter);
         expect(registry.get('grandfrais.com')).toBe(grandfraisAdapter);
+        // aliasDomains is now [] — the `www.grandfrais.com` alias was a placeholder bug (#84), so it no longer resolves.
+        expect(resolver.tryResolve('www.grandfrais.com')).toBeUndefined();
+        expect(registry.has('www.grandfrais.com')).toBe(false);
     });
 
-    it('declares a password / http-api / pdf-download descriptor with an inclusive issued-date window and cursor pagination', () => {
+    it('declares a password / http-api / pdf-download descriptor with an inclusive issued-date window, cursor pagination, and no alias domains', () => {
         const descriptor = grandfraisAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
@@ -115,6 +152,7 @@ describe('GrandfraisAdapter — AC1: registration + resolution', () => {
             pagination: 'cursor',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
         });
+        expect(descriptor.aliasDomains).toEqual([]);
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
         expect(new GrandfraisAdapter().descriptor.canonicalDomain).toBe('grandfrais.com');
     });
@@ -127,7 +165,10 @@ describe('GrandfraisAdapter — AC2: authenticate', () => {
         server.use(
             http.post(LOGIN, async ({ request }) => {
                 loginBody = await request.json();
-                return HttpResponse.json({ token: TOKEN });
+                return HttpResponse.json(
+                    { customerId: CUSTOMER_ID, token: TOKEN, refreshToken: REFRESH },
+                    { status: 201 },
+                );
             }),
             http.get(RECEIPTS, ({ request }) => {
                 authHeader = request.headers.get('authorization');
@@ -180,24 +221,24 @@ describe('GrandfraisAdapter — AC3: list', () => {
     it('maps the window inclusively on both bounds and excludes receipts just outside', async () => {
         const from = new Date('2026-03-10T00:00:00.000Z');
         const to = new Date('2026-03-20T00:00:00.000Z');
-        const doc: WireDoc[] = [{ id: 'd', available: true }];
         server.use(
             loginOk(),
             receiptsPages([
                 {
                     receipts: [
-                        { id: 'before', issuedAt: '2026-03-09T23:59:59.999Z', documents: doc },
-                        { id: 'on-from', issuedAt: from.toISOString(), documents: doc },
-                        { id: 'on-to', issuedAt: to.toISOString(), documents: doc },
-                        { id: 'after', issuedAt: '2026-03-20T00:00:00.001Z', documents: doc },
+                        receipt('before', { checkOutDate: '2026-03-09T23:59:59.999Z' }),
+                        receipt('on-from', { checkOutDate: from.toISOString() }),
+                        receipt('on-to', { checkOutDate: to.toISOString() }),
+                        receipt('after', { checkOutDate: '2026-03-20T00:00:00.001Z' }),
                     ],
                 },
             ]),
+            detailsAllSales(),
         );
 
         const refs = await grandfraisAdapter.list(await authenticate(), { from, to });
 
-        expect(refs.map((ref) => ref.id)).toEqual(['on-from__d', 'on-to__d']);
+        expect(refs.map((ref) => ref.id)).toEqual(['on-from__SALE', 'on-to__SALE']);
     });
 
     it('returns an empty success for a window with no receipts', async () => {
@@ -208,103 +249,70 @@ describe('GrandfraisAdapter — AC3: list', () => {
         expect(refs).toEqual([]);
     });
 
-    it('follows the cursor across pages, de-duplicates overlaps, and never truncates', async () => {
-        const cursors: (string | null)[] = [];
-        const oneDoc = (id: string): WireReceipt => ({
-            id,
-            issuedAt: ISSUED,
-            documents: [{ id: 'd', available: true }],
-        });
-        const pages: WirePage[] = [
-            { receipts: [oneDoc('a'), oneDoc('b')], nextCursor: '1' },
-            { receipts: [oneDoc('b'), oneDoc('c')] }, // 'b' overlaps page 0
+    it('follows the pagination token across pages, de-duplicates overlaps, and never truncates', async () => {
+        const tokens: (string | null)[] = [];
+        const pages: WireListPage[] = [
+            { receipts: [receipt('a'), receipt('b')], paginationToken: '1' },
+            { receipts: [receipt('b'), receipt('c')] }, // 'b' overlaps page 0
         ];
         server.use(
             loginOk(),
-            receiptsPages(pages, (cursor) => cursors.push(cursor)),
+            receiptsPages(pages, (token) => tokens.push(token)),
+            detailsAllSales(),
         );
 
         const refs = await grandfraisAdapter.list(await authenticate(), WIDE);
 
-        expect(refs.map((ref) => ref.id)).toEqual(['a__d', 'b__d', 'c__d']);
-        expect(cursors).toEqual([null, '1']); // two pages followed, then stopped (page 1 has no nextCursor)
+        expect(refs.map((ref) => ref.id)).toEqual(['a__SALE', 'b__SALE', 'c__SALE']);
+        expect(tokens).toEqual([null, '1']); // two pages followed, then stopped (page 1 has no paginationToken)
     });
 
-    it('terminates on a cyclic nextCursor instead of looping forever', async () => {
+    it('terminates on a cyclic pagination token instead of looping forever', async () => {
         let calls = 0;
         server.use(
             loginOk(),
             http.get(RECEIPTS, ({ request }) => {
                 calls += 1;
-                const cursor = new URL(request.url).searchParams.get('cursor');
-                // Always advertise the SAME next cursor → a cycle the adapter's seen-cursor guard must break.
-                return HttpResponse.json({
-                    receipts: [{ id: cursor ?? 'first', issuedAt: ISSUED, documents: [{ id: 'd', available: true }] }],
-                    nextCursor: 'loop',
-                });
+                const token = new URL(request.url).searchParams.get('paginationToken');
+                // Always advertise the SAME next token → a cycle the adapter's seen-token guard must break.
+                return HttpResponse.json({ receipts: [receipt(token ?? 'first')], paginationToken: 'loop' });
+            }),
+            detailsAllSales(),
+        );
+
+        const refs = await grandfraisAdapter.list(await authenticate(), WIDE);
+
+        // Page 0 (no token) → 'loop'; then token 'loop' → 'loop' again (already seen) → stop. Two fetches, no hang.
+        expect(calls).toBe(2);
+        expect(refs.map((ref) => ref.id)).toEqual(['first__SALE', 'loop__SALE']);
+    });
+});
+
+describe('GrandfraisAdapter — AC4: variant expansion + fetch', () => {
+    it('mints a ref per available PDF variant and handles none / sale-only / both / cc-only per receipt', async () => {
+        server.use(
+            loginOk(),
+            receiptsPages([{ receipts: [receipt('none'), receipt('sale'), receipt('both'), receipt('cc')] }]),
+            detailsByReceipt({
+                none: { sales: false, creditCard: false },
+                sale: { sales: true, creditCard: false },
+                both: { sales: true, creditCard: true },
+                cc: { sales: false, creditCard: true },
             }),
         );
 
         const refs = await grandfraisAdapter.list(await authenticate(), WIDE);
 
-        // Page 0 (no cursor) → 'loop'; then cursor 'loop' → 'loop' again (already seen) → stop. Two fetches, no hang.
-        expect(calls).toBe(2);
-        expect(refs.map((ref) => ref.id)).toEqual(['first__d', 'loop__d']);
-    });
-});
-
-describe('GrandfraisAdapter — AC4: fetch', () => {
-    it('expands only available documents into refs and handles zero / one / many per receipt', async () => {
-        server.use(
-            loginOk(),
-            receiptsPages([
-                {
-                    receipts: [
-                        { id: 'zero', issuedAt: ISSUED, documents: [{ id: 'x', available: false }] },
-                        { id: 'one', issuedAt: ISSUED, documents: [{ id: 'x', available: true }] },
-                        {
-                            id: 'mix',
-                            issuedAt: ISSUED,
-                            documents: [
-                                { id: 'a', available: true },
-                                { id: 'b', available: false },
-                            ],
-                        },
-                        {
-                            id: 'many',
-                            issuedAt: ISSUED,
-                            documents: [
-                                { id: 'a', available: true },
-                                { id: 'b', available: true },
-                            ],
-                        },
-                    ],
-                },
-            ]),
-        );
-
-        const refs = await grandfraisAdapter.list(await authenticate(), WIDE);
-
-        // 'zero' (no available doc) contributes nothing — zero is a success; unavailable variants are skipped.
-        expect(refs.map((ref) => ref.id)).toEqual(['one__x', 'mix__a', 'many__a', 'many__b']);
+        // 'none' (neither flag) contributes nothing — zero is a success; variants are minted SALE before CREDIT_CARD.
+        expect(refs.map((ref) => ref.id)).toEqual(['sale__SALE', 'both__SALE', 'both__CREDIT_CARD', 'cc__CREDIT_CARD']);
     });
 
-    it('downloads an available document and returns it as a verified PDF artifact', async () => {
+    it('downloads an available variant and returns it as a verified PDF artifact, titled by shop + variant', async () => {
         server.use(
             loginOk(),
-            receiptsPages([
-                {
-                    receipts: [
-                        {
-                            id: 'r1',
-                            issuedAt: ISSUED,
-                            title: 'Courses',
-                            documents: [{ id: 'ticket', available: true, kind: 'ticket' }],
-                        },
-                    ],
-                },
-            ]),
-            documentsPdf(),
+            receiptsPages([{ receipts: [receipt('r1', { shopName: SHOP_NAME })] }]),
+            detailsByReceipt({ r1: { sales: true } }),
+            pdfOk(),
         );
         const auth = await authenticate();
         const refs = await grandfraisAdapter.list(auth, WIDE);
@@ -314,41 +322,57 @@ describe('GrandfraisAdapter — AC4: fetch', () => {
         const artifact = asReceiptArtifact(await grandfraisAdapter.fetch(auth, ref!));
 
         expect(artifact.contentType).toBe('application/pdf');
-        expect(artifact.filename).toBe('r1__ticket.pdf');
+        expect(artifact.filename).toBe('r1__SALE.pdf');
         expect(new TextDecoder().decode(artifact.bytes).startsWith('%PDF-')).toBe(true);
-        expect(ref!.title).toBe('Courses (ticket)');
+        expect(ref!.title).toBe(`${SHOP_NAME} (SALE)`);
     });
 
-    it('round-trips a legitimate internal-underscore id to the correct document', async () => {
+    it('round-trips a legitimate internal-underscore receipt id to the correct PDF', async () => {
         // A single INTERNAL underscore is legal — only an embedded `__` or an EDGE underscore is drift. Such an
-        // id must pass the boundary AND split back to the exact (receiptId, documentId) the document URL needs.
+        // id must pass the boundary AND split back to the exact (receiptId, variant) the PDF URL needs.
         server.use(
             loginOk(),
-            receiptsPages([
-                { receipts: [{ id: 'GF_2026', issuedAt: ISSUED, documents: [{ id: 'de_tail', available: true }] }] },
-            ]),
-            documentsPdf(),
+            receiptsPages([{ receipts: [receipt('GF_2026')] }]),
+            detailsByReceipt({ GF_2026: { sales: true } }),
+            pdfOk(),
         );
         const auth = await authenticate();
         const refs = await grandfraisAdapter.list(auth, WIDE);
-        expect(refs.map((ref) => ref.id)).toEqual(['GF_2026__de_tail']);
+        expect(refs.map((ref) => ref.id)).toEqual(['GF_2026__SALE']);
 
         const artifact = asReceiptArtifact(await grandfraisAdapter.fetch(auth, refs[0]!));
 
         // The fetched bytes are tagged with the matched route params, proving the first-`__` split recovered
-        // receiptId `GF_2026` and documentId `de_tail` (not `GF` / `2026__de_tail`).
-        expect(artifact.filename).toBe('GF_2026__de_tail.pdf');
-        expect(new TextDecoder().decode(artifact.bytes)).toContain('grandfrais GF_2026/de_tail');
+        // receiptId `GF_2026` and variant `SALE` (not `GF` / `2026__SALE`).
+        expect(artifact.filename).toBe('GF_2026__SALE.pdf');
+        expect(new TextDecoder().decode(artifact.bytes)).toContain('grandfrais GF_2026/SALE');
+    });
+
+    it('routes the CREDIT_CARD variant to its own /pdf/{variant} path, distinct from SALE', async () => {
+        server.use(
+            loginOk(),
+            receiptsPages([{ receipts: [receipt('r1')] }]),
+            detailsByReceipt({ r1: { sales: true, creditCard: true } }),
+            pdfOk(),
+        );
+        const auth = await authenticate();
+        const ccRef = (await grandfraisAdapter.list(auth, WIDE)).find((ref) => ref.id === 'r1__CREDIT_CARD');
+        expect(ccRef).toBeDefined();
+
+        const artifact = asReceiptArtifact(await grandfraisAdapter.fetch(auth, ccRef!));
+
+        // Tagged with the matched route params, proving the split recovered variant `CREDIT_CARD` and hit /pdf/CREDIT_CARD.
+        expect(artifact.filename).toBe('r1__CREDIT_CARD.pdf');
+        expect(new TextDecoder().decode(artifact.bytes)).toContain('grandfrais r1/CREDIT_CARD');
     });
 
     it('rejects a fetched document that is not a valid PDF at the trust boundary', async () => {
         server.use(
             loginOk(),
-            receiptsPages([
-                { receipts: [{ id: 'r1', issuedAt: ISSUED, documents: [{ id: 'ticket', available: true }] }] },
-            ]),
+            receiptsPages([{ receipts: [receipt('r1')] }]),
+            detailsByReceipt({ r1: { sales: true } }),
             http.get(
-                DOCUMENT,
+                PDF,
                 () =>
                     new HttpResponse(new TextEncoder().encode('<html>not a pdf</html>'), {
                         headers: { 'content-type': 'text/html' },
@@ -363,6 +387,19 @@ describe('GrandfraisAdapter — AC4: fetch', () => {
         expect(error).toBeInstanceOf(TrustBoundaryError);
         expect((error as TrustBoundaryError).boundary).toBe('grandfrais.com:fetch');
     });
+
+    it('rejects a fetch whose ref-id variant segment is not a known PDF variant, before any request leaves', async () => {
+        server.use(loginOk());
+        const auth = await authenticate();
+
+        // onUnhandledRequest:'error' would throw if a PDF request were attempted — the split guard must reject first.
+        const error: unknown = await grandfraisAdapter
+            .fetch(auth, { id: 'r1__BOGUS', issuedAt: new Date(ISSUED) })
+            .catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toContain('malformed receipt reference');
+    });
 });
 
 describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () => {
@@ -370,7 +407,11 @@ describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () =
         server.use(
             loginOk(),
             http.get(RECEIPTS, () =>
-                HttpResponse.json({ receipts: [{ id: '', issuedAt: 'not-a-date', documents: 'nope' }] }),
+                HttpResponse.json({
+                    receipts: [
+                        { receiptId: '', checkOutDate: 'not-a-date', shopCode: '', shopName: '', amount: 'nope' },
+                    ],
+                }),
             ),
         );
         const auth = await authenticate();
@@ -381,20 +422,31 @@ describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () =
         expect((error as TrustBoundaryError).boundary).toBe('grandfrais.com:list');
     });
 
-    // An embedded delimiter OR an edge underscore would make the packed ref-id ambiguous (e.g. `R_`+`D` and
-    // `R`+`_D` both pack to `R___D`, silently colliding). Each is treated as drift and rejected at the boundary.
-    it.each([
-        { label: 'embedded delimiter in a receipt id', receipt: 'GF__1', doc: 'ticket' },
-        { label: 'trailing underscore in a receipt id', receipt: 'GF_', doc: 'ticket' },
-        { label: 'leading underscore in a document id', receipt: 'GF-1', doc: '_ticket' },
-    ])('rejects $label, so distinct documents can never collide', async ({ receipt, doc }) => {
+    it('rejects a malformed receipt detail at the trust boundary, labeled by source:stage', async () => {
         server.use(
             loginOk(),
-            http.get(RECEIPTS, () =>
-                HttpResponse.json({
-                    receipts: [{ id: receipt, issuedAt: ISSUED, documents: [{ id: doc, available: true }] }],
-                }),
-            ),
+            receiptsPages([{ receipts: [receipt('r1')] }]),
+            // Missing the isDownloadablePDF* flags → the detail boundary rejects it before any PDF is fetched.
+            http.get(DETAIL, () => HttpResponse.json({ items: [] })),
+        );
+        const auth = await authenticate();
+
+        const error: unknown = await grandfraisAdapter.list(auth, WIDE).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(TrustBoundaryError);
+        expect((error as TrustBoundaryError).boundary).toBe('grandfrais.com:detail');
+    });
+
+    // An embedded delimiter OR an edge underscore would make the packed ref-id ambiguous (e.g. `GF_`+`SALE`
+    // packs to `GF___SALE`, splitting back to `GF` + `_SALE`). Each is treated as drift and rejected at the boundary.
+    it.each([
+        { label: 'embedded delimiter in a receipt id', receiptId: 'GF__1' },
+        { label: 'trailing underscore in a receipt id', receiptId: 'GF_' },
+        { label: 'leading underscore in a receipt id', receiptId: '_GF1' },
+    ])('rejects $label, so the packed ref id can never be ambiguous', async ({ receiptId }) => {
+        server.use(
+            loginOk(),
+            http.get(RECEIPTS, () => HttpResponse.json({ receipts: [receipt(receiptId)] })),
         );
         const auth = await authenticate();
 
@@ -410,28 +462,22 @@ describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () =
             receiptsPages([
                 {
                     receipts: [
-                        // Zero available documents (empty + all-unavailable) is a success: these contribute nothing,
-                        // yet the run still completes and writes the available documents of the other receipts.
-                        { id: 'GF-0', issuedAt: ISSUED, documents: [] },
-                        {
-                            id: 'GF-1',
-                            issuedAt: ISSUED,
-                            title: 'Courses',
-                            documents: [{ id: 'ticket', available: true, kind: 'ticket' }],
-                        },
-                        {
-                            id: 'GF-2',
-                            issuedAt: ISSUED,
-                            documents: [
-                                { id: 'a', available: true },
-                                { id: 'b', available: true },
-                            ],
-                        },
-                        { id: 'GF-3', issuedAt: ISSUED, documents: [{ id: 'void', available: false }] },
+                        // Zero downloadable variants (neither flag set) is a success: GF-0 / GF-3 contribute nothing,
+                        // yet the run still completes and writes the downloadable variants of the other receipts.
+                        receipt('GF-0'),
+                        receipt('GF-1', { shopName: SHOP_NAME }),
+                        receipt('GF-2'),
+                        receipt('GF-3'),
                     ],
                 },
             ]),
-            documentsPdf(),
+            detailsByReceipt({
+                'GF-0': { sales: false, creditCard: false },
+                'GF-1': { sales: true, creditCard: false },
+                'GF-2': { sales: true, creditCard: true },
+                'GF-3': { sales: false, creditCard: false },
+            }),
+            pdfOk(),
         );
         const dir = await mkdtemp(join(tmpdir(), 'gf-adapter-'));
         try {
@@ -440,7 +486,7 @@ describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () =
 
             expect(result.outcome).toBe('succeeded');
             if (result.outcome === 'succeeded') {
-                expect(result.written.map((ref) => ref.id)).toEqual(['GF-1__ticket', 'GF-2__a', 'GF-2__b']);
+                expect(result.written.map((ref) => ref.id)).toEqual(['GF-1__SALE', 'GF-2__SALE', 'GF-2__CREDIT_CARD']);
             }
 
             const files = (await readdir(join(dir, 'grandfrais.com'))).sort();
@@ -455,12 +501,14 @@ describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () =
             ].join('\n');
             expect(surfaces).not.toContain(PASSWORD);
             expect(surfaces).not.toContain(TOKEN);
+            expect(surfaces).not.toContain(REFRESH);
 
             const persisted = (
                 await Promise.all(files.map((name) => readFile(join(dir, 'grandfrais.com', name), 'utf8')))
             ).join('\n');
             expect(persisted).not.toContain(PASSWORD);
             expect(persisted).not.toContain(TOKEN);
+            expect(persisted).not.toContain(REFRESH);
 
             // Idempotent re-run: a fresh writer over the same directory skips everything, fetching nothing new.
             const rerun = await collect({
@@ -472,7 +520,7 @@ describe('GrandfraisAdapter — AC5: boundary validation + secret hygiene', () =
             expect(rerun.outcome).toBe('succeeded');
             if (rerun.outcome === 'succeeded') {
                 expect(rerun.written).toHaveLength(0);
-                expect(rerun.skipped.map((ref) => ref.id)).toEqual(['GF-1__ticket', 'GF-2__a', 'GF-2__b']);
+                expect(rerun.skipped.map((ref) => ref.id)).toEqual(['GF-1__SALE', 'GF-2__SALE', 'GF-2__CREDIT_CARD']);
             }
         } finally {
             await rm(dir, { recursive: true, force: true });
@@ -485,6 +533,17 @@ describe('GrandfraisAdapter — re-auth seam', () => {
         server.use(
             loginOk(),
             http.get(RECEIPTS, () => new HttpResponse(null, { status: 401 })),
+        );
+        const auth = await authenticate();
+
+        await expect(grandfraisAdapter.list(auth, WIDE)).rejects.toBeInstanceOf(ReauthRequiredError);
+    });
+
+    it('maps an expired session (HTTP 401 on the detail fetch) to a ReauthRequiredError', async () => {
+        server.use(
+            loginOk(),
+            receiptsPages([{ receipts: [receipt('r1')] }]),
+            http.get(DETAIL, () => new HttpResponse(null, { status: 401 })),
         );
         const auth = await authenticate();
 
