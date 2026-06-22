@@ -4,13 +4,18 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { CredentialBackendUnavailableError, fromCredentialContext, Secret } from '@getreceipt/auth';
-import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
+import {
+    CredentialBackendUnavailableError,
+    CredentialResolutionError,
+    fromCredentialContext,
+    Secret,
+} from '@getreceipt/auth';
+import { SourceAdapterRegistry, SourceResolver, TrustBoundaryError } from '@getreceipt/core';
 import type { CollectRequest, CollectResult, SourceAdapter } from '@getreceipt/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { LivePlan } from './gate.js';
-import { LiveBackendUnavailable, runLiveCollection } from './harness.js';
+import { LiveBackendUnavailable, runLiveCollection, runLiveCollections } from './harness.js';
 
 /**
  * Harness-mechanics self-test (#19). Genuinely executes in CI by driving the orchestration
@@ -185,5 +190,109 @@ describe('runLiveCollection — credential backend', () => {
                 createOutDir: knownTempDir,
             }),
         ).rejects.not.toBeInstanceOf(LiveBackendUnavailable);
+    });
+});
+
+/** A resolver that knows BOTH e2e source domains, so a multi-source sweep can resolve each plan's adapter. */
+function multiResolver(...domains: string[]): SourceResolver {
+    const registry = new SourceAdapterRegistry();
+    for (const domain of domains) {
+        registry.register(fakeAdapter(domain));
+    }
+    return new SourceResolver(registry);
+}
+
+const PLAN_A: LivePlan = { source: 'grandfrais.com', username: 'a@example.com', secret: { ref: 'op://Private/gf/pw' } };
+const PLAN_B: LivePlan = { source: 'monoprix.fr', username: 'b@example.com', secret: { ref: 'op://Private/mp/pw' } };
+
+describe('runLiveCollections — multi-source sweep', () => {
+    it('returns a per-source verdict for every plan, in order', async () => {
+        const collectedFor: string[] = [];
+        const results = await runLiveCollections([PLAN_A, PLAN_B], {
+            resolver: multiResolver(PLAN_A.source, PLAN_B.source),
+            resolveCredential: async () => new Secret('resolved'),
+            collect: async (request) => {
+                collectedFor.push(request.adapter.descriptor.canonicalDomain);
+                return succeededResult(request.adapter.descriptor.canonicalDomain);
+            },
+            createOutDir: knownTempDir,
+        });
+
+        // Every plan ran, sequentially, in the given order, and each got an e2e-verified verdict.
+        expect(collectedFor).toEqual(['grandfrais.com', 'monoprix.fr']);
+        expect(results.map((r) => r.source)).toEqual(['grandfrais.com', 'monoprix.fr']);
+        expect(results.map((r) => r.verdict.state)).toEqual(['e2e-verified', 'e2e-verified']);
+    });
+
+    it('builds a verdict matrix that distinguishes a drifted source from a verified one', async () => {
+        const results = await runLiveCollections([PLAN_A, PLAN_B], {
+            resolver: multiResolver(PLAN_A.source, PLAN_B.source),
+            resolveCredential: async () => new Secret('resolved'),
+            // grandfrais verifies; monoprix's live shape diverged (a TrustBoundaryError → stale).
+            collect: async (request) =>
+                request.adapter.descriptor.canonicalDomain === PLAN_B.source
+                    ? {
+                          outcome: 'failed',
+                          source: PLAN_B.source,
+                          window: { from: new Date(0), to: new Date(0) },
+                          reason: 'shape diverged',
+                          cause: new TrustBoundaryError('monoprix.fr:list', []),
+                          written: [],
+                          skipped: [],
+                      }
+                    : succeededResult(request.adapter.descriptor.canonicalDomain),
+            createOutDir: knownTempDir,
+        });
+
+        const bySource = new Map(results.map((r) => [r.source, r.verdict] as const));
+        expect(bySource.get('grandfrais.com')?.state).toBe('e2e-verified');
+        expect(bySource.get('monoprix.fr')?.state).toBe('stale');
+    });
+
+    it('rethrows LiveBackendUnavailable — a missing backend dooms the WHOLE sweep (global skip)', async () => {
+        await expect(
+            runLiveCollections([PLAN_A, PLAN_B], {
+                resolver: multiResolver(PLAN_A.source, PLAN_B.source),
+                resolveCredential: async () => {
+                    throw new CredentialBackendUnavailableError('the 1Password CLI is not installed', 'op');
+                },
+                collect: async (request) => succeededResult(request.adapter.descriptor.canonicalDomain),
+                createOutDir: knownTempDir,
+            }),
+        ).rejects.toBeInstanceOf(LiveBackendUnavailable);
+    });
+
+    it('records a per-source CredentialResolutionError as unverified and KEEPS sweeping the rest', async () => {
+        const results = await runLiveCollections([PLAN_A, PLAN_B], {
+            resolver: multiResolver(PLAN_A.source, PLAN_B.source),
+            // Only grandfrais's reference is bad; monoprix resolves fine.
+            resolveCredential: async (value) => {
+                const ref = typeof value === 'object' ? value.ref : value;
+                if (ref === 'op://Private/gf/pw') {
+                    throw new CredentialResolutionError('item not found', 'not-found');
+                }
+                return new Secret('resolved');
+            },
+            collect: async (request) => succeededResult(request.adapter.descriptor.canonicalDomain),
+            createOutDir: knownTempDir,
+        });
+
+        const bySource = new Map(results.map((r) => [r.source, r.verdict] as const));
+        // The bad reference becomes this source's inconclusive verdict — not an abort.
+        expect(bySource.get('grandfrais.com')?.state).toBe('unverified');
+        expect(bySource.get('grandfrais.com')?.detail).toContain('credential error');
+        // …and the other source still ran to a real verdict.
+        expect(bySource.get('monoprix.fr')?.state).toBe('e2e-verified');
+        expect(results).toHaveLength(2);
+    });
+
+    it('is an empty array for no plans (the gate never produces this, but the sweep is total)', async () => {
+        const results = await runLiveCollections([], {
+            resolver: multiResolver(),
+            resolveCredential: async () => new Secret('resolved'),
+            collect: async (request) => succeededResult(request.adapter.descriptor.canonicalDomain),
+            createOutDir: knownTempDir,
+        });
+        expect(results).toEqual([]);
     });
 });
