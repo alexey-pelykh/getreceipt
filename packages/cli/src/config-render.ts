@@ -35,9 +35,19 @@ function redactSecret(secret: CredentialValue): { readonly ref: string } | strin
     return { ref: secret.ref };
 }
 
+/**
+ * A username is NOT a secret: a reference is shown UNRESOLVED (the `{ ref }` pointer, never
+ * dereferenced), and an inline literal is shown AS-IS — NOT routed through the {@link Secret}
+ * fence. `config show` is the operator viewing their own config, and a username/email is not
+ * sensitive material to mask.
+ */
+function renderUsername(username: CredentialValue): { readonly ref: string } | string {
+    return typeof username === 'string' ? username : { ref: username.ref };
+}
+
 interface RedactedAuthView {
     kind: string;
-    username?: string;
+    username?: { readonly ref: string } | string;
     secret?: { readonly ref: string } | string;
 }
 
@@ -46,7 +56,7 @@ function redactProfile(profile: Profile): Record<string, { auth: RedactedAuthVie
     for (const [domain, auth] of Object.entries(profile.sources)) {
         const view: RedactedAuthView = { kind: auth.kind };
         if (auth.username !== undefined) {
-            view.username = auth.username;
+            view.username = renderUsername(auth.username);
         }
         if (auth.secret !== undefined) {
             view.secret = redactSecret(auth.secret);

@@ -155,7 +155,12 @@ describe('from <domain> — collection (AC #1)', () => {
             await runFrom(['shop.example', '--out', dir], {
                 resolver: resolverWith(fakeAdapter({ onAuthenticate: (c) => (received = c) })),
                 createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
-                resolveCredential: () => Promise.resolve(new Secret('resolved-token')),
+                // The username and secret BOTH resolve on this path now; map the configured secret to a
+                // distinct value and echo the username, proving each was resolved (not passed through blind).
+                resolveCredential: (value) => {
+                    const literal = typeof value === 'string' ? value : value.ref;
+                    return Promise.resolve(new Secret(literal === 'hunter2-not-real' ? 'resolved-token' : literal));
+                },
             });
         } finally {
             rmSync(dir, { recursive: true, force: true });
@@ -164,6 +169,7 @@ describe('from <domain> — collection (AC #1)', () => {
         expect(received).toBeDefined();
         const creds = fromCredentialContext(received!);
         expect(creds.kind).toBe('password');
+        // The username resolved to its configured literal (a string username resolves to itself).
         expect(creds.username).toBe('alice@shop.example');
         expect(creds.secret?.expose()).toBe('resolved-token');
     });

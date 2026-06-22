@@ -7,21 +7,24 @@
 #   cp .getreceipt.e2e.example.yaml .getreceipt.e2e.local.yaml   # then edit the copy
 #   GETRECEIPT_E2E=1 pnpm --filter @getreceipt/conformance test:e2e
 #
-# Each secret stays a REFERENCE (`op://<vault>/<item>/<field>` or `encrypted-file:<path>`) the
-# harness resolves at call-time behind the Secret fence — never an inline value at rest.
-# A source missing its username or secret is skipped (not a failure); the rest still run.
+# Both username AND secret are credential references (`op://<vault>/<item>/<field>` or
+# `encrypted-file:<path>`) the harness resolves at call-time behind the Secret fence — never an
+# inline value at rest. A source missing its username or secret is skipped (not a failure).
 profiles:
   default:
     sources:
       grandfrais.com:
         auth:
           kind: password
-          username: you@example.com
+          # A plain string (e.g. `username: you@example.com`) is still accepted.
+          username:
+            ref: op://Private/grandfrais/username
           secret:
             ref: op://Private/grandfrais/password
       monoprix.fr:
         auth:
           kind: password
-          username: you@example.com
+          username:
+            ref: op://Private/monoprix/username
           secret:
             ref: op://Private/monoprix/password

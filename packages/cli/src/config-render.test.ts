@@ -62,6 +62,33 @@ describe('renderConfigShow', () => {
         expect(output).toContain('kind: password');
     });
 
+    it('shows a username reference UNRESOLVED and an inline-literal username AS-IS (a username is not masked)', () => {
+        const usernameRefConfig = configWith({
+            default: {
+                sources: {
+                    'ref.example': {
+                        kind: 'password',
+                        username: { ref: 'op://Personal/ref.example/username' },
+                        secret: { ref: 'op://Personal/ref.example/password' },
+                    },
+                    'literal.example': {
+                        kind: 'password',
+                        username: 'bob@literal.example',
+                        secret: { ref: 'op://Personal/literal.example/password' },
+                    },
+                },
+            },
+        });
+
+        const output = renderConfigShow(usernameRefConfig, 'default');
+
+        // A username reference is shown UNRESOLVED — the ref string, never dereferenced.
+        expect(output).toContain('op://Personal/ref.example/username');
+        // An inline-literal username is shown verbatim (NOT routed through the Secret fence).
+        expect(output).toContain('bob@literal.example');
+        expect(output).not.toContain('[redacted]');
+    });
+
     it('selects the requested profile', () => {
         const output = renderConfigShow(config, 'work');
         expect(output).toContain('corp.example');

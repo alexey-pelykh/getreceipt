@@ -74,6 +74,66 @@ describe('parseConfig', () => {
         expect(warnings).toEqual([]);
     });
 
+    it('parses a username reference into a { ref } resolved at call-time', () => {
+        const { config, warnings } = parseConfig({
+            profiles: {
+                default: {
+                    sources: {
+                        'free.fr': {
+                            auth: { kind: 'password', username: { ref: 'op://Private/free/username' } },
+                        },
+                    },
+                },
+            },
+        });
+
+        expect(config.profiles.default?.sources['free.fr']?.username).toEqual({ ref: 'op://Private/free/username' });
+        expect(warnings).toEqual([]);
+    });
+
+    it('parses an inline-literal username WITHOUT warning (a username is not a secret)', () => {
+        const { config, warnings } = parseConfig({
+            profiles: {
+                default: { sources: { 'free.fr': { auth: { kind: 'password', username: 'alice@free.fr' } } } },
+            },
+        });
+
+        expect(config.profiles.default?.sources['free.fr']?.username).toBe('alice@free.fr');
+        // No inline-credential warning at the username path — unlike an inline secret.
+        expect(warnings.some((w) => w.path === 'profiles.default.sources.free.fr.auth.username')).toBe(false);
+        expect(warnings).toEqual([]);
+    });
+
+    it.each([
+        { label: 'an empty ref', username: { ref: '' } },
+        { label: 'a missing ref', username: { notRef: 'x' } },
+        { label: 'a non-string ref', username: { ref: 123 } },
+    ])('throws a path-named ConfigError for a malformed username reference ($label)', ({ username }) => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                profiles: { default: { sources: { 'free.fr': { auth: { kind: 'password', username } } } } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('profiles.default.sources.free.fr.auth.username');
+    });
+
+    it('throws a path-named ConfigError for a non-string / non-record username', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                profiles: { default: { sources: { 'free.fr': { auth: { kind: 'password', username: 123 } } } } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('profiles.default.sources.free.fr.auth.username');
+    });
+
     it('never includes a configured secret value in a validation error', () => {
         const secret = 'top-secret-do-not-leak';
         let caught: unknown;

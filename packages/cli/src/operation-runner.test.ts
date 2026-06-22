@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { ConfigError, CredentialBackendUnavailableError, Secret } from '@getreceipt/auth';
-import type { ConfigParseResult } from '@getreceipt/auth';
+import { ConfigError, CredentialBackendUnavailableError, fromCredentialContext, Secret } from '@getreceipt/auth';
+import type { ConfigParseResult, CredentialValue } from '@getreceipt/auth';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type {
     ArtifactHandle,
@@ -164,5 +164,71 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
         expect(error).toBeInstanceOf(OperationError);
         expect((error as OperationError).kind).toBe('credentials');
         expect((error as OperationError).message).not.toContain('inline');
+    });
+});
+
+describe('runOperation — username resolves on the same path as the secret', () => {
+    /** Config whose username is a reference (not an inline literal), exercising call-time resolution. */
+    const refUsernameConfig: ConfigParseResult = {
+        config: {
+            profiles: {
+                default: {
+                    sources: {
+                        'shop.example': {
+                            kind: 'password',
+                            username: { ref: 'op://Personal/shop/username' },
+                            secret: { ref: 'op://Personal/shop/password' },
+                        },
+                    },
+                },
+            },
+        },
+        warnings: [],
+    };
+
+    /** A resolver that maps each reference to a distinct value, so a passed-through ref (vs a resolved value) is detectable. */
+    function resolverByRef(value: CredentialValue): Promise<Secret> {
+        const ref = typeof value === 'string' ? value : value.ref;
+        if (ref === 'op://Personal/shop/username') return Promise.resolve(new Secret('resolved-alice'));
+        if (ref === 'op://Personal/shop/password') return Promise.resolve(new Secret('resolved-pw'));
+        return Promise.resolve(new Secret('unexpected'));
+    }
+
+    it('resolves a username reference and lands it as a plain string in the credential context', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            deps({ loadConfig: () => refUsernameConfig, resolveCredential: resolverByRef, collect: capture.collect }),
+        );
+
+        const packed = fromCredentialContext(capture.request()!.credentials);
+        // The reference was dereferenced (not passed through) and exposed to a plain string.
+        expect(packed.username).toBe('resolved-alice');
+        expect(typeof packed.username).toBe('string');
+        expect(packed.secret?.expose()).toBe('resolved-pw');
+    });
+
+    it('surfaces a username-resolution failure as OperationError(credentials), carrying no value', async () => {
+        const error = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            deps({
+                loadConfig: () => refUsernameConfig,
+                resolveCredential: (value) => {
+                    const ref = typeof value === 'string' ? value : value.ref;
+                    // Only the USERNAME reference fails — proving the username path is wired through the same catch.
+                    if (ref === 'op://Personal/shop/username') {
+                        return Promise.reject(
+                            new CredentialBackendUnavailableError('the 1Password CLI (`op`) is not installed', 'op'),
+                        );
+                    }
+                    return Promise.resolve(new Secret('resolved-pw'));
+                },
+            }),
+        ).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('credentials');
+        // The resolver error names the backend, never the username reference or value.
+        expect((error as OperationError).message).not.toContain('shop/username');
     });
 });

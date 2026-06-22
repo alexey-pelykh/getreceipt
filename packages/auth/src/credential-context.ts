@@ -16,6 +16,7 @@ import type { Secret } from './secret.js';
  */
 export interface ResolvedCredentials {
     readonly kind: AuthKind;
+    /** The resolved login identifier as a plain string — the front-end dereferences a configured username reference to its value before building this. */
     readonly username?: string;
     /** The resolved secret, still fenced — adapters call {@link Secret.expose} only at the point of use. */
     readonly secret?: Secret;
