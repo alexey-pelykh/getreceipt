@@ -20,7 +20,10 @@ export function parseProfileEnv(text: string): Record<string, string> {
         if (eq === -1) {
             continue;
         }
-        const key = line.slice(0, eq).replace(/^export\s+/, '').trim();
+        const key = line
+            .slice(0, eq)
+            .replace(/^export\s+/, '')
+            .trim();
         if (key === '') {
             continue;
         }
