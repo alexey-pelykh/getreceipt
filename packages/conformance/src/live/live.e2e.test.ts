@@ -15,12 +15,12 @@ import type { LiveRun } from './harness.js';
  * fabricated pass. The mechanics this leans on — the gate, the verdict mapping, the harness
  * wiring — are proven independently by the genuinely-executing self-tests alongside it.
  *
- * To run it locally:
- *   GETRECEIPT_E2E=1 \
- *   GETRECEIPT_E2E_SOURCE=grandfrais.com \
- *   GETRECEIPT_E2E_USERNAME='you@example.com' \
- *   GETRECEIPT_E2E_SECRET='op://Private/grandfrais/password' \
- *   pnpm --filter @getreceipt/conformance test:e2e
+ * To run it locally, persist the mapping once in a gitignored profile — copy
+ * `packages/conformance/.env.e2e.example` to `.env.e2e.local` and fill it in (the secret stays an
+ * `op://…` reference) — then: `pnpm --filter @getreceipt/conformance test:e2e`. The e2e config loads
+ * the profile; an explicit shell env var still overrides it. Without a profile, pass the vars inline:
+ *   GETRECEIPT_E2E=1 GETRECEIPT_E2E_SOURCE=grandfrais.com GETRECEIPT_E2E_USERNAME='you@example.com' \
+ *   GETRECEIPT_E2E_SECRET='op://Private/grandfrais/password' pnpm --filter @getreceipt/conformance test:e2e
  */
 
 const gate = resolveLiveGate(process.env);
