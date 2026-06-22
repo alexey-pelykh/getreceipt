@@ -22,9 +22,16 @@ process.env.GETRECEIPT_E2E_CONFIG ??= fileURLToPath(new URL('.getreceipt.e2e.loc
 // (it.skipIf), so with no opt-in this run collects the file and skips cleanly — never a failure,
 // never a fabricated pass. Run via `pnpm --filter @getreceipt/conformance test:e2e`. The default
 // `exclude` is left intact (node_modules, dist, …), so `**` cannot reach into dependencies.
-export default mergeConfig(sharedVitestConfig, {
+// The live run MUST reach the real network. vitest.shared registers a global MSW server
+// (`@getreceipt/testing/setup`, `onUnhandledRequest: 'error'`) for the unit suites — with it active
+// the live test's real request is intercepted and fails as "unhandled", so it could NEVER contact a
+// real source. mergeConfig CONCATENATES arrays, so the inherited setup can't be dropped via the
+// override object; clear setupFiles after merging. MSW stays on for the default/CI (unit-only) config.
+const e2eConfig = mergeConfig(sharedVitestConfig, {
     test: {
         name: '@getreceipt/conformance:e2e',
         include: ['**/*.e2e.test.ts'],
     },
 });
+(e2eConfig.test ??= {}).setupFiles = [];
+export default e2eConfig;
