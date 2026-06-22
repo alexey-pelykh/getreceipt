@@ -16,7 +16,7 @@ import type { CollectRequest, CollectResult, SourceResolver } from '@getreceipt/
 
 import type { LivePlan } from './gate.js';
 import { verdictFor } from './verdict.js';
-import type { LiveVerdict } from './verdict.js';
+import type { Clock, LiveVerdict } from './verdict.js';
 
 /**
  * Raised when a live run cannot even start because the credential BACKEND is absent (e.g.
@@ -52,6 +52,8 @@ export interface LiveHarnessDeps {
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
     /** Mints a throwaway output directory OUTSIDE the repo. Defaults to an `os.tmpdir()` dir, removed after the run. */
     readonly createOutDir: () => Promise<string>;
+    /** Clock for the verified-at stamp on a conclusive success. Defaults to the wall clock; injected in tests for determinism. */
+    readonly now: Clock;
 }
 
 function defaultDeps(): LiveHarnessDeps {
@@ -61,6 +63,7 @@ function defaultDeps(): LiveHarnessDeps {
         resolveCredential: (value) => credentialResolver.resolve(value),
         collect,
         createOutDir: () => mkdtemp(join(tmpdir(), 'getreceipt-e2e-')),
+        now: () => new Date(),
     };
 }
 
@@ -103,7 +106,7 @@ export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveH
     try {
         const writer = new FilesystemReceiptWriter({ outDir });
         const result = await deps.collect({ adapter, credentials, writer });
-        return { source: plan.source, result, verdict: verdictFor(result) };
+        return { source: plan.source, result, verdict: verdictFor(result, deps.now) };
     } finally {
         // Always purge the throwaway dir — even on a thrown error — so no fetched receipt survives the run (#19 AC3).
         await rm(outDir, { recursive: true, force: true });
@@ -146,12 +149,17 @@ export async function runLiveCollections(
             if (error instanceof LiveBackendUnavailable) {
                 throw error;
             }
-            // A single wrong/expired reference is this source's problem alone — record it inconclusive and
-            // keep sweeping, so one bad credential can't hide the verdicts of the others.
+            // A single wrong/expired reference is this source's problem alone — an `auth` signal (re-mint /
+            // fix the reference), recorded and skipped past so one bad credential can't hide the rest. The
+            // CredentialResolutionError message is secret-free by construction, so echoing it is safe.
             if (error instanceof CredentialResolutionError) {
                 results.push({
                     source: plan.source,
-                    verdict: { state: 'unverified', detail: `credential error: ${error.message}` },
+                    verdict: {
+                        signal: 'auth',
+                        state: 'unverified',
+                        detail: `auth: credential error: ${error.message}`,
+                    },
                 });
                 continue;
             }

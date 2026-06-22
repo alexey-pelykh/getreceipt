@@ -72,7 +72,9 @@ function succeededResult(source: string): CollectResult {
         outcome: 'succeeded',
         source,
         window: { from: new Date('2026-01-01T00:00:00Z'), to: new Date('2026-04-01T00:00:00Z') },
-        written: [],
+        // Non-empty: ≥1 receipt crossed the boundary, so this is a genuine `verified` run (an empty
+        // success is the degenerate-subject INCONCLUSIVE case, exercised in verdict.test.ts).
+        written: [{ id: 'r1', issuedAt: new Date('2026-02-01T00:00:00Z'), title: 'Receipt' }],
         skipped: [],
     };
 }
@@ -168,6 +170,21 @@ describe('runLiveCollection — orchestration', () => {
 
         expect(run.verdict.state).toBe('unverified');
         expect(existsSync(used!)).toBe(false);
+    });
+
+    it('stamps the verified-at date from the injected clock on a conclusive success (the flip #90 surfaces)', async () => {
+        const fixed = new Date('2026-06-22T12:00:00Z');
+        const run = await runLiveCollection(PLAN, {
+            resolver: fakeResolver(fakeAdapter(PLAN.source)),
+            resolveCredential: async () => new Secret('resolved-secret'),
+            collect: async () => succeededResult(PLAN.source),
+            createOutDir: knownTempDir,
+            now: () => fixed,
+        });
+
+        expect(run.verdict.signal).toBe('verified');
+        expect(run.verdict.state).toBe('e2e-verified');
+        expect(run.verdict.verifiedAt).toEqual(fixed);
     });
 });
 
@@ -316,7 +333,8 @@ describe('runLiveCollections — multi-source sweep', () => {
         });
 
         const bySource = new Map(results.map((r) => [r.source, r.verdict] as const));
-        // The bad reference becomes this source's inconclusive verdict — not an abort.
+        // The bad reference becomes this source's `auth` verdict (re-mint / fix the reference) — not an abort.
+        expect(bySource.get('grandfrais.com')?.signal).toBe('auth');
         expect(bySource.get('grandfrais.com')?.state).toBe('unverified');
         expect(bySource.get('grandfrais.com')?.detail).toContain('credential error');
         // …and the other source still ran to a real verdict.
