@@ -68,7 +68,7 @@ future change**: if telemetry, analytics, or remote diagnostics are ever added, 
 - **redacted** — carrying **no secrets and no PII** by default (no credentials, no document contents,
   no account identifiers); and
 - **transparent** — documented here, with the no-telemetry assertions in
-  [`privacy-posture.test.ts`](packages/e2e/src/privacy-posture.test.ts) updated in the same change.
+  [`privacy-posture.test.ts`](packages/conformance/src/privacy-posture.test.ts) updated in the same change.
 
 A pull request that adds a phone-home path without meeting all three is out of policy.
 
@@ -85,7 +85,7 @@ You do not have to take this on trust:
 - **Read the dependency manifests.** No package in this workspace _declares_ a telemetry, analytics,
   tracking, or crash-reporting dependency — the only declared runtime dependencies are a YAML parser
   and (in tests only) a request-mocking server. The
-  [`privacy-posture.test.ts`](packages/e2e/src/privacy-posture.test.ts) suite asserts this on every CI
+  [`privacy-posture.test.ts`](packages/conformance/src/privacy-posture.test.ts) suite asserts this on every CI
   run and fails the build if such a dependency is added to a workspace manifest. It scans the
   workspace's own manifests, not the whole transitive tree — but no transitive dependency is a
   phone-home path while no code opens an outbound connection, which the network check below confirms

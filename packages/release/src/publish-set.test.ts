@@ -11,7 +11,7 @@ describe('resolvePublishSet (AC1/AC5 scope: publish only public packages)', () =
             { name: '@getreceipt/mcp' },
             { name: '@getreceipt/cli' },
             { name: '@getreceipt/testing', private: true },
-            { name: '@getreceipt/e2e', private: true },
+            { name: '@getreceipt/conformance', private: true },
             { name: '@getreceipt/release', private: true },
         ];
         expect(resolvePublishSet(manifests)).toEqual([
