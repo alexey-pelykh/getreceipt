@@ -23,6 +23,44 @@ import { z } from 'zod';
  */
 export const REF_ID_DELIMITER = '__';
 
+const API_ORIGIN = 'https://client.monoprix.fr';
+const API_CLIENT = '/api/client';
+
+/**
+ * The monoprix.fr endpoints — part of the in-repo contract. The adapter REQUESTS them and the adapter
+ * test MOCKS them from this single source (anti-circularity, #88): the original circular green was a
+ * URL hand-authored beside the adapter AND re-authored in the test, so neither side re-types an
+ * endpoint here.
+ */
+export const ENDPOINTS = {
+    apiOrigin: API_ORIGIN,
+    ssoOrigin: 'https://sso.monoprix.fr',
+    /** OIDC stage 1: credentials → opaque login ticket. */
+    login: '/identity/v1/password/login',
+    /** OIDC stage 2: the authorize URL the browser opens (carries the ticket). */
+    authorize: '/oauth/authorize',
+    /** Listing (the whole window in one call — no cursor). */
+    getReceipts: `${API_CLIENT}/get-receipts`,
+    /** Per-receipt bill download. */
+    getReceiptBill: `${API_CLIENT}/get-receipt-bill`,
+} as const;
+
+/** Public OIDC parameters shipped in the page JS (not secrets) — part of the contract the test asserts. */
+export const OIDC = {
+    clientId: '1UdlANOVt4FdstGpM6Kn',
+    scope: 'openid profile email phone offline_access address full_write',
+    /** SFCC OAuth re-entry the authorize step redirects back to, completing the session. */
+    sfccRedirectUri: 'https://www.monoprix.fr/on/demandware.store/Sites-TML-FR-Site/fr_FR/Login-OAuthReentryMPX',
+} as const;
+
+/** Collection-request constants that replicate the logged-in SPA (besides the per-request `r5-token`). */
+export const COLLECTION = {
+    applicationCaller: 'monoprix-shopping',
+    ticketsReferer: `${API_ORIGIN}/monoprix-shopping/tickets`,
+    /** Single-call listing cap. ~3-month source retention keeps a date-bounded window well under this. */
+    receiptsLimit: 1000,
+} as const;
+
 /**
  * A source-supplied token packed into a ref id, constrained so that `id__type` round-trips
  * by splitting on the FIRST delimiter. That requires no embedded `__` AND no edge underscore:
@@ -41,7 +79,7 @@ const packableTokenSchema = z
  * so the boundary never echoes a value — a malformed body fails with path+code only and the
  * adapter maps it to a typed {@link @getreceipt/auth!AuthenticationError}.
  */
-const loginResponseSchema = z.object({
+export const loginResponseSchema = z.object({
     tkn: z.string().min(1),
 });
 
@@ -50,7 +88,7 @@ const loginResponseSchema = z.object({
  * day). `price` is part of the documented contract but unused by collection; its scalar type is a
  * best-effort assumption pending the live gate (#89).
  */
-const receiptSchema = z.object({
+export const receiptSchema = z.object({
     id: packableTokenSchema,
     // `type` selects the bill variant in `get-receipt-bill`; the contract documents `"store"` as its
     // default, so a receipt that omits it is a store receipt rather than drift.
@@ -60,7 +98,7 @@ const receiptSchema = z.object({
 });
 
 /** One `get-receipts` response page. The contract returns the full window in one call (no cursor). */
-const receiptsResponseSchema = z.object({
+export const receiptsResponseSchema = z.object({
     receipts: z.array(receiptSchema),
 });
 

@@ -13,17 +13,26 @@ import type {
     SourceDescriptor,
 } from '@getreceipt/core';
 
-import { parseListPage, parseReceiptDetail, REF_ID_DELIMITER } from './wire.js';
+import {
+    ENDPOINTS,
+    parseListPage,
+    parseReceiptDetail,
+    receiptDetailPath,
+    receiptPdfPath,
+    REF_ID_DELIMITER,
+} from './wire.js';
 import type { ListPageDto, PdfVariant, ReceiptDetailDto, ReceiptDto } from './wire.js';
 
 const CANONICAL_DOMAIN = 'grandfrais.com';
 
 /**
- * Base host for the receipts API: the mobile app's BFF, a pinned static constant (no runtime
- * Remote-Config fetch). The canonical domain stays `grandfrais.com`; only the wire host is `bff.`.
+ * Base host for the receipts API: the mobile app's BFF (a pinned static constant; no runtime
+ * Remote-Config fetch). Sourced from the wire contract ({@link ENDPOINTS}) so the adapter and its
+ * tests address one endpoint set (#88). The canonical domain stays `grandfrais.com`; only the wire
+ * host is `bff.`.
  */
-const API_BASE = 'https://bff.grandfrais.com';
-const LOGIN_URL = new URL('/v1/users/login', API_BASE);
+const API_BASE = ENDPOINTS.origin;
+const LOGIN_URL = new URL(ENDPOINTS.login, API_BASE);
 // `POST /v1/users/token/refresh` also exists, but token expiry is handled by the re-auth seam
 // (ReauthRequiredError → the orchestrator re-authenticates), so the adapter keeps only the bearer token.
 
@@ -117,7 +126,7 @@ async function listAllReceipts(token: Secret, range: DateRange): Promise<Receipt
 
 /** Fetch and boundary-validate one listing page for the window (optionally continuing from `paginationToken`). */
 async function fetchPage(token: Secret, range: DateRange, paginationToken: string | undefined): Promise<ListPageDto> {
-    const url = new URL('/v1/receipts', API_BASE);
+    const url = new URL(ENDPOINTS.receipts, API_BASE);
     url.searchParams.set('beginDate', range.from.toISOString());
     url.searchParams.set('endDate', range.to.toISOString());
     if (paginationToken !== undefined) {
@@ -164,7 +173,7 @@ async function expandToRefs(token: Secret, receipts: readonly ReceiptDto[], rang
 
 /** Fetch and boundary-validate one receipt's detail (the source of PDF-variant availability). */
 async function fetchDetail(token: Secret, receiptId: string): Promise<ReceiptDetailDto> {
-    const url = new URL(`/v1/receipts/${encodeURIComponent(receiptId)}`, API_BASE);
+    const url = new URL(receiptDetailPath(receiptId), API_BASE);
     const response = await requestAuthorized(token, url, 'application/json');
     let body: unknown;
     try {
@@ -196,7 +205,7 @@ function makeRef(id: string, issuedAt: Date, receipt: ReceiptDto, variant: PdfVa
 async function fetchDocument(token: Secret, ref: ReceiptRef): Promise<ArtifactHandle> {
     const { receiptId, variant } = splitRefId(ref.id);
     // variant is one of the fixed literals SALE/CREDIT_CARD — safe as a path segment without encoding.
-    const path = `/v1/receipts/${encodeURIComponent(receiptId)}/pdf/${variant}`;
+    const path = receiptPdfPath(receiptId, variant);
     const response = await requestAuthorized(token, new URL(path, API_BASE), 'application/pdf');
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!isPdf(bytes)) {

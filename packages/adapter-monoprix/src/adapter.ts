@@ -15,29 +15,18 @@ import type {
     SourceDescriptor,
 } from '@getreceipt/core';
 
-import { parseLoginResponse, parseReceiptsResponse, REF_ID_DELIMITER } from './wire.js';
+import { COLLECTION, ENDPOINTS, OIDC, parseLoginResponse, parseReceiptsResponse, REF_ID_DELIMITER } from './wire.js';
 import type { ReceiptDto } from './wire.js';
 
 const CANONICAL_DOMAIN = 'monoprix.fr';
 
-/** Account API host. Cloudflare gates on the Chrome TLS fingerprint, so collection runs over the impersonating {@link Transport}; no cookie is sent. */
-const API_BASE = 'https://client.monoprix.fr';
-/** Identity provider host for the OIDC dance (login + authorize). */
-const SSO_BASE = 'https://sso.monoprix.fr';
-const LOGIN_URL = new URL('/identity/v1/password/login', SSO_BASE);
-
-/** Public SPA OIDC client — shipped in the page JS, not a secret. */
-const OIDC_CLIENT_ID = '1UdlANOVt4FdstGpM6Kn';
-const OIDC_SCOPE = 'openid profile email phone offline_access address full_write';
-/** SFCC OAuth re-entry the authorize step redirects back to, completing the session. */
-const SFCC_REDIRECT_URI = 'https://www.monoprix.fr/on/demandware.store/Sites-TML-FR-Site/fr_FR/Login-OAuthReentryMPX';
-
-/** Collection request headers (besides the per-request `r5-token` and `accept`); replicate the logged-in SPA. */
-const APPLICATION_CALLER = 'monoprix-shopping';
-const TICKETS_REFERER = 'https://client.monoprix.fr/monoprix-shopping/tickets';
-
-/** Single-call listing cap. ~3-month source retention keeps a date-bounded window well under this. */
-const RECEIPTS_LIMIT = 1000;
+// Endpoints + protocol constants are sourced from the wire contract ({@link ENDPOINTS}/{@link OIDC}/
+// {@link COLLECTION}) so the adapter and its tests address one endpoint set (#88). Cloudflare gates the
+// account API host on the Chrome TLS fingerprint, so collection runs over the impersonating
+// {@link Transport} with no cookie; the identity host serves the OIDC login + authorize dance.
+const API_BASE = ENDPOINTS.apiOrigin;
+const SSO_BASE = ENDPOINTS.ssoOrigin;
+const LOGIN_URL = new URL(ENDPOINTS.login, SSO_BASE);
 
 /** "%PDF-" — the magic prefix every PDF stream starts with. */
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] as const;
@@ -178,7 +167,7 @@ async function obtainLoginTicket(transport: Transport, email: string, password: 
                 accept: 'application/json',
             },
             // expose() ONLY here, at the point of use: the password goes onto the wire, never into a log or error.
-            body: JSON.stringify({ client_id: OIDC_CLIENT_ID, scope: OIDC_SCOPE, email, password: password.expose() }),
+            body: JSON.stringify({ client_id: OIDC.clientId, scope: OIDC.scope, email, password: password.expose() }),
         });
     } catch {
         throw new AuthenticationError('monoprix: login request failed', 'transport-error');
@@ -204,12 +193,12 @@ async function obtainLoginTicket(transport: Transport, email: string, password: 
 
 /** Build the stage-2 authorize URL the browser opens — the ticket rides as the `tkn` query param. */
 function buildAuthorizeUrl(tkn: string): URL {
-    const url = new URL('/oauth/authorize', SSO_BASE);
-    url.searchParams.set('client_id', OIDC_CLIENT_ID);
+    const url = new URL(ENDPOINTS.authorize, SSO_BASE);
+    url.searchParams.set('client_id', OIDC.clientId);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('redirect_uri', SFCC_REDIRECT_URI);
+    url.searchParams.set('redirect_uri', OIDC.sfccRedirectUri);
     url.searchParams.set('state', randomUUID());
-    url.searchParams.set('scope', OIDC_SCOPE);
+    url.searchParams.set('scope', OIDC.scope);
     url.searchParams.set('display', 'page');
     url.searchParams.set('tkn', tkn);
     return url;
@@ -217,8 +206,8 @@ function buildAuthorizeUrl(tkn: string): URL {
 
 /** Fetch and boundary-validate the listing for the window in one `get-receipts` call (the contract has no cursor). */
 async function fetchReceipts(transport: Transport, r5Token: Secret, range: DateRange): Promise<ReceiptDto[]> {
-    const url = new URL('/api/client/get-receipts', API_BASE);
-    url.searchParams.set('limit', String(RECEIPTS_LIMIT));
+    const url = new URL(ENDPOINTS.getReceipts, API_BASE);
+    url.searchParams.set('limit', String(COLLECTION.receiptsLimit));
     url.searchParams.set('startDate', toDay(range.from));
     url.searchParams.set('endDate', toDay(range.to));
     const response = await requestCollection(transport, r5Token, url, 'application/json, text/plain, */*');
@@ -257,7 +246,7 @@ function expandToRefs(receipts: readonly ReceiptDto[], range: DateRange): Receip
 /** Download one receipt's bill, verify it is a PDF, and hand it back as an artifact for the writer to persist. */
 async function fetchBill(transport: Transport, r5Token: Secret, ref: ReceiptRef): Promise<ArtifactHandle> {
     const { receiptId, receiptType } = splitRefId(ref.id);
-    const url = new URL('/api/client/get-receipt-bill', API_BASE);
+    const url = new URL(ENDPOINTS.getReceiptBill, API_BASE);
     url.searchParams.set('receiptId', receiptId);
     url.searchParams.set('receiptType', receiptType);
     const response = await requestCollection(transport, r5Token, url, 'application/pdf');
@@ -282,8 +271,8 @@ async function requestCollection(transport: Transport, r5Token: Secret, url: URL
             headers: {
                 // expose() ONLY here, at the point of use: the token goes onto the wire, never into a log or error.
                 'r5-token': r5Token.expose(),
-                'application-caller': APPLICATION_CALLER,
-                referer: TICKETS_REFERER,
+                'application-caller': COLLECTION.applicationCaller,
+                referer: COLLECTION.ticketsReferer,
                 accept,
                 'accept-language': 'fr',
             },

@@ -15,20 +15,24 @@ import {
     TrustBoundaryError,
 } from '@getreceipt/core';
 import type { AuthHandle, CredentialContext, DateRange, ReceiptWriter } from '@getreceipt/core';
-import { http, HttpResponse, server } from '@getreceipt/testing';
+import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { describe, expect, it } from 'vitest';
 
 import { GrandfraisAdapter, grandfraisAdapter } from './index.js';
+import { ENDPOINTS, listPageSchema, receiptDetailSchema } from './wire.js';
+import type { ListPageDto, ReceiptDto } from './wire.js';
 
-// Everything below runs against MSW-mocked HTTP — there is no live bff.grandfrais.com in CI, so these
-// endpoints/shapes are the in-repo contract (wire.ts), exercised against synthetic fixtures derived from
-// that schema (#84/#88). All fixtures are inline + synthetic with obvious leak-sentinel secrets: zero raw
-// capture. The live oracle (#89) is what promotes the adapter past `unverified`.
-const BASE = 'https://bff.grandfrais.com';
-const LOGIN = `${BASE}/v1/users/login`;
-const RECEIPTS = `${BASE}/v1/receipts`;
-const DETAIL = `${BASE}/v1/receipts/:receiptId`;
-const PDF = `${BASE}/v1/receipts/:receiptId/pdf/:variant`;
+// Everything below runs against MSW-mocked HTTP — there is no live bff.grandfrais.com in CI. Endpoints
+// AND positive response shapes are sourced from the in-repo contract (wire.ts): URLs come from
+// `ENDPOINTS`, and every well-formed fixture is built through `wireFixture(schema, …)` so it provably
+// derives from the wire schema rather than being hand-authored beside the adapter (#88). All fixtures
+// are synthetic with obvious leak-sentinel secrets: zero raw capture. The live oracle (#89) is what
+// promotes the adapter past `unverified`. (Negative-path tests deliberately serve divergent bodies and
+// therefore bypass `wireFixture` — that divergence is the point.)
+const LOGIN = `${ENDPOINTS.origin}${ENDPOINTS.login}`;
+const RECEIPTS = `${ENDPOINTS.origin}${ENDPOINTS.receipts}`;
+const DETAIL = `${ENDPOINTS.origin}${ENDPOINTS.receiptDetail}`;
+const PDF = `${ENDPOINTS.origin}${ENDPOINTS.receiptPdf}`;
 
 const USERNAME = 'shopper@grandfrais.test';
 const PASSWORD = 'gf-pa55word-LEAK-SENTINEL';
@@ -44,17 +48,8 @@ const AMOUNT = 42.5;
 const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
 const ISSUED = '2026-06-01T10:00:00.000Z';
 
-interface WireReceipt {
-    receiptId: string;
-    checkOutDate: string;
-    shopCode: string;
-    shopName: string;
-    amount: number;
-}
-interface WireListPage {
-    receipts: WireReceipt[];
-    paginationToken?: string;
-}
+// Receipt + listing-page shapes are the schema-derived types from wire.ts (ReceiptDto / ListPageDto) —
+// not re-declared here. `WireFlags` is test-local sugar for the per-receipt download flags, not a wire shape.
 interface WireFlags {
     sales?: boolean;
     creditCard?: boolean;
@@ -64,8 +59,10 @@ function creds(): CredentialContext {
     return asCredentialContext({ kind: 'password', username: USERNAME, secret: new Secret(PASSWORD) });
 }
 
-/** A well-formed listing item; override any field (e.g. `checkOutDate`) per test. */
-function receipt(receiptId: string, overrides: Partial<WireReceipt> = {}): WireReceipt {
+// A listing item; override any field per test. A plain builder (not schema-validated here) so the
+// edge-underscore negative tests can still build a divergent receiptId; positive pages validate at the
+// page level via `wireFixture`.
+function receipt(receiptId: string, overrides: Partial<ReceiptDto> = {}): ReceiptDto {
     return { receiptId, checkOutDate: ISSUED, shopCode: SHOP_CODE, shopName: SHOP_NAME, amount: AMOUNT, ...overrides };
 }
 
@@ -76,20 +73,26 @@ function loginOk() {
     );
 }
 
-/** Serve listing pages by pagination token: the first request (no token) gets page 0, `?paginationToken=N` gets page N. */
-function receiptsPages(pages: readonly WireListPage[], onToken?: (token: string | null) => void) {
+/** Serve listing pages by pagination token: the first request (no token) gets page 0, `?paginationToken=N` gets page N. Each page derives from `listPageSchema` (#88). */
+function receiptsPages(pages: readonly ListPageDto[], onToken?: (token: string | null) => void) {
     return http.get(RECEIPTS, ({ request }) => {
         const token = new URL(request.url).searchParams.get('paginationToken');
         onToken?.(token);
         const index = token === null ? 0 : Number(token);
-        return HttpResponse.json(pages[index] ?? { receipts: [] });
+        return HttpResponse.json(wireFixture(listPageSchema, pages[index] ?? { receipts: [] }));
     });
 }
 
 /** Serve every receipt's detail with only the SALE PDF downloadable (one ref per in-window receipt). */
 function detailsAllSales() {
     return http.get(DETAIL, () =>
-        HttpResponse.json({ isDownloadablePDFSales: true, isDownloadablePDFCreditCard: false, items: [] }),
+        HttpResponse.json(
+            wireFixture(receiptDetailSchema, {
+                isDownloadablePDFSales: true,
+                isDownloadablePDFCreditCard: false,
+                items: [],
+            }),
+        ),
     );
 }
 
@@ -97,11 +100,13 @@ function detailsAllSales() {
 function detailsByReceipt(flags: Readonly<Record<string, WireFlags>>) {
     return http.get(DETAIL, ({ params }) => {
         const f = flags[String(params.receiptId)] ?? {};
-        return HttpResponse.json({
-            isDownloadablePDFSales: f.sales ?? false,
-            isDownloadablePDFCreditCard: f.creditCard ?? false,
-            items: [],
-        });
+        return HttpResponse.json(
+            wireFixture(receiptDetailSchema, {
+                isDownloadablePDFSales: f.sales ?? false,
+                isDownloadablePDFCreditCard: f.creditCard ?? false,
+                items: [],
+            }),
+        );
     });
 }
 
@@ -172,7 +177,7 @@ describe('GrandfraisAdapter — AC2: authenticate', () => {
             }),
             http.get(RECEIPTS, ({ request }) => {
                 authHeader = request.headers.get('authorization');
-                return HttpResponse.json({ receipts: [] });
+                return HttpResponse.json(wireFixture(listPageSchema, { receipts: [] }));
             }),
         );
 
@@ -251,7 +256,7 @@ describe('GrandfraisAdapter — AC3: list', () => {
 
     it('follows the pagination token across pages, de-duplicates overlaps, and never truncates', async () => {
         const tokens: (string | null)[] = [];
-        const pages: WireListPage[] = [
+        const pages: ListPageDto[] = [
             { receipts: [receipt('a'), receipt('b')], paginationToken: '1' },
             { receipts: [receipt('b'), receipt('c')] }, // 'b' overlaps page 0
         ];
@@ -275,7 +280,9 @@ describe('GrandfraisAdapter — AC3: list', () => {
                 calls += 1;
                 const token = new URL(request.url).searchParams.get('paginationToken');
                 // Always advertise the SAME next token → a cycle the adapter's seen-token guard must break.
-                return HttpResponse.json({ receipts: [receipt(token ?? 'first')], paginationToken: 'loop' });
+                return HttpResponse.json(
+                    wireFixture(listPageSchema, { receipts: [receipt(token ?? 'first')], paginationToken: 'loop' }),
+                );
             }),
             detailsAllSales(),
         );
