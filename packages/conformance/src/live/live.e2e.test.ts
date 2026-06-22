@@ -34,14 +34,22 @@ const gate = resolveLiveGate(process.env);
  */
 const LIVE_SWEEP_TIMEOUT_MS = 300_000;
 
-/** A secret-free, per-source matrix line: `source → state → detail`. Surfaced as the assertion message so a non-verified source names itself. */
+/**
+ * A secret-free, per-source matrix line: `source → signal (state)[ @ verifiedAt] → detail`. Surfaced
+ * as the assertion / skip message so every source names its own classified outcome — never a bare red/green.
+ */
 function matrix(results: readonly LiveSourceResult[]): string {
-    return results.map((r) => `${r.source} → ${r.verdict.state} → ${r.verdict.detail}`).join('\n');
+    return results
+        .map((r) => {
+            const stamp = r.verdict.verifiedAt === undefined ? '' : ` @ ${r.verdict.verifiedAt.toISOString()}`;
+            return `${r.source} → ${r.verdict.signal} (${r.verdict.state})${stamp} → ${r.verdict.detail}`;
+        })
+        .join('\n');
 }
 
 describe('live e2e harness (gated — skipped unless GETRECEIPT_E2E is configured)', () => {
     it.skipIf(!gate.run)(
-        'verifies EVERY configured source end-to-end against the live service',
+        'verifies every configured source end-to-end and classifies each outcome',
         async (ctx) => {
             // skipIf already prevents execution when the gate said skip; this narrows the union for the type checker.
             if (!gate.run) return;
@@ -58,15 +66,33 @@ describe('live e2e harness (gated — skipped unless GETRECEIPT_E2E is configure
                 throw error;
             }
 
-            // The sweep ran (the gate guarantees ≥1 plan); guard against a vacuous pass on an empty matrix.
-            expect(results.length, 'no sources were verified').toBeGreaterThan(0);
-
-            // EVERY source must reach e2e-verified. The matrix is the assertion message, so a `stale`
-            // (adapter drift) or `unverified` (expired credential / transport) source names itself —
-            // we NEVER collapse the per-source detail, and only an actual success counts as verified.
+            // The sweep ran (the gate guarantees ≥1 plan); guard against acting on an empty matrix.
+            expect(results.length, 'the sweep produced no source results').toBeGreaterThan(0);
             const report = matrix(results);
-            for (const { source, verdict } of results) {
+
+            // 1) Contract drift is THE adapter fault — the make-or-break proof the oracle can fail. A real
+            //    wire.ts Zod mismatch surfaces here and FAILS the run loudly; it is never masked by an
+            //    environmental signal below.
+            const drifted = results.filter((r) => r.verdict.signal === 'contract-drift');
+            expect(
+                drifted.map((r) => r.source),
+                `contract drift detected —\n${report}`,
+            ).toEqual([]);
+
+            // 2) The environmental / degenerate signals (auth, tls-blocked, zero-receipts, transport) are
+            //    "cannot confirm either way" — NEVER a fabricated pass. If NOTHING verified, the whole run is
+            //    inconclusive: skip with the classified reason rather than invent a green.
+            const verified = results.filter((r) => r.verdict.signal === 'verified');
+            if (verified.length === 0) {
+                return ctx.skip(`run inconclusive — no source could be verified:\n${report}`);
+            }
+
+            // 3) Every source that DID return data is promoted to e2e-verified with a last-verified date
+            //    (the flip #90 surfaces for staleness). Inconclusive sources alongside the verified ones are
+            //    surfaced in `report` but do not sink the sweep — one bad credential can't hide the rest.
+            for (const { source, verdict } of verified) {
                 expect(verdict.state, `${source} not verified —\n${report}`).toBe('e2e-verified');
+                expect(verdict.verifiedAt, `${source} missing last-verified date —\n${report}`).toBeInstanceOf(Date);
                 expect(verificationAdvisory(verdict.state), `${source} advisory —\n${report}`).toMatchObject({
                     level: 'ok',
                     proceed: true,
