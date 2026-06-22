@@ -19,81 +19,81 @@ import { http, HttpResponse, server } from '@getreceipt/testing';
 import { describe, expect, it } from 'vitest';
 
 import { MonoprixAdapter, monoprixAdapter } from './index.js';
+import type { BrowserLogin, BrowserLoginRequest } from './index.js';
+import { parseLoginResponse, parseReceiptsResponse } from './wire.js';
 
-// Everything below runs against MSW-mocked HTTP — there is no live monoprix.fr in CI, so these
-// endpoints/shapes are a SYNTHETIC best-effort contract (the real one is private). All fixtures are
-// inline + synthetic with obvious leak-sentinel secrets (AC4): zero raw capture. Auth is the two-step
-// token mint — `/login` returns the GRANT, `/session` mints the session TOKEN — so both are sentinels.
-const BASE = 'https://www.monoprix.fr';
-const LOGIN = `${BASE}/api/account/login`;
-const MINT = `${BASE}/api/account/session`;
-const ORDERS = `${BASE}/api/account/orders`;
-const DOCUMENT = `${BASE}/api/account/orders/:orderId/documents/:documentId`;
+// Everything below runs against MSW-mocked HTTP — there is no live monoprix.fr in CI, so the fixtures
+// are SYNTHETIC + schema-shaped with obvious leak-sentinel secrets (CONTRIBUTING § captures-stay-local):
+// zero raw capture. Auth is the OIDC dance — stage 1 (`/password/login`) returns the login TICKET, and
+// the browser-at-login seam (option C) mints the R5-TOKEN — so both, plus the password, are sentinels.
+const SSO_LOGIN = 'https://sso.monoprix.fr/identity/v1/password/login';
+const API = 'https://client.monoprix.fr/api/client';
+const GET_RECEIPTS = `${API}/get-receipts`;
+const GET_BILL = `${API}/get-receipt-bill`;
+const SFCC = 'https://www.monoprix.fr/on/demandware.store/Sites-TML-FR-Site/fr_FR/Login-OAuthReentryMPX';
+const CLIENT_ID = '1UdlANOVt4FdstGpM6Kn';
+const SCOPE = 'openid profile email phone offline_access address full_write';
 
 const USERNAME = 'shopper@monoprix.test';
 const PASSWORD = 'mp-pa55word-LEAK-SENTINEL';
-const GRANT = 'mp-login-grant-LEAK-SENTINEL';
-const TOKEN = 'mp-session-token-LEAK-SENTINEL';
+const TKN = 'mp-login-tkn-LEAK-SENTINEL';
+const R5TOKEN = 'mp-r5-token-LEAK-SENTINEL';
 
-/** A wide window that admits every in-range synthetic order; the inclusivity test uses a precise one. */
+/** A wide window that admits every in-range synthetic receipt; the inclusivity test uses a precise one. */
 const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
-const ORDERED = '2026-06-01T10:00:00.000Z';
+const ISSUED = '2026-06-01T10:00:00.000Z';
 
-interface WireDoc {
+/** A `get-receipts` receipt, matching `receiptSchema` in wire.ts (the in-repo contract). */
+interface WireReceipt {
     id: string;
-    available: boolean;
-    kind?: string;
-}
-interface WireOrder {
-    id: string;
-    orderedAt: string;
-    label?: string;
-    documents: WireDoc[];
-}
-interface WirePage {
-    orders: WireOrder[];
-    hasMore?: boolean;
+    type: string;
+    date: string;
+    price: number;
 }
 
 function creds(): CredentialContext {
-    return asCredentialContext({ kind: 'password', username: USERNAME, secret: new Secret(PASSWORD) });
+    return asCredentialContext({ kind: 'oauth2', username: USERNAME, secret: new Secret(PASSWORD) });
 }
 
-/** Step 1 of the mint path: `/login` exchanges credentials for the authorization GRANT. */
+/** A test browser-at-login port: mints the sentinel r5-token without a browser (and never touches the network). */
+function fakeBrowserLogin(onRequest?: (request: BrowserLoginRequest) => void): BrowserLogin {
+    return {
+        login(request) {
+            onRequest?.(request);
+            return Promise.resolve({ r5Token: new Secret(R5TOKEN) });
+        },
+    };
+}
+
+/** An adapter wired with the fake browser-login seam (and the default `fetch` transport, so MSW intercepts). */
+function adapter(browserLogin: BrowserLogin = fakeBrowserLogin()): MonoprixAdapter {
+    return new MonoprixAdapter({ browserLogin });
+}
+
+/** Stage 1: `/password/login` exchanges credentials for the opaque login ticket. */
 function loginOk() {
-    return http.post(LOGIN, () => HttpResponse.json({ token: GRANT }));
+    return http.post(SSO_LOGIN, () => HttpResponse.json({ tkn: TKN }));
 }
 
-/** Step 2 of the mint path: `/session` mints the session TOKEN from the GRANT. */
-function mintOk() {
-    return http.post(MINT, () => HttpResponse.json({ sessionToken: TOKEN }));
+/** Serve one `get-receipts` page (the contract returns the whole window in a single call). */
+function receiptsOk(receipts: readonly WireReceipt[]) {
+    return http.get(GET_RECEIPTS, () => HttpResponse.json({ receipts }));
 }
 
-/** Serve listing pages by 1-based page number; an out-of-range page is an empty, terminal page. */
-function ordersPages(pages: readonly WirePage[], onPage?: (page: number) => void) {
-    return http.get(ORDERS, ({ request }) => {
-        const page = Number(new URL(request.url).searchParams.get('page'));
-        onPage?.(page);
-        return HttpResponse.json(pages[page - 1] ?? { orders: [] });
+function billPdf() {
+    return http.get(GET_BILL, ({ request }) => {
+        const url = new URL(request.url);
+        const tag = `${String(url.searchParams.get('receiptId'))}/${String(url.searchParams.get('receiptType'))}`;
+        return new HttpResponse(pdfBytes(tag), { headers: { 'content-type': 'application/pdf' } });
     });
-}
-
-function documentsPdf() {
-    return http.get(
-        DOCUMENT,
-        ({ params }) =>
-            new HttpResponse(pdfBytes(`${String(params.orderId)}/${String(params.documentId)}`), {
-                headers: { 'content-type': 'application/pdf' },
-            }),
-    );
 }
 
 function pdfBytes(tag: string): Uint8Array {
     return new TextEncoder().encode(`%PDF-1.4\n% monoprix ${tag}\n%%EOF\n`);
 }
 
-function authenticate(): Promise<AuthHandle> {
-    return monoprixAdapter.authenticate(creds());
+function authenticate(a = adapter()): Promise<AuthHandle> {
+    return a.authenticate(creds());
 }
 
 function noopWriter(): ReceiptWriter {
@@ -108,60 +108,86 @@ describe('MonoprixAdapter — AC1: registration + resolution', () => {
 
         expect(resolver.resolve('monoprix.fr')).toBe(monoprixAdapter);
         expect(resolver.resolve('www.monoprix.fr')).toBe(monoprixAdapter);
+        expect(resolver.resolve('client.monoprix.fr')).toBe(monoprixAdapter);
         expect(resolver.resolve('courses.monoprix.fr')).toBe(monoprixAdapter);
         expect(resolver.resolve('MONOPRIX.fr')).toBe(monoprixAdapter);
         expect(registry.get('monoprix.fr')).toBe(monoprixAdapter);
     });
 
-    it('declares a password / http-api / pdf-download descriptor with an inclusive ordered-date window and page pagination', () => {
+    it('declares an oauth2 / http-api / pdf-download descriptor with an inclusive issued-date window and no pagination', () => {
         const descriptor = monoprixAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
             canonicalDomain: 'monoprix.fr',
-            authKind: 'password',
+            authKind: 'oauth2',
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
-            pagination: 'page',
-            dateFilter: { basis: 'ordered', fromInclusive: true, toInclusive: true },
+            pagination: 'none',
+            dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
         });
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
         expect(new MonoprixAdapter().descriptor.canonicalDomain).toBe('monoprix.fr');
     });
 });
 
-describe('MonoprixAdapter — AC2: authenticate (two-step token mint)', () => {
-    it('exchanges credentials for a grant, mints a session token, and authorizes later calls with it', async () => {
+describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)', () => {
+    it('runs OIDC stage 1, mints the r5-token via the browser seam, and authorizes collection with the r5-token + SPA headers (no cookie)', async () => {
         let loginBody: unknown;
-        let mintAuth: string | null = null;
-        let listAuth: string | null = null;
+        let loginOrigin: string | null = null;
+        let authorizeUrl: URL | undefined;
+        let listHeaders: Headers | undefined;
+        let listUrl: URL | undefined;
         server.use(
-            http.post(LOGIN, async ({ request }) => {
+            http.post(SSO_LOGIN, async ({ request }) => {
                 loginBody = await request.json();
-                return HttpResponse.json({ token: GRANT });
+                loginOrigin = request.headers.get('origin');
+                return HttpResponse.json({ tkn: TKN });
             }),
-            http.post(MINT, ({ request }) => {
-                mintAuth = request.headers.get('authorization');
-                return HttpResponse.json({ sessionToken: TOKEN });
+            http.get(GET_RECEIPTS, ({ request }) => {
+                listHeaders = request.headers;
+                listUrl = new URL(request.url);
+                return HttpResponse.json({ receipts: [] });
             }),
-            http.get(ORDERS, ({ request }) => {
-                listAuth = request.headers.get('authorization');
-                return HttpResponse.json({ orders: [] });
+        );
+        const a = adapter(
+            fakeBrowserLogin((request) => {
+                authorizeUrl = request.authorizeUrl;
             }),
         );
 
-        const auth = await monoprixAdapter.authenticate(creds());
-        await monoprixAdapter.list(auth, WIDE);
+        const auth = await a.authenticate(creds());
+        await a.list(auth, WIDE);
 
-        // The password reaches the login step; the GRANT authorizes the mint; the minted TOKEN authorizes list.
-        expect(loginBody).toEqual({ email: USERNAME, password: PASSWORD });
-        expect(mintAuth).toBe(`Bearer ${GRANT}`);
-        expect(listAuth).toBe(`Bearer ${TOKEN}`);
+        // Stage 1: the password reaches the login endpoint alongside the public client_id + scope, from the SPA origin.
+        expect(loginBody).toEqual({ client_id: CLIENT_ID, scope: SCOPE, email: USERNAME, password: PASSWORD });
+        expect(loginOrigin).toBe('https://client.monoprix.fr');
+        // Stage 2: the authorize URL the browser opens carries the ticket and the OIDC parameters.
+        expect(authorizeUrl?.origin).toBe('https://sso.monoprix.fr');
+        expect(authorizeUrl?.pathname).toBe('/oauth/authorize');
+        expect(authorizeUrl?.searchParams.get('tkn')).toBe(TKN);
+        expect(authorizeUrl?.searchParams.get('client_id')).toBe(CLIENT_ID);
+        expect(authorizeUrl?.searchParams.get('response_type')).toBe('code');
+        expect(authorizeUrl?.searchParams.get('redirect_uri')).toBe(SFCC);
+        expect(authorizeUrl?.searchParams.get('scope')).toBe(SCOPE);
+        expect(authorizeUrl?.searchParams.get('display')).toBe('page');
+        expect(authorizeUrl?.searchParams.get('state')).toBeTruthy();
+        // Collection: the minted r5-token authorizes list via the `r5-token` header (never Authorization), no cookie.
+        expect(listHeaders?.get('r5-token')).toBe(R5TOKEN);
+        expect(listHeaders?.get('authorization')).toBeNull();
+        expect(listHeaders?.get('cookie')).toBeNull();
+        expect(listHeaders?.get('application-caller')).toBe('monoprix-shopping');
+        expect(listHeaders?.get('referer')).toBe('https://client.monoprix.fr/monoprix-shopping/tickets');
+        expect(listHeaders?.get('accept-language')).toBe('fr');
+        // Query: a single bounded call — limit + a day-granular window.
+        expect(listUrl?.searchParams.get('limit')).toBe('1000');
+        expect(listUrl?.searchParams.get('startDate')).toBe('2026-01-01');
+        expect(listUrl?.searchParams.get('endDate')).toBe('2026-12-31');
     });
 
     it('maps rejected credentials to a typed AuthenticationError carrying no secret material', async () => {
-        server.use(http.post(LOGIN, () => new HttpResponse(null, { status: 401 })));
+        server.use(http.post(SSO_LOGIN, () => new HttpResponse(null, { status: 401 })));
 
-        const error: unknown = await monoprixAdapter.authenticate(creds()).catch((caught: unknown) => caught);
+        const error: unknown = await authenticate().catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(AuthenticationError);
         expect((error as AuthenticationError).reason).toBe('invalid-credentials');
@@ -169,30 +195,11 @@ describe('MonoprixAdapter — AC2: authenticate (two-step token mint)', () => {
         expect((error as Error).stack ?? '').not.toContain(PASSWORD);
     });
 
-    it('maps a rejected token mint to a typed AuthenticationError carrying neither password nor grant', async () => {
-        server.use(
-            loginOk(),
-            http.post(MINT, () => new HttpResponse(null, { status: 401 })),
-        );
+    it('maps a login response with no usable ticket to a typed AuthenticationError (boundary-validated)', async () => {
+        // A 2xx body that fails the login-response schema (empty ticket) is drift on the auth path.
+        server.use(http.post(SSO_LOGIN, () => HttpResponse.json({ tkn: '' })));
 
-        const error: unknown = await monoprixAdapter.authenticate(creds()).catch((caught: unknown) => caught);
-
-        expect(error).toBeInstanceOf(AuthenticationError);
-        expect((error as AuthenticationError).reason).toBe('invalid-credentials');
-        const surfaces = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
-        expect(surfaces).not.toContain(PASSWORD);
-        expect(surfaces).not.toContain(GRANT);
-    });
-
-    it('maps an unusable token-mint body to a typed AuthenticationError (boundary-validated)', async () => {
-        // A 2xx body that fails the mint-response schema (empty token) is drift on the auth path — an
-        // auth failure, surfaced as a typed AuthenticationError, never a leaked value.
-        server.use(
-            loginOk(),
-            http.post(MINT, () => HttpResponse.json({ sessionToken: '' })),
-        );
-
-        const error: unknown = await monoprixAdapter.authenticate(creds()).catch((caught: unknown) => caught);
+        const error: unknown = await authenticate().catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(AuthenticationError);
         expect((error as AuthenticationError).reason).toBe('unexpected-response');
@@ -200,210 +207,154 @@ describe('MonoprixAdapter — AC2: authenticate (two-step token mint)', () => {
 
     it('rejects missing credential material with a typed error before any request leaves', async () => {
         // No handlers are registered; onUnhandledRequest:'error' would throw if a request were attempted.
-        const incomplete = asCredentialContext({ kind: 'password', username: USERNAME });
+        const incomplete = asCredentialContext({ kind: 'oauth2', username: USERNAME });
 
-        const error: unknown = await monoprixAdapter.authenticate(incomplete).catch((caught: unknown) => caught);
+        const error: unknown = await adapter()
+            .authenticate(incomplete)
+            .catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(AuthenticationError);
     });
 
-    it('projects the minted session (not the grant) into a persistable StoredSession (#17 login ceremony)', async () => {
-        server.use(loginOk(), mintOk());
+    it('requires an operator-supplied browser-at-login: the default build cannot complete auth or leak secrets', async () => {
+        // Stage 1 succeeds (real, mocked); the default port has no browser wired, so auth stops there — and
+        // the raised error names the operator step without echoing the password or the login ticket.
+        server.use(loginOk());
 
-        const auth = await monoprixAdapter.authenticate(creds());
+        const error: unknown = await new MonoprixAdapter().authenticate(creds()).catch((caught: unknown) => caught);
 
-        expect(isSessionPersistable(monoprixAdapter)).toBe(true);
-        if (isSessionPersistable(monoprixAdapter)) {
-            const session = monoprixAdapter.toStoredSession(auth);
-            // The persisted token is the MINTED session token, never the intermediate grant.
-            expect(session.token.expose()).toBe(TOKEN);
-            expect(session.token.expose()).not.toBe(GRANT);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toContain('browser-at-login');
+        const surfaces = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
+        expect(surfaces).not.toContain(PASSWORD);
+        expect(surfaces).not.toContain(TKN);
+    });
+
+    it('projects the minted r5-token (not the password or ticket) into a persistable StoredSession (#17 login ceremony)', async () => {
+        server.use(loginOk());
+        const a = adapter();
+
+        const auth = await a.authenticate(creds());
+
+        expect(isSessionPersistable(a)).toBe(true);
+        if (isSessionPersistable(a)) {
+            const session = a.toStoredSession(auth);
+            expect(session.token.expose()).toBe(R5TOKEN);
+            expect(session.token.expose()).not.toBe(PASSWORD);
+            expect(session.token.expose()).not.toBe(TKN);
         }
     });
 });
 
 describe('MonoprixAdapter — AC3: list', () => {
-    it('maps the window inclusively on both bounds and excludes orders just outside', async () => {
+    it('maps the window inclusively on both bounds and excludes receipts just outside', async () => {
         const from = new Date('2026-03-10T00:00:00.000Z');
         const to = new Date('2026-03-20T00:00:00.000Z');
-        const doc: WireDoc[] = [{ id: 'd', available: true }];
         server.use(
             loginOk(),
-            mintOk(),
-            ordersPages([
-                {
-                    orders: [
-                        { id: 'before', orderedAt: '2026-03-09T23:59:59.999Z', documents: doc },
-                        { id: 'on-from', orderedAt: from.toISOString(), documents: doc },
-                        { id: 'on-to', orderedAt: to.toISOString(), documents: doc },
-                        { id: 'after', orderedAt: '2026-03-20T00:00:00.001Z', documents: doc },
-                    ],
-                },
+            receiptsOk([
+                { id: 'before', type: 'store', date: '2026-03-09T23:59:59.999Z', price: 1 },
+                { id: 'on-from', type: 'store', date: from.toISOString(), price: 2 },
+                { id: 'on-to', type: 'store', date: to.toISOString(), price: 3 },
+                { id: 'after', type: 'store', date: '2026-03-20T00:00:00.001Z', price: 4 },
             ]),
         );
 
         const refs = await monoprixAdapter.list(await authenticate(), { from, to });
 
-        expect(refs.map((ref) => ref.id)).toEqual(['on-from__d', 'on-to__d']);
+        expect(refs.map((ref) => ref.id)).toEqual(['on-from__store', 'on-to__store']);
     });
 
-    it('returns an empty success for a window with no orders', async () => {
-        server.use(loginOk(), mintOk(), ordersPages([{ orders: [] }]));
+    it('returns an empty success for a window with no receipts', async () => {
+        server.use(loginOk(), receiptsOk([]));
 
         const refs = await monoprixAdapter.list(await authenticate(), WIDE);
 
         expect(refs).toEqual([]);
     });
 
-    it('follows pages, de-duplicates overlaps, and never truncates', async () => {
-        const pagesSeen: number[] = [];
-        const oneDoc = (id: string): WireOrder => ({
-            id,
-            orderedAt: ORDERED,
-            documents: [{ id: 'd', available: true }],
-        });
-        const pages: WirePage[] = [
-            { orders: [oneDoc('a'), oneDoc('b')], hasMore: true },
-            { orders: [oneDoc('b'), oneDoc('c')] }, // 'b' overlaps page 1; no hasMore → last page
-        ];
+    it('de-duplicates receipts that repeat within a response, preserving listing order', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            ordersPages(pages, (page) => pagesSeen.push(page)),
+            receiptsOk([
+                { id: 'a', type: 'store', date: ISSUED, price: 1 },
+                { id: 'b', type: 'store', date: ISSUED, price: 2 },
+                { id: 'a', type: 'store', date: ISSUED, price: 1 },
+            ]),
         );
 
         const refs = await monoprixAdapter.list(await authenticate(), WIDE);
 
-        expect(refs.map((ref) => ref.id)).toEqual(['a__d', 'b__d', 'c__d']);
-        expect(pagesSeen).toEqual([1, 2]); // two pages followed, then stopped (page 2 has no hasMore)
-    });
-
-    it('terminates via the empty-page guard on a server that never clears hasMore', async () => {
-        let calls = 0;
-        server.use(
-            loginOk(),
-            mintOk(),
-            http.get(ORDERS, ({ request }) => {
-                calls += 1;
-                const page = Number(new URL(request.url).searchParams.get('page'));
-                // Always advertise hasMore; page 3 is empty → the guard must stop here instead of looping.
-                if (page >= 3) {
-                    return HttpResponse.json({ orders: [], hasMore: true });
-                }
-                return HttpResponse.json({
-                    orders: [{ id: `o${page}`, orderedAt: ORDERED, documents: [{ id: 'd', available: true }] }],
-                    hasMore: true,
-                });
-            }),
-        );
-
-        const refs = await monoprixAdapter.list(await authenticate(), WIDE);
-
-        expect(calls).toBe(3); // pages 1 and 2 yield orders; page 3 is empty → stop, no hang
-        expect(refs.map((ref) => ref.id)).toEqual(['o1__d', 'o2__d']);
+        expect(refs.map((ref) => ref.id)).toEqual(['a__store', 'b__store']);
     });
 });
 
 describe('MonoprixAdapter — AC3: fetch', () => {
-    it('expands only available documents into refs and handles zero / one / many per order', async () => {
+    it('mints one ref per receipt, packing id + type, and preserves listing order', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            ordersPages([
-                {
-                    orders: [
-                        { id: 'zero', orderedAt: ORDERED, documents: [{ id: 'x', available: false }] },
-                        { id: 'one', orderedAt: ORDERED, documents: [{ id: 'x', available: true }] },
-                        {
-                            id: 'mix',
-                            orderedAt: ORDERED,
-                            documents: [
-                                { id: 'a', available: true },
-                                { id: 'b', available: false },
-                            ],
-                        },
-                        {
-                            id: 'many',
-                            orderedAt: ORDERED,
-                            documents: [
-                                { id: 'a', available: true },
-                                { id: 'b', available: true },
-                            ],
-                        },
-                    ],
-                },
+            receiptsOk([
+                { id: 'r1', type: 'store', date: ISSUED, price: 12.3 },
+                { id: 'r2', type: 'online', date: ISSUED, price: 4.5 },
             ]),
         );
 
         const refs = await monoprixAdapter.list(await authenticate(), WIDE);
 
-        // 'zero' (no available doc) contributes nothing — zero is a success; unavailable variants are skipped.
-        expect(refs.map((ref) => ref.id)).toEqual(['one__x', 'mix__a', 'many__a', 'many__b']);
+        expect(refs.map((ref) => ref.id)).toEqual(['r1__store', 'r2__online']);
     });
 
-    it('downloads an available document and returns it as a verified PDF artifact', async () => {
+    it('defaults a receipt that omits its type to "store" and addresses the bill with it', async () => {
+        // The contract documents `type` with a "store" default — a receipt without one is a store
+        // receipt, not drift, and `fetch` must still resolve a receiptType.
         server.use(
             loginOk(),
-            mintOk(),
-            ordersPages([
-                {
-                    orders: [
-                        {
-                            id: 'o1',
-                            orderedAt: ORDERED,
-                            label: 'Commande',
-                            documents: [{ id: 'invoice', available: true, kind: 'invoice' }],
-                        },
-                    ],
-                },
-            ]),
-            documentsPdf(),
+            http.get(GET_RECEIPTS, () => HttpResponse.json({ receipts: [{ id: 'r1', date: ISSUED, price: 1 }] })),
+            billPdf(),
         );
         const auth = await authenticate();
         const refs = await monoprixAdapter.list(auth, WIDE);
-        const ref = refs[0];
+        expect(refs.map((ref) => ref.id)).toEqual(['r1__store']);
+
+        const artifact = asReceiptArtifact(await monoprixAdapter.fetch(auth, refs[0]!));
+        expect(new TextDecoder().decode(artifact.bytes)).toContain('monoprix r1/store');
+    });
+
+    it('downloads a receipt bill and returns it as a verified PDF artifact addressed by id + type', async () => {
+        server.use(loginOk(), receiptsOk([{ id: 'r1', type: 'store', date: ISSUED, price: 9.99 }]), billPdf());
+        const auth = await authenticate();
+        const ref = (await monoprixAdapter.list(auth, WIDE))[0];
         expect(ref).toBeDefined();
 
         const artifact = asReceiptArtifact(await monoprixAdapter.fetch(auth, ref!));
 
         expect(artifact.contentType).toBe('application/pdf');
-        expect(artifact.filename).toBe('o1__invoice.pdf');
-        expect(new TextDecoder().decode(artifact.bytes).startsWith('%PDF-')).toBe(true);
-        expect(ref!.title).toBe('Commande (invoice)');
+        expect(artifact.filename).toBe('r1__store.pdf');
+        // The fetched bytes are tagged with the matched query params, proving fetch addressed get-receipt-bill
+        // with receiptId `r1` and receiptType `store` (recovered from the packed ref id).
+        expect(new TextDecoder().decode(artifact.bytes)).toContain('monoprix r1/store');
     });
 
-    it('round-trips a legitimate internal-underscore id to the correct document', async () => {
-        // A single INTERNAL underscore is legal — only an embedded `__` or an EDGE underscore is drift. Such an
-        // id must pass the boundary AND split back to the exact (orderId, documentId) the document URL needs.
-        server.use(
-            loginOk(),
-            mintOk(),
-            ordersPages([
-                { orders: [{ id: 'MP_2026', orderedAt: ORDERED, documents: [{ id: 'de_tail', available: true }] }] },
-            ]),
-            documentsPdf(),
-        );
+    it('round-trips a legitimate internal-underscore id/type to the correct receipt bill', async () => {
+        // A single INTERNAL underscore is legal — only an embedded `__` or an EDGE underscore is drift. Such a
+        // packed ref must pass the boundary AND split back to the exact (receiptId, receiptType) the bill URL needs.
+        server.use(loginOk(), receiptsOk([{ id: 'MP_2026', type: 'in_store', date: ISSUED, price: 1 }]), billPdf());
         const auth = await authenticate();
         const refs = await monoprixAdapter.list(auth, WIDE);
-        expect(refs.map((ref) => ref.id)).toEqual(['MP_2026__de_tail']);
+        expect(refs.map((ref) => ref.id)).toEqual(['MP_2026__in_store']);
 
         const artifact = asReceiptArtifact(await monoprixAdapter.fetch(auth, refs[0]!));
 
-        // The fetched bytes are tagged with the matched route params, proving the first-`__` split recovered
-        // orderId `MP_2026` and documentId `de_tail` (not `MP` / `2026__de_tail`).
-        expect(artifact.filename).toBe('MP_2026__de_tail.pdf');
-        expect(new TextDecoder().decode(artifact.bytes)).toContain('monoprix MP_2026/de_tail');
+        expect(artifact.filename).toBe('MP_2026__in_store.pdf');
+        expect(new TextDecoder().decode(artifact.bytes)).toContain('monoprix MP_2026/in_store');
     });
 
-    it('rejects a fetched document that is not a valid PDF at the trust boundary', async () => {
+    it('rejects a fetched bill that is not a valid PDF at the trust boundary', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            ordersPages([
-                { orders: [{ id: 'o1', orderedAt: ORDERED, documents: [{ id: 'invoice', available: true }] }] },
-            ]),
+            receiptsOk([{ id: 'r1', type: 'store', date: ISSUED, price: 1 }]),
             http.get(
-                DOCUMENT,
+                GET_BILL,
                 () =>
                     new HttpResponse(new TextEncoder().encode('<html>not a pdf</html>'), {
                         headers: { 'content-type': 'text/html' },
@@ -424,9 +375,8 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
     it('rejects a malformed listing response at the trust boundary, labeled by source:stage', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            http.get(ORDERS, () =>
-                HttpResponse.json({ orders: [{ id: '', orderedAt: 'not-a-date', documents: 'nope' }] }),
+            http.get(GET_RECEIPTS, () =>
+                HttpResponse.json({ receipts: [{ id: '', type: 'store', date: 'not-a-date', price: 'nope' }] }),
             ),
         );
         const auth = await authenticate();
@@ -437,21 +387,16 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
         expect((error as TrustBoundaryError).boundary).toBe('monoprix.fr:list');
     });
 
-    // An embedded delimiter OR an edge underscore would make the packed ref-id ambiguous (e.g. `O_`+`D` and
-    // `O`+`_D` both pack to `O___D`, silently colliding). Each is treated as drift and rejected at the boundary.
+    // An embedded delimiter OR an edge underscore would make the packed ref-id ambiguous (e.g. `A_`+`B` and
+    // `A`+`_B` both pack to `A___B`, silently colliding). Each is treated as drift and rejected at the boundary.
     it.each([
-        { label: 'embedded delimiter in an order id', order: 'MP__1', doc: 'invoice' },
-        { label: 'trailing underscore in an order id', order: 'MP_', doc: 'invoice' },
-        { label: 'leading underscore in a document id', order: 'MP-1', doc: '_invoice' },
-    ])('rejects $label, so distinct documents can never collide', async ({ order, doc }) => {
+        { label: 'embedded delimiter in a receipt id', id: 'MP__1', type: 'store' },
+        { label: 'trailing underscore in a receipt id', id: 'MP_', type: 'store' },
+        { label: 'leading underscore in a receipt type', id: 'MP-1', type: '_store' },
+    ])('rejects $label, so distinct receipts can never collide', async ({ id, type }) => {
         server.use(
             loginOk(),
-            mintOk(),
-            http.get(ORDERS, () =>
-                HttpResponse.json({
-                    orders: [{ id: order, orderedAt: ORDERED, documents: [{ id: doc, available: true }] }],
-                }),
-            ),
+            http.get(GET_RECEIPTS, () => HttpResponse.json({ receipts: [{ id, type, date: ISSUED, price: 1 }] })),
         );
         const auth = await authenticate();
 
@@ -464,45 +409,24 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
     it('drives a full collect() run end-to-end and leaks no secret into results, manifest, or persisted bytes', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            ordersPages([
-                {
-                    orders: [
-                        // Zero available documents (empty + all-unavailable) is a success: these contribute nothing,
-                        // yet the run still completes and writes the available documents of the other orders.
-                        { id: 'MP-0', orderedAt: ORDERED, documents: [] },
-                        {
-                            id: 'MP-1',
-                            orderedAt: ORDERED,
-                            label: 'Commande',
-                            documents: [{ id: 'invoice', available: true, kind: 'invoice' }],
-                        },
-                        {
-                            id: 'MP-2',
-                            orderedAt: ORDERED,
-                            documents: [
-                                { id: 'a', available: true },
-                                { id: 'b', available: true },
-                            ],
-                        },
-                        { id: 'MP-3', orderedAt: ORDERED, documents: [{ id: 'void', available: false }] },
-                    ],
-                },
+            receiptsOk([
+                { id: 'MP-1', type: 'store', date: ISSUED, price: 10.5 },
+                { id: 'MP-2', type: 'online', date: ISSUED, price: 7.25 },
             ]),
-            documentsPdf(),
+            billPdf(),
         );
         const dir = await mkdtemp(join(tmpdir(), 'mp-adapter-'));
         try {
             const writer = new FilesystemReceiptWriter({ outDir: dir });
-            const result = await collect({ adapter: monoprixAdapter, credentials: creds(), writer, window: WIDE });
+            const result = await collect({ adapter: adapter(), credentials: creds(), writer, window: WIDE });
 
             expect(result.outcome).toBe('succeeded');
             if (result.outcome === 'succeeded') {
-                expect(result.written.map((ref) => ref.id)).toEqual(['MP-1__invoice', 'MP-2__a', 'MP-2__b']);
+                expect(result.written.map((ref) => ref.id)).toEqual(['MP-1__store', 'MP-2__online']);
             }
 
             const files = (await readdir(join(dir, 'monoprix.fr'))).sort();
-            expect(files).toHaveLength(3);
+            expect(files).toHaveLength(2);
             expect(files.every((name) => name.endsWith('.pdf'))).toBe(true);
 
             const surfaces = [
@@ -512,19 +436,19 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
                 inspect(writer.manifest),
             ].join('\n');
             expect(surfaces).not.toContain(PASSWORD);
-            expect(surfaces).not.toContain(GRANT);
-            expect(surfaces).not.toContain(TOKEN);
+            expect(surfaces).not.toContain(TKN);
+            expect(surfaces).not.toContain(R5TOKEN);
 
             const persisted = (
                 await Promise.all(files.map((name) => readFile(join(dir, 'monoprix.fr', name), 'utf8')))
             ).join('\n');
             expect(persisted).not.toContain(PASSWORD);
-            expect(persisted).not.toContain(GRANT);
-            expect(persisted).not.toContain(TOKEN);
+            expect(persisted).not.toContain(TKN);
+            expect(persisted).not.toContain(R5TOKEN);
 
             // Idempotent re-run: a fresh writer over the same directory skips everything, fetching nothing new.
             const rerun = await collect({
-                adapter: monoprixAdapter,
+                adapter: adapter(),
                 credentials: creds(),
                 writer: new FilesystemReceiptWriter({ outDir: dir }),
                 window: WIDE,
@@ -532,7 +456,7 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
             expect(rerun.outcome).toBe('succeeded');
             if (rerun.outcome === 'succeeded') {
                 expect(rerun.written).toHaveLength(0);
-                expect(rerun.skipped.map((ref) => ref.id)).toEqual(['MP-1__invoice', 'MP-2__a', 'MP-2__b']);
+                expect(rerun.skipped.map((ref) => ref.id)).toEqual(['MP-1__store', 'MP-2__online']);
             }
         } finally {
             await rm(dir, { recursive: true, force: true });
@@ -540,32 +464,62 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
     });
 });
 
-describe('MonoprixAdapter — re-auth seam', () => {
-    it('maps an expired session (HTTP 401 on list) to a ReauthRequiredError', async () => {
+describe('MonoprixAdapter — re-auth seam vs TLS-impersonation fault', () => {
+    it('maps an expired r5-token (HTTP 401 on list) to a ReauthRequiredError', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            http.get(ORDERS, () => new HttpResponse(null, { status: 401 })),
+            http.get(GET_RECEIPTS, () => new HttpResponse(null, { status: 401 })),
         );
         const auth = await authenticate();
 
         await expect(monoprixAdapter.list(auth, WIDE)).rejects.toBeInstanceOf(ReauthRequiredError);
     });
 
-    it('surfaces an expired session through collect() as a structured reauth-required result', async () => {
+    it('treats HTTP 403 as a missing-TLS-impersonation transport fault, NOT a re-auth', async () => {
         server.use(
             loginOk(),
-            mintOk(),
-            http.get(ORDERS, () => new HttpResponse(null, { status: 403 })),
+            http.get(GET_RECEIPTS, () => new HttpResponse(null, { status: 403 })),
+        );
+        const auth = await authenticate();
+
+        const error: unknown = await monoprixAdapter.list(auth, WIDE).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(ReauthRequiredError);
+        expect((error as Error).message).toContain('TLS impersonation');
+    });
+
+    it('surfaces an expired r5-token through collect() as a structured reauth-required result', async () => {
+        server.use(
+            loginOk(),
+            http.get(GET_RECEIPTS, () => new HttpResponse(null, { status: 401 })),
         );
 
-        const result = await collect({
-            adapter: monoprixAdapter,
-            credentials: creds(),
-            writer: noopWriter(),
-            window: WIDE,
-        });
+        const result = await collect({ adapter: adapter(), credentials: creds(), writer: noopWriter(), window: WIDE });
 
         expect(result.outcome).toBe('reauth-required');
+    });
+});
+
+describe('wire.ts — the in-repo contract (schema-derived fixtures, not hand-authored)', () => {
+    it('accepts a get-receipts page in the documented real shape and rejects drift', () => {
+        const page = parseReceiptsResponse(
+            { receipts: [{ id: 'r1', type: 'store', date: ISSUED, price: 19.9 }] },
+            'monoprix.fr:list',
+        );
+        expect(page.receipts[0]).toMatchObject({ id: 'r1', type: 'store', price: 19.9 });
+
+        expect(() => parseReceiptsResponse({ receipts: [{ id: 'r1' }] }, 'monoprix.fr:list')).toThrow(
+            TrustBoundaryError,
+        );
+        expect(() => parseReceiptsResponse({ orders: [] }, 'monoprix.fr:list')).toThrow(TrustBoundaryError);
+    });
+
+    it('accepts a login response carrying a ticket and flags one that does not', () => {
+        const ok = parseLoginResponse({ tkn: TKN }, 'monoprix.fr:login');
+        expect(ok.ok).toBe(true);
+
+        expect(parseLoginResponse({ tkn: '' }, 'monoprix.fr:login').ok).toBe(false);
+        expect(parseLoginResponse({}, 'monoprix.fr:login').ok).toBe(false);
     });
 });
