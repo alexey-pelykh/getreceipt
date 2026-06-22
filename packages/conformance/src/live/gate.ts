@@ -52,10 +52,11 @@ export const PROFILE_ENV = 'GETRECEIPT_E2E_PROFILE';
 /** The profile selected when {@link PROFILE_ENV} is unset. */
 const DEFAULT_PROFILE = 'default';
 
-/** A fully specified live run: which source, and the credentials to authenticate it (the secret carried as a reference, never a value). */
+/** A fully specified live run: which source, and the credentials to authenticate it (username and secret each carried as a reference-or-literal, never a resolved value). */
 export interface LivePlan {
     readonly source: string;
-    readonly username: string;
+    /** Resolved to its value at call-time by the harness; a `{ ref }` for `op://` / `encrypted-file:`, else an inline literal. */
+    readonly username: CredentialValue;
     /** Resolved to its value at call-time by the harness; a `{ ref }` for `op://` / `encrypted-file:`, else an inline literal. */
     readonly secret: CredentialValue;
 }
@@ -113,7 +114,8 @@ function overridePlan(env: GateEnv): LivePlan | undefined {
     if (source === undefined || username === undefined || secret === undefined) {
         return undefined;
     }
-    return { source, username, secret: toCredentialValue(secret) };
+    // The username may itself be an `op://` / `encrypted-file:` reference — wrapped like the secret so it resolves at call-time.
+    return { source, username: toCredentialValue(username), secret: toCredentialValue(secret) };
 }
 
 /**
@@ -148,10 +150,11 @@ function plansFromConfig(
     const plans: LivePlan[] = [];
     const notes: string[] = [];
     for (const [source, auth] of Object.entries(profile.sources)) {
-        const username = nonEmpty(auth.username);
-        if (username === undefined || auth.secret === undefined) {
+        // Both are CredentialValues now (a `{ ref }` or literal), resolved at call-time — so usability is
+        // just "configured at all", not a non-empty-string check; the harness dereferences each.
+        if (auth.username === undefined || auth.secret === undefined) {
             const missing = [
-                username === undefined ? 'username' : undefined,
+                auth.username === undefined ? 'username' : undefined,
                 auth.secret === undefined ? 'secret' : undefined,
             ]
                 .filter((part): part is string => part !== undefined)
@@ -159,7 +162,7 @@ function plansFromConfig(
             notes.push(`skipped "${source}" (missing ${missing})`);
             continue;
         }
-        plans.push({ source, username, secret: auth.secret });
+        plans.push({ source, username: auth.username, secret: auth.secret });
     }
 
     return { plans, notes };

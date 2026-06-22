@@ -144,6 +144,29 @@ describe('resolveLiveGate — single-source env override (the #81 fast-path)', (
         }
     });
 
+    it('wraps an op:// env username as a backend reference (resolved at call-time, like the secret)', () => {
+        const env: GateEnv = {
+            [OPT_IN_ENV]: '1',
+            [SOURCE_ENV]: 'grandfrais.com',
+            [USERNAME_ENV]: 'op://Private/gf/username',
+            [SECRET_ENV]: 'op://Private/gf/pw',
+        };
+        const decision = resolveLiveGate(env, { loadConfig: fakeLoadConfig(ONE_SOURCE) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans[0]?.username).toEqual({ ref: 'op://Private/gf/username' });
+        }
+    });
+
+    it('keeps a plain env username as an inline literal (matching the resolver dispatch)', () => {
+        const decision = resolveLiveGate(overrideEnv('op://Private/gf/pw'), { loadConfig: fakeLoadConfig(ONE_SOURCE) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            // A non-`op://` / non-`encrypted-file:` username stays a literal — back-compat for plain emails.
+            expect(decision.plans[0]?.username).toBe('shopper@example.com');
+        }
+    });
+
     it('falls through to config when the triple is incomplete (only source + username, no secret)', () => {
         const spy = { called: false };
         const env: GateEnv = {
@@ -268,6 +291,25 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
         expect(decision.run).toBe(true);
         if (decision.run) {
             expect(decision.plans[0]?.secret).toBe('literal-pw');
+        }
+    });
+
+    it('maps a config username reference straight into the plan (resolved at call-time, not here)', () => {
+        const refUsername = configWith({
+            default: {
+                sources: {
+                    'grandfrais.com': {
+                        kind: 'password',
+                        username: { ref: 'op://Private/gf/username' },
+                        secret: { ref: 'op://Private/gf/pw' },
+                    },
+                },
+            },
+        });
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(refUsername) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans[0]?.username).toEqual({ ref: 'op://Private/gf/username' });
         }
     });
 });

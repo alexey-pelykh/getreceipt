@@ -140,24 +140,26 @@ function findSourceConfig(parsed: ConfigParseResult, spec: OperationSpec, adapte
 
 async function resolveCredentials(
     deps: ResolveSourceDeps,
-    sourceConfig: { kind: ResolvedCredentials['kind']; username?: string; secret?: CredentialValue },
+    sourceConfig: { kind: ResolvedCredentials['kind']; username?: CredentialValue; secret?: CredentialValue },
 ): Promise<ResolvedCredentials> {
     const resolved: { kind: ResolvedCredentials['kind']; username?: string; secret?: Secret } = {
         kind: sourceConfig.kind,
     };
-    if (sourceConfig.username !== undefined) {
-        resolved.username = sourceConfig.username;
-    }
-    if (sourceConfig.secret !== undefined) {
-        try {
-            resolved.secret = await deps.resolveCredential(sourceConfig.secret);
-        } catch (error) {
-            // The credential errors (#22) never carry the secret value in their message.
-            throw new OperationError(
-                'credentials',
-                error instanceof Error ? error.message : 'credential could not be resolved',
-            );
+    try {
+        // The username resolves on the SAME path as the secret — a configured `{ ref }` is dereferenced
+        // at call-time and exposed to a plain string here (intended; a username is not a secret).
+        if (sourceConfig.username !== undefined) {
+            resolved.username = (await deps.resolveCredential(sourceConfig.username)).expose();
         }
+        if (sourceConfig.secret !== undefined) {
+            resolved.secret = await deps.resolveCredential(sourceConfig.secret);
+        }
+    } catch (error) {
+        // The credential errors (#22) never carry the resolved value in their message.
+        throw new OperationError(
+            'credentials',
+            error instanceof Error ? error.message : 'credential could not be resolved',
+        );
     }
     return resolved;
 }

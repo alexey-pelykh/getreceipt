@@ -23,7 +23,8 @@ export type CredentialValue = SecretRef | string;
 /** Per-domain authentication configuration. */
 export interface DomainAuthConfig {
     readonly kind: AuthKind;
-    readonly username?: string;
+    /** Login identifier: a {@link SecretRef} resolved at call-time, or an inline literal. Unlike a secret, an inline username does NOT warn — a username/email is not a secret. */
+    readonly username?: CredentialValue;
     readonly secret?: CredentialValue;
 }
 
@@ -108,13 +109,10 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
         throw new ConfigError(`unknown auth kind; expected one of ${AUTH_KINDS.join(', ')}`, `${authPath}.kind`);
     }
 
-    const result: { kind: AuthKind; username?: string; secret?: CredentialValue } = { kind: auth.kind };
+    const result: { kind: AuthKind; username?: CredentialValue; secret?: CredentialValue } = { kind: auth.kind };
 
     if (auth.username !== undefined) {
-        if (typeof auth.username !== 'string') {
-            throw new ConfigError('expected a string', `${authPath}.username`);
-        }
-        result.username = auth.username;
+        result.username = parseUsername(auth.username, `${authPath}.username`);
     }
 
     if (auth.secret !== undefined) {
@@ -122,6 +120,25 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     }
 
     return result;
+}
+
+/**
+ * Parse a username into a {@link CredentialValue}: a `{ ref }` resolved at call-time, or an
+ * inline literal. Distinct from {@link parseCredential} — a username is NOT a secret, so an
+ * inline literal here emits NO `inline-credential` warning (it is routinely a plain email).
+ * Throws {@link ConfigError}, which never echoes the configured value.
+ */
+function parseUsername(raw: unknown, path: string): CredentialValue {
+    if (isRecord(raw)) {
+        if (typeof raw.ref !== 'string' || raw.ref.length === 0) {
+            throw new ConfigError('a username reference must have a non-empty `ref` string', path);
+        }
+        return { ref: raw.ref };
+    }
+    if (typeof raw === 'string') {
+        return raw;
+    }
+    throw new ConfigError('expected a string literal or a `{ ref }` reference', path);
 }
 
 function parseCredential(raw: unknown, path: string, warnings: SecurityWarning[]): CredentialValue {

@@ -83,8 +83,11 @@ export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveH
     const deps: LiveHarnessDeps = { ...defaultDeps(), ...overrides };
     const adapter = deps.resolver.resolve(plan.source);
 
+    let username: string;
     let secret: Secret;
     try {
+        // Username and secret resolve on the SAME call-time path; a missing backend on EITHER yields a clean skip.
+        username = (await deps.resolveCredential(plan.username)).expose();
         secret = await deps.resolveCredential(plan.secret);
     } catch (error) {
         if (error instanceof CredentialBackendUnavailableError) {
@@ -93,7 +96,7 @@ export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveH
         throw error;
     }
 
-    const resolved: ResolvedCredentials = { kind: adapter.descriptor.authKind, username: plan.username, secret };
+    const resolved: ResolvedCredentials = { kind: adapter.descriptor.authKind, username, secret };
     const credentials = asCredentialContext(resolved);
 
     const outDir = await deps.createOutDir();

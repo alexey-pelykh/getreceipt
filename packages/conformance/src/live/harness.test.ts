@@ -10,6 +10,7 @@ import {
     fromCredentialContext,
     Secret,
 } from '@getreceipt/auth';
+import type { CredentialValue } from '@getreceipt/auth';
 import { SourceAdapterRegistry, SourceResolver, TrustBoundaryError } from '@getreceipt/core';
 import type { CollectRequest, CollectResult, SourceAdapter } from '@getreceipt/core';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,6 +30,13 @@ import { LiveBackendUnavailable, runLiveCollection, runLiveCollections } from '.
 const PLAN: LivePlan = {
     source: 'grandfrais.com',
     username: 'shopper@example.com',
+    secret: { ref: 'op://Private/gf/pw' },
+};
+
+/** A plan whose username is ALSO a reference — exercises call-time resolution of the username on the secret's path. */
+const REF_USERNAME_PLAN: LivePlan = {
+    source: 'grandfrais.com',
+    username: { ref: 'op://Private/gf/username' },
     secret: { ref: 'op://Private/gf/pw' },
 };
 
@@ -86,35 +94,40 @@ afterEach(() => {
 });
 
 describe('runLiveCollection — orchestration', () => {
-    it('resolves the credential at call-time and packs it into the credential context', async () => {
-        const adapter = fakeAdapter(PLAN.source);
-        const seen: { secretArg?: unknown; request?: CollectRequest } = {};
+    it('resolves BOTH username and secret at call-time and packs them into the credential context', async () => {
+        const adapter = fakeAdapter(REF_USERNAME_PLAN.source);
+        const seen: { args: CredentialValue[]; request?: CollectRequest } = { args: [] };
 
-        const run = await runLiveCollection(PLAN, {
+        const run = await runLiveCollection(REF_USERNAME_PLAN, {
             resolver: fakeResolver(adapter),
+            // Map each reference to a DISTINCT value, so a passed-through ref (vs a resolved value) is detectable.
             resolveCredential: async (value) => {
-                seen.secretArg = value;
-                return new Secret('resolved-secret');
+                seen.args.push(value);
+                const ref = typeof value === 'string' ? value : value.ref;
+                return new Secret(ref === 'op://Private/gf/username' ? 'resolved-alice' : 'resolved-secret');
             },
             collect: async (request) => {
                 seen.request = request;
-                return succeededResult(PLAN.source);
+                return succeededResult(REF_USERNAME_PLAN.source);
             },
             createOutDir: knownTempDir,
         });
 
-        // The plan's reference — not a pre-resolved value — reached the resolver (call-time resolution).
-        expect(seen.secretArg).toEqual({ ref: 'op://Private/gf/pw' });
+        // The username reference reached the resolver (call-time resolution), alongside the secret reference.
+        expect(seen.args).toContainEqual({ ref: 'op://Private/gf/username' });
+        expect(seen.args).toContainEqual({ ref: 'op://Private/gf/pw' });
 
         // collect() received the resolved adapter and a context carrying the right kind/username/secret.
         expect(seen.request?.adapter).toBe(adapter);
         const packed = fromCredentialContext(seen.request!.credentials);
         expect(packed.kind).toBe('password');
-        expect(packed.username).toBe('shopper@example.com');
+        // The username reference was dereferenced to a plain string — not passed through.
+        expect(packed.username).toBe('resolved-alice');
+        expect(typeof packed.username).toBe('string');
         expect(packed.secret?.expose()).toBe('resolved-secret');
 
         expect(run.verdict.state).toBe('e2e-verified');
-        expect(run.source).toBe(PLAN.source);
+        expect(run.source).toBe(REF_USERNAME_PLAN.source);
     });
 
     it('removes the throwaway output directory after the run (no artifacts left behind)', async () => {
@@ -190,6 +203,31 @@ describe('runLiveCollection — credential backend', () => {
                 createOutDir: knownTempDir,
             }),
         ).rejects.not.toBeInstanceOf(LiveBackendUnavailable);
+    });
+
+    it('surfaces a missing backend on the USERNAME reference as LiveBackendUnavailable (clean skip)', async () => {
+        let outDirCreated = false;
+        await expect(
+            runLiveCollection(REF_USERNAME_PLAN, {
+                resolver: fakeResolver(fakeAdapter(REF_USERNAME_PLAN.source)),
+                // Only the username reference hits the missing backend — proving the username path maps it too.
+                resolveCredential: async (value) => {
+                    const ref = typeof value === 'string' ? value : value.ref;
+                    if (ref === 'op://Private/gf/username') {
+                        throw new CredentialBackendUnavailableError('the 1Password CLI is not installed', 'op');
+                    }
+                    return new Secret('resolved-secret');
+                },
+                collect: async () => succeededResult(REF_USERNAME_PLAN.source),
+                createOutDir: async () => {
+                    outDirCreated = true;
+                    return knownTempDir();
+                },
+            }),
+        ).rejects.toBeInstanceOf(LiveBackendUnavailable);
+
+        // The username resolves before any filesystem work — a missing backend skips before an outDir is minted.
+        expect(outDirCreated).toBe(false);
     });
 });
 
