@@ -1,32 +1,56 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { loadConfig as authLoadConfig } from '@getreceipt/auth';
 import type { CredentialValue } from '@getreceipt/auth';
 
 /**
- * The RUN-vs-SKIP decision for the live e2e harness, derived PURELY from the
- * environment — no I/O, no secret resolution, no network. This is the gate that keeps
- * the harness off by default so it never runs unattended in CI (#19 AC2): a real
- * collection happens only when an operator opts in AND supplies a complete credential
- * plan; otherwise the decision is a clean SKIP with a reason, never a failure and never
- * a fabricated pass.
+ * The RUN-vs-SKIP decision for the live e2e harness, driven by the environment plus — on the
+ * default path — the PRODUCT config (`@getreceipt/auth` `loadConfig`). Dogfooding the product's
+ * own credential/source model is the point of this gate (issue #19 refactor): an operator
+ * declares their sources once in `~/.getreceipt.yaml` (or the gitignored e2e profile), and the
+ * harness verifies EVERY configured source — rather than re-inventing a one-source-at-a-time
+ * env-var triple.
  *
- * The secret stays a REFERENCE here (e.g. an `op://…` URL); the harness resolves it to a
- * value at call-time. Keeping resolution out of the gate is what makes this function pure
- * and free of secret material — and lets the skip logic be unit-tested with synthetic
- * environments, with no credentials present.
+ * This is still the gate that keeps the harness off by default so it never runs unattended in CI
+ * (#19 AC2): a real collection happens only when an operator opts in (`GETRECEIPT_E2E`) AND there
+ * is at least one usable source; otherwise the decision is a clean SKIP with a reason, never a
+ * failure and never a fabricated pass.
+ *
+ * Two input paths, both yielding a LIST of plans:
+ *  - the env triple ({@link SOURCE_ENV} + {@link USERNAME_ENV} + {@link SECRET_ENV}), when fully
+ *    present, is a single-source OVERRIDE — the #81 fast-path, no config read;
+ *  - otherwise the config is loaded (path from {@link CONFIG_ENV}, profile from {@link PROFILE_ENV})
+ *    and every source with both a username and a secret becomes a plan.
+ *
+ * Secrets stay REFERENCES here (e.g. an `op://…` URL); the harness resolves them to values at
+ * call-time. Reading the config IS I/O — but it is injectable (see {@link LiveGateDeps}), so the
+ * decision logic stays unit-testable with synthetic environments and a fake loader, never any real
+ * credentials. The real loader never echoes file contents, so a thrown config error becomes a
+ * secret-free skip reason.
  */
 
 /** Master opt-in switch. Absent / empty / `0` / `false` all read as OFF — the harness never runs without it. */
 export const OPT_IN_ENV = 'GETRECEIPT_E2E';
-/** Canonical domain of the source to verify live (e.g. `grandfrais.com`). */
+/** Canonical domain of the source to verify live (e.g. `grandfrais.com`). Part of the optional single-source override. */
 export const SOURCE_ENV = 'GETRECEIPT_E2E_SOURCE';
-/** Account username / email for the selected source. */
+/** Account username / email for the override source. */
 export const USERNAME_ENV = 'GETRECEIPT_E2E_USERNAME';
 /**
- * Credential REFERENCE for the selected source, resolved at call-time: an `op://…` 1Password
+ * Credential REFERENCE for the override source, resolved at call-time: an `op://…` 1Password
  * URL, an `encrypted-file:<path>` reference, or — discouraged — an inline literal. Never the
  * harness's job to log it.
  */
 export const SECRET_ENV = 'GETRECEIPT_E2E_SECRET';
+/**
+ * Path to the product config to dogfood when no single-source override is given. `vitest.e2e.config.ts`
+ * defaults this (only if unset) to the gitignored `.getreceipt.e2e.local.yaml` in this package; absent
+ * that, it falls back to `~/.getreceipt.yaml` (the product default).
+ */
+export const CONFIG_ENV = 'GETRECEIPT_E2E_CONFIG';
+/** Which profile in the config to verify. Defaults to `default`. */
+export const PROFILE_ENV = 'GETRECEIPT_E2E_PROFILE';
+
+/** The profile selected when {@link PROFILE_ENV} is unset. */
+const DEFAULT_PROFILE = 'default';
 
 /** A fully specified live run: which source, and the credentials to authenticate it (the secret carried as a reference, never a value). */
 export interface LivePlan {
@@ -36,13 +60,26 @@ export interface LivePlan {
     readonly secret: CredentialValue;
 }
 
-/** The gate's verdict: run with a concrete {@link LivePlan}, or skip with a human-readable reason. Total and pure. */
+/**
+ * The gate's verdict: run a non-empty LIST of {@link LivePlan}s (the harness sweeps them and
+ * reports a per-source verdict matrix), or skip with a human-readable, secret-free reason.
+ */
 export type LiveGateDecision =
-    | { readonly run: true; readonly plan: LivePlan }
+    | { readonly run: true; readonly plans: readonly LivePlan[] }
     | { readonly run: false; readonly reason: string };
 
 /** The environment the gate reads — just the string map, so tests pass synthetic records instead of mutating `process.env`. */
 export type GateEnv = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Injectable collaborators. The lone field defaults to the real {@link authLoadConfig}, so
+ * `resolveLiveGate(env)` reads the operator's actual config — while a test can pass a fake loader
+ * to exercise the config→plans mapping with no file on disk and no credentials.
+ */
+export interface LiveGateDeps {
+    /** Loads + validates the product config. Defaults to `@getreceipt/auth`'s real `loadConfig`. */
+    readonly loadConfig: typeof authLoadConfig;
+}
 
 /** Values that count as an explicit opt-in. Everything else (including `0` / `false` / empty) is OFF — fail-safe by default. */
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
@@ -61,35 +98,101 @@ function nonEmpty(value: string | undefined): string | undefined {
  * `op://` and `encrypted-file:` are backend references resolved through their backends;
  * anything else is an inline literal (rawtext). This mirrors the resolver's own scheme
  * dispatch (see `@getreceipt/auth` CredentialResolver), so the env var accepts exactly the
- * forms the resolver understands.
+ * forms the resolver understands. Only the env-triple override uses this — config-sourced
+ * secrets already arrive as typed {@link CredentialValue}s from `loadConfig`.
  */
 function toCredentialValue(secret: string): CredentialValue {
     return secret.startsWith('op://') || secret.startsWith('encrypted-file:') ? { ref: secret } : secret;
 }
 
+/** The env triple, when ALL three parts are present, as a single-source override plan. Else undefined (fall through to config). */
+function overridePlan(env: GateEnv): LivePlan | undefined {
+    const source = nonEmpty(env[SOURCE_ENV]);
+    const username = nonEmpty(env[USERNAME_ENV]);
+    const secret = nonEmpty(env[SECRET_ENV]);
+    if (source === undefined || username === undefined || secret === undefined) {
+        return undefined;
+    }
+    return { source, username, secret: toCredentialValue(secret) };
+}
+
 /**
- * Decide whether the live harness should run, from environment alone.
- *
- * OFF unless {@link OPT_IN_ENV} is explicitly truthy AND a complete plan
- * ({@link SOURCE_ENV} + {@link USERNAME_ENV} + {@link SECRET_ENV}) is present. Each
- * missing piece yields a distinct SKIP reason so an operator can tell "not opted in" from
- * "opted in but missing credentials" — both clean skips, never failures (#19 AC2).
+ * Build the live plans from the configured profile's sources. Each source with BOTH a username
+ * and a secret yields a plan; a source missing either is skipped with a noted reason (not a hard
+ * error — a half-configured source shouldn't sink the whole sweep). Returns the plans plus any
+ * per-source skip notes, all secret-free.
  */
-export function resolveLiveGate(env: GateEnv): LiveGateDecision {
+function plansFromConfig(
+    env: GateEnv,
+    deps: LiveGateDeps,
+): { readonly plans: readonly LivePlan[]; readonly notes: readonly string[] } | { readonly error: string } {
+    const configPath = nonEmpty(env[CONFIG_ENV]);
+    const profileName = nonEmpty(env[PROFILE_ENV]) ?? DEFAULT_PROFILE;
+
+    let config;
+    try {
+        // `loadConfig()` with no path resolves the product default (`~/.getreceipt.yaml`); an explicit
+        // path wins. It throws a secret-free `ConfigError` on a missing/unreadable/malformed file.
+        config = configPath === undefined ? deps.loadConfig() : deps.loadConfig(configPath);
+    } catch (error) {
+        return { error: `could not load config: ${error instanceof Error ? error.message : String(error)}` };
+    }
+
+    const profile = config.config.profiles[profileName];
+    if (profile === undefined) {
+        const available = Object.keys(config.config.profiles);
+        const where = available.length === 0 ? 'config has no profiles' : `available profiles: ${available.join(', ')}`;
+        return { error: `profile "${profileName}" not found in config (${where})` };
+    }
+
+    const plans: LivePlan[] = [];
+    const notes: string[] = [];
+    for (const [source, auth] of Object.entries(profile.sources)) {
+        const username = nonEmpty(auth.username);
+        if (username === undefined || auth.secret === undefined) {
+            const missing = [
+                username === undefined ? 'username' : undefined,
+                auth.secret === undefined ? 'secret' : undefined,
+            ]
+                .filter((part): part is string => part !== undefined)
+                .join(' + ');
+            notes.push(`skipped "${source}" (missing ${missing})`);
+            continue;
+        }
+        plans.push({ source, username, secret: auth.secret });
+    }
+
+    return { plans, notes };
+}
+
+/**
+ * Decide whether the live harness should run, from environment + (on the default path) config.
+ *
+ * OFF unless {@link OPT_IN_ENV} is explicitly truthy. Once opted in:
+ *  - if the env triple is fully present → a single-source OVERRIDE (the #81 fast-path), no config read;
+ *  - otherwise the configured profile's sources become plans; a source missing credentials is
+ *    skipped (noted in the run set), and an unreadable config / missing profile / no usable source
+ *    yields a clean SKIP with a secret-free reason — never a failure (#19 AC2).
+ *
+ * The {@link deps.loadConfig} seam makes the config path unit-testable with a fake loader.
+ */
+export function resolveLiveGate(env: GateEnv, deps: LiveGateDeps = { loadConfig: authLoadConfig }): LiveGateDecision {
     if (!isOptedIn(env[OPT_IN_ENV])) {
         return { run: false, reason: `${OPT_IN_ENV} is not enabled; live e2e is opt-in and off by default` };
     }
-    const source = nonEmpty(env[SOURCE_ENV]);
-    if (source === undefined) {
-        return { run: false, reason: `${OPT_IN_ENV} is set but ${SOURCE_ENV} is missing; no source selected` };
+
+    const override = overridePlan(env);
+    if (override !== undefined) {
+        return { run: true, plans: [override] };
     }
-    const username = nonEmpty(env[USERNAME_ENV]);
-    if (username === undefined) {
-        return { run: false, reason: `no credentials for "${source}": ${USERNAME_ENV} is missing` };
+
+    const fromConfig = plansFromConfig(env, deps);
+    if ('error' in fromConfig) {
+        return { run: false, reason: `${OPT_IN_ENV} is set but no source could be resolved: ${fromConfig.error}` };
     }
-    const secret = nonEmpty(env[SECRET_ENV]);
-    if (secret === undefined) {
-        return { run: false, reason: `no credentials for "${source}": ${SECRET_ENV} is missing` };
+    if (fromConfig.plans.length === 0) {
+        const detail = fromConfig.notes.length === 0 ? 'the profile has no sources' : fromConfig.notes.join('; ');
+        return { run: false, reason: `${OPT_IN_ENV} is set but no usable source was found in config: ${detail}` };
     }
-    return { run: true, plan: { source, username, secret: toCredentialValue(secret) } };
+    return { run: true, plans: fromConfig.plans };
 }

@@ -2,10 +2,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 /**
- * The gitignored local e2e profile (`.env.e2e.local`) loader. Wired ONLY from `vitest.e2e.config.ts`
+ * The gitignored local e2e env profile (`.env.e2e.local`) loader. Wired ONLY from `vitest.e2e.config.ts`
  * (never the default/CI config), so a profile on disk can never arm the fenced-out live test in CI.
- * The profile carries the `GETRECEIPT_E2E_*` mapping; its secret is an `op://…` reference the harness
- * resolves at call-time, never a value at rest.
+ * The profile carries the `GETRECEIPT_E2E=1` opt-in switch (and optionally a single-source override
+ * triple / a config path); the source matrix itself lives in `.getreceipt.e2e.local.yaml`. Any secret
+ * stays an `op://…` reference the harness resolves at call-time, never a value at rest.
  */
 
 /** Parse minimal dotenv text. Skips blanks + `#` comments; trims; tolerates a leading `export`; strips one layer of surrounding quotes. */

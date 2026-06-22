@@ -3,7 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { asCredentialContext, CredentialBackendUnavailableError, CredentialResolver } from '@getreceipt/auth';
+import {
+    asCredentialContext,
+    CredentialBackendUnavailableError,
+    CredentialResolutionError,
+    CredentialResolver,
+} from '@getreceipt/auth';
 import type { CredentialValue, ResolvedCredentials, Secret } from '@getreceipt/auth';
 import { createDefaultResolver } from '@getreceipt/cli';
 import { collect, FilesystemReceiptWriter } from '@getreceipt/core';
@@ -100,4 +105,55 @@ export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveH
         // Always purge the throwaway dir — even on a thrown error — so no fetched receipt survives the run (#19 AC3).
         await rm(outDir, { recursive: true, force: true });
     }
+}
+
+/** One source's outcome in a multi-source sweep: the source domain and the trust-state the live run justified. */
+export interface LiveSourceResult {
+    readonly source: string;
+    readonly verdict: LiveVerdict;
+}
+
+/**
+ * Run EVERY plan and report a per-source verdict, dogfooding the configured source set (#19 refactor).
+ * Plans run SEQUENTIALLY, not in parallel: a live source may prompt for an `op` biometric unlock, and
+ * one-at-a-time keeps those prompts (and the output) legible. Each plan delegates to
+ * {@link runLiveCollection}, so each source keeps its OWN throwaway dir + purge (#19 AC3).
+ *
+ * Two failure shapes are treated very differently:
+ *  - {@link LiveBackendUnavailable} is GLOBAL — the credential backend (e.g. `op`) is absent, so NO
+ *    source can resolve. It rethrows so the caller skips the WHOLE run, exactly as the single-source
+ *    path does.
+ *  - a per-source {@link @getreceipt/auth!CredentialResolutionError} (one wrong/expired reference)
+ *    is LOCAL — it must NOT abort the sweep. It is caught and recorded as that source's `unverified`
+ *    verdict, and the remaining sources still run, so one bad reference can't mask the rest.
+ *
+ * Never invoked unless {@link resolveLiveGate} said RUN — so it does no work in CI.
+ */
+export async function runLiveCollections(
+    plans: readonly LivePlan[],
+    overrides: Partial<LiveHarnessDeps> = {},
+): Promise<readonly LiveSourceResult[]> {
+    const results: LiveSourceResult[] = [];
+    for (const plan of plans) {
+        try {
+            const run = await runLiveCollection(plan, overrides);
+            results.push({ source: plan.source, verdict: run.verdict });
+        } catch (error) {
+            // A missing backend dooms every source, not just this one — let the caller skip the whole run.
+            if (error instanceof LiveBackendUnavailable) {
+                throw error;
+            }
+            // A single wrong/expired reference is this source's problem alone — record it inconclusive and
+            // keep sweeping, so one bad credential can't hide the verdicts of the others.
+            if (error instanceof CredentialResolutionError) {
+                results.push({
+                    source: plan.source,
+                    verdict: { state: 'unverified', detail: `credential error: ${error.message}` },
+                });
+                continue;
+            }
+            throw error;
+        }
+    }
+    return results;
 }
