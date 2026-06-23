@@ -84,7 +84,7 @@ describe('SourceAdapterRegistry', () => {
 describe('SourceResolver', () => {
     it('resolves a canonical domain to its adapter', () => {
         const registry = new SourceAdapterRegistry();
-        const adapter = fakeAdapter('free.fr', ['pro.free.fr']);
+        const adapter = fakeAdapter('free.fr', ['adsl.free.fr']);
         registry.register(adapter);
         const resolver = new SourceResolver(registry);
 
@@ -93,21 +93,21 @@ describe('SourceResolver', () => {
 
     it('resolves an alias domain to its canonical adapter', () => {
         const registry = new SourceAdapterRegistry();
-        const adapter = fakeAdapter('free.fr', ['pro.free.fr', 'adsl.free.fr']);
+        const adapter = fakeAdapter('free.fr', ['adsl.free.fr', 'www.free.fr']);
         registry.register(adapter);
         const resolver = new SourceResolver(registry);
 
-        expect(resolver.resolve('pro.free.fr')).toBe(adapter);
         expect(resolver.resolve('adsl.free.fr')).toBe(adapter);
+        expect(resolver.resolve('www.free.fr')).toBe(adapter);
     });
 
     it('resolves canonical and alias domains case-insensitively', () => {
         const registry = new SourceAdapterRegistry();
-        const adapter = fakeAdapter('free.fr', ['Pro.Free.FR']);
+        const adapter = fakeAdapter('free.fr', ['Adsl.Free.FR']);
         registry.register(adapter);
         const resolver = new SourceResolver(registry);
 
-        expect(resolver.resolve('PRO.free.fr')).toBe(adapter);
+        expect(resolver.resolve('ADSL.free.fr')).toBe(adapter);
     });
 
     it('throws a typed UnknownSourceError carrying the normalized domain', () => {
@@ -171,11 +171,11 @@ describe('SourceResolver', () => {
 
     it('tolerates a duplicate alias repeated within a single adapter', () => {
         const registry = new SourceAdapterRegistry();
-        const adapter = fakeAdapter('free.fr', ['pro.free.fr', 'pro.free.fr']);
+        const adapter = fakeAdapter('free.fr', ['adsl.free.fr', 'adsl.free.fr']);
         registry.register(adapter);
 
         const resolver = new SourceResolver(registry);
 
-        expect(resolver.resolve('pro.free.fr')).toBe(adapter);
+        expect(resolver.resolve('adsl.free.fr')).toBe(adapter);
     });
 });

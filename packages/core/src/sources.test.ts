@@ -36,7 +36,7 @@ describe('listSources', () => {
         const registry = new SourceAdapterRegistry();
         registry.register(
             fakeAdapter('free.fr', {
-                aliasDomains: ['pro.free.fr'],
+                aliasDomains: ['adsl.free.fr'],
                 authKind: 'oauth2',
                 transportTier: 'headless-browser',
                 artifactMode: 'rendered',
@@ -46,7 +46,7 @@ describe('listSources', () => {
         expect(listSources(registry)).toEqual([
             {
                 canonicalDomain: 'free.fr',
-                aliasDomains: ['pro.free.fr'],
+                aliasDomains: ['adsl.free.fr'],
                 authKind: 'oauth2',
                 transportTier: 'headless-browser',
                 artifactMode: 'rendered',
