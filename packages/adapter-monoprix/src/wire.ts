@@ -85,8 +85,9 @@ export const loginResponseSchema = z.object({
 
 /**
  * One receipt in a `get-receipts` listing. `date` is an ISO-8601 instant (its first 10 chars are the
- * day); `price` is a confirmed `number` (live 2026-06-23) but unused by collection. The live shape also
- * carries `store_name`/`status` — present, but deliberately not projected (collection needs only id/type/date).
+ * day); `price` is a confirmed `number` (live 2026-06-23). `store_name`/`status` are captured for the
+ * voluntary receipt metadata (#97) and are `.optional()` — a receipt missing either is not drift (the
+ * metadata model requires nothing), so collection never breaks on an absent display field.
  */
 export const receiptSchema = z.object({
     id: packableTokenSchema,
@@ -95,6 +96,8 @@ export const receiptSchema = z.object({
     type: packableTokenSchema.default('store'),
     date: z.string().refine((value) => !Number.isNaN(new Date(value).getTime())),
     price: z.number(),
+    store_name: z.string().optional(),
+    status: z.string().optional(),
 });
 
 /** One `get-receipts` response page. The contract returns the full window in one call (no cursor). */

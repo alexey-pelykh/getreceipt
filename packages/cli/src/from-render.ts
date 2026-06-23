@@ -62,7 +62,13 @@ function receiptLine(label: string, receipt: ReceiptSummary): string {
     if (receipt.title !== undefined) {
         parts.push(receipt.title);
     }
-    return parts.join('  ');
+    const row = parts.join('  ');
+    if (receipt.metadata === undefined || receipt.metadata.length === 0) {
+        return row;
+    }
+    // Each voluntary metadatum (#97) on its own indented `label: value` line beneath the receipt row.
+    const metaLines = receipt.metadata.map((entry) => `      ${entry.label}: ${entry.value}`);
+    return [row, ...metaLines].join('\n');
 }
 
 /**

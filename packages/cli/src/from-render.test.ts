@@ -48,6 +48,31 @@ describe('renderResultsTable', () => {
         expect(text.endsWith('\n')).toBe(true);
     });
 
+    it("renders each receipt's voluntary metadata as indented label: value lines (#97)", () => {
+        const result: OperationResult = {
+            source: 'shop.example',
+            outcome: 'succeeded',
+            window: isoWindow,
+            written: [
+                {
+                    id: 'inv-1',
+                    issuedAt: '2024-01-05T09:00:00.000Z',
+                    title: 'January invoice',
+                    metadata: [
+                        { key: 'merchant', label: 'Merchant', value: 'Monoprix Lyon' },
+                        { key: 'total', label: 'Total', value: '12.3 EUR' },
+                    ],
+                },
+            ],
+            skipped: [],
+        };
+
+        const text = renderResultsTable(result);
+        expect(text).toContain('written  inv-1  2024-01-05  January invoice');
+        expect(text).toContain('      Merchant: Monoprix Lyon');
+        expect(text).toContain('      Total: 12.3 EUR');
+    });
+
     it('renders a partial run with its failure reason', () => {
         const result: OperationResult = {
             source: 'shop.example',

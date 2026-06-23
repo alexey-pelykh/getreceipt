@@ -14,11 +14,19 @@ import { z } from 'zod';
  * CLI↔MCP parity gate asserts the emitted objects are byte-for-byte identical.
  */
 
+/** One voluntary metadata entry (#97) — mirrors `ReceiptMetadatum`. */
+const receiptMetadatumSchema = z.object({
+    key: z.string(),
+    label: z.string(),
+    value: z.string(),
+});
+
 /** One receipt as the structured manifest lists it — mirrors `ReceiptSummary` (no handles, no paths). */
 const receiptSummarySchema = z.object({
     id: z.string(),
     issuedAt: z.string(),
     title: z.string().optional(),
+    metadata: z.array(receiptMetadatumSchema).optional(),
 });
 
 const operationWindowSchema = z.object({ from: z.string(), to: z.string() });

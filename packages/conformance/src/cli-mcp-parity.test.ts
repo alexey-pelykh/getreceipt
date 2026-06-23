@@ -96,7 +96,17 @@ const COLLECT_RESULT: CollectResult = {
     outcome: 'succeeded',
     source: 'shop.example',
     window: { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-01-31T00:00:00.000Z') },
-    written: [ref('inv-1', 5, 'January invoice')],
+    // The written ref carries voluntary metadata (#97) so the parity gate proves it lands byte-for-byte
+    // identical in the CLI `--json` and the MCP structured output — the load-bearing MCP exposure.
+    written: [
+        {
+            ...ref('inv-1', 5, 'January invoice'),
+            metadata: [
+                { key: 'merchant', label: 'Merchant', value: 'Shop Example' },
+                { key: 'total', label: 'Total', value: '42.50 EUR' },
+            ],
+        },
+    ],
     skipped: [ref('inv-0', 4)],
 };
 

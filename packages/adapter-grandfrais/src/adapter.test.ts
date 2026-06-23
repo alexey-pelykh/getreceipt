@@ -293,6 +293,18 @@ describe('GrandfraisAdapter — AC3: list', () => {
         expect(calls).toBe(2);
         expect(refs.map((ref) => ref.id)).toEqual(['first__SALE', 'loop__SALE']);
     });
+
+    it('emits voluntary metadata (merchant/total/shop_code) on each minted ref (#97)', async () => {
+        server.use(loginOk(), receiptsPages([{ receipts: [receipt('r1')] }]), detailsAllSales());
+
+        const refs = await grandfraisAdapter.list(await authenticate(), WIDE);
+
+        expect(refs[0]!.metadata).toEqual([
+            { key: 'merchant', label: 'Merchant', value: SHOP_NAME },
+            { key: 'total', label: 'Total', value: `${AMOUNT} EUR` },
+            { key: 'shop_code', label: 'Shop code', value: SHOP_CODE },
+        ]);
+    });
 });
 
 describe('GrandfraisAdapter — AC4: variant expansion + fetch', () => {

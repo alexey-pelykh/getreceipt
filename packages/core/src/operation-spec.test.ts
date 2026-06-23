@@ -94,6 +94,25 @@ describe('toOperationResult', () => {
         expect(result.outcome).toBe('reauth-required');
     });
 
+    it('carries voluntary metadata through to the summary verbatim, omitting it when absent (#97)', () => {
+        const metadata = [
+            { key: 'merchant', label: 'Merchant', value: 'Grand Frais Lyon' },
+            { key: 'total', label: 'Total', value: '42.50 EUR' },
+        ];
+        const collected: CollectResult = {
+            outcome: 'succeeded',
+            source: 'shop.example',
+            window,
+            written: [{ id: 'inv-1', issuedAt: new Date('2024-01-05T09:00:00.000Z'), metadata }],
+            skipped: [ref('inv-0')],
+        };
+
+        const result = toOperationResult(collected);
+        expect(result.written[0]).toEqual({ id: 'inv-1', issuedAt: '2024-01-05T09:00:00.000Z', metadata });
+        // A ref without metadata omits the field entirely (exactOptionalPropertyTypes), not `metadata: undefined`.
+        expect(result.skipped[0]).not.toHaveProperty('metadata');
+    });
+
     it('produces a JSON-round-trippable value (no Date, no handles)', () => {
         const collected: CollectResult = {
             outcome: 'succeeded',

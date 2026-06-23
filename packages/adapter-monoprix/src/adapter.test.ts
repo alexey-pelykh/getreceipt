@@ -368,6 +368,42 @@ describe('MonoprixAdapter — AC3: list', () => {
 
         expect(refs.map((ref) => ref.id)).toEqual(['a__store', 'b__store']);
     });
+
+    it('emits voluntary metadata (merchant/total/status/receipt_type) for a fully-populated receipt (#97)', async () => {
+        server.use(
+            ...authOk(),
+            receiptsOk([
+                {
+                    id: 'r1',
+                    type: 'store',
+                    date: ISSUED,
+                    price: 12.3,
+                    store_name: 'Monoprix Lyon',
+                    status: 'AVAILABLE',
+                },
+            ]),
+        );
+
+        const refs = await monoprixAdapter.list(await authenticate(), WIDE);
+
+        expect(refs[0]!.metadata).toEqual([
+            { key: 'merchant', label: 'Merchant', value: 'Monoprix Lyon' },
+            { key: 'total', label: 'Total', value: '12.3 EUR' },
+            { key: 'status', label: 'Status', value: 'AVAILABLE' },
+            { key: 'receipt_type', label: 'Type', value: 'store' },
+        ]);
+    });
+
+    it('omits the optional merchant/status entries a receipt lacks, keeping the always-present total + type (#97)', async () => {
+        server.use(...authOk(), receiptsOk([{ id: 'r1', type: 'online', date: ISSUED, price: 5 }]));
+
+        const refs = await monoprixAdapter.list(await authenticate(), WIDE);
+
+        expect(refs[0]!.metadata).toEqual([
+            { key: 'total', label: 'Total', value: '5 EUR' },
+            { key: 'receipt_type', label: 'Type', value: 'online' },
+        ]);
+    });
 });
 
 describe('MonoprixAdapter — AC3: fetch', () => {
