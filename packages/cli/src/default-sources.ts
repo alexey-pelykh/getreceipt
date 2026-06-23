@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { freeFrAdapter } from '@getreceipt/adapter-free-fr';
 import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais-com';
 import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix-fr';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
@@ -14,15 +15,15 @@ import { createImpersonatingTransport } from '@getreceipt/transport-impersonate'
  * monoprix's collection host (`client.monoprix.fr`) is Cloudflare-gated on the TLS/HTTP-2 fingerprint,
  * so it is driven by a Chrome-impersonating transport SCOPED to exactly that host (read from the wire
  * contract's `apiOrigin` — single source of truth); auth (`sso.monoprix.fr`) and every other host fall
- * through to plain `fetch`, keeping the live-validated OIDC flow off the native path. grandfrais is not
- * gated and stays on plain `fetch`. The `requiresImpersonation` wiring gate (impersonation-gate.test.ts)
- * asserts every source DECLARING the need is actually constructed this way.
+ * through to plain `fetch`, keeping the live-validated OIDC flow off the native path. grandfrais and
+ * free.fr are not gated and stay on plain `fetch`. The `requiresImpersonation` wiring gate
+ * (impersonation-gate.test.ts) asserts every source DECLARING the need is actually constructed this way.
  */
 export function buildBundledAdapters(): readonly SourceAdapter[] {
     const monoprix = new MonoprixAdapter({
         transport: createImpersonatingTransport({ impersonateHosts: [new URL(ENDPOINTS.apiOrigin).host] }),
     });
-    return [grandfraisAdapter, monoprix];
+    return [grandfraisAdapter, monoprix, freeFrAdapter];
 }
 
 /**
