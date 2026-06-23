@@ -6,11 +6,11 @@ import { z } from 'zod';
 /**
  * The wire shapes client.monoprix.fr returns, plus the Zod schemas that validate
  * them at the trust boundary. These schemas ARE the in-repo contract: they carry the
- * real field names reverse-engineered from the live service (POC-validated 2026-06-19),
- * and are deliberately validated so any drift between this contract and the live
- * service surfaces as a {@link @getreceipt/core!TrustBoundaryError} (the shape mismatch
- * IS the drift detector) rather than a silent mis-parse. Live confirmation is gated by
- * the live e2e harness (#89); until it flips the source, the adapter stays `unverified`.
+ * real field names reverse-engineered from the live service (live-validated end-to-end
+ * 2026-06-23), and are deliberately validated so any drift between this contract and the
+ * live service surfaces as a {@link @getreceipt/core!TrustBoundaryError} (the shape mismatch
+ * IS the drift detector) rather than a silent mis-parse. The automated e2e harness (#89) is
+ * what flips the machine `verificationState`; until it runs in CI, the source stays `unverified`.
  *
  * No raw capture is committed — fixtures derive from these schemas with synthetic,
  * leak-sentinel values (CONTRIBUTING § captures-stay-local).
@@ -37,7 +37,7 @@ export const ENDPOINTS = {
     ssoOrigin: 'https://sso.monoprix.fr',
     /** OIDC stage 1: credentials → opaque login ticket. */
     login: '/identity/v1/password/login',
-    /** OIDC stage 2: the authorize URL the browser opens (carries the ticket). */
+    /** OIDC stage 2/3: the implicit-variant authorize endpoint that mints the r5-token (returned as `id_token` in the redirect fragment). */
     authorize: '/oauth/authorize',
     /** Listing (the whole window in one call — no cursor). */
     getReceipts: `${API_CLIENT}/get-receipts`,
@@ -49,8 +49,8 @@ export const ENDPOINTS = {
 export const OIDC = {
     clientId: '1UdlANOVt4FdstGpM6Kn',
     scope: 'openid profile email phone offline_access address full_write',
-    /** SFCC OAuth re-entry the authorize step redirects back to, completing the session. */
-    sfccRedirectUri: 'https://www.monoprix.fr/on/demandware.store/Sites-TML-FR-Site/fr_FR/Login-OAuthReentryMPX',
+    /** Implicit-variant redirect the authorize step bounces to; the r5-token rides in its URL fragment as `id_token`. */
+    postLoginRedirectUri: 'https://client.monoprix.fr/monoprix-shopping/post-login',
 } as const;
 
 /** Collection-request constants that replicate the logged-in SPA (besides the per-request `r5-token`). */
@@ -85,8 +85,8 @@ export const loginResponseSchema = z.object({
 
 /**
  * One receipt in a `get-receipts` listing. `date` is an ISO-8601 instant (its first 10 chars are the
- * day). `price` is part of the documented contract but unused by collection; its scalar type is a
- * best-effort assumption pending the live gate (#89).
+ * day); `price` is a confirmed `number` (live 2026-06-23) but unused by collection. The live shape also
+ * carries `store_name`/`status` — present, but deliberately not projected (collection needs only id/type/date).
  */
 export const receiptSchema = z.object({
     id: packableTokenSchema,

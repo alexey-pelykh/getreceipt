@@ -18,11 +18,13 @@ describe('default-sources — bundled adapter wiring', () => {
         expect(registry.has('monoprix.fr')).toBe(true);
     });
 
-    it('builds a resolver that resolves canonical domains AND declared aliases', () => {
+    it('builds a resolver that resolves every bundled adapter by canonical domain (case-insensitively)', () => {
         const resolver = createDefaultResolver();
         expect(resolver.resolve('grandfrais.com').descriptor.canonicalDomain).toBe('grandfrais.com');
-        // `www.monoprix.fr` is a declared alias of `monoprix.fr` — proves alias indexing is wired.
-        expect(resolver.resolve('www.monoprix.fr').descriptor.canonicalDomain).toBe('monoprix.fr');
+        expect(resolver.resolve('monoprix.fr').descriptor.canonicalDomain).toBe('monoprix.fr');
+        // Case-insensitive normalization is wired through the bundled resolver (neither bundled adapter
+        // declares subdomain aliases; alias indexing is covered in the resolver + sources-command suites).
+        expect(resolver.resolve('MONOPRIX.fr').descriptor.canonicalDomain).toBe('monoprix.fr');
     });
 
     it('rejects an unknown domain through the bundled resolver', () => {

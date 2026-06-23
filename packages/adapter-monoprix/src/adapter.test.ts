@@ -19,7 +19,6 @@ import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { describe, expect, it } from 'vitest';
 
 import { MonoprixAdapter, monoprixAdapter } from './index.js';
-import type { BrowserLogin, BrowserLoginRequest } from './index.js';
 import {
     COLLECTION,
     ENDPOINTS,
@@ -35,11 +34,12 @@ import type { ReceiptDto } from './wire.js';
 // OIDC/SPA protocol constants come from the in-repo contract (wire.ts: `ENDPOINTS`/`OIDC`/`COLLECTION`),
 // and every well-formed response is built through `wireFixture(schema, …)` so it provably derives from
 // the wire schema rather than being hand-authored beside the adapter (#88). Fixtures are SYNTHETIC with
-// obvious leak-sentinel secrets (CONTRIBUTING § captures-stay-local): zero raw capture. Auth is the OIDC
-// dance — stage 1 (`/password/login`) returns the login TICKET, and the browser-at-login seam (option C)
-// mints the R5-TOKEN — so both, plus the password, are sentinels. (Negative-path tests deliberately serve
-// divergent bodies and therefore bypass `wireFixture`.)
+// obvious leak-sentinel secrets (CONTRIBUTING § captures-stay-local): zero raw capture. Auth is the
+// headless OIDC password flow — stage 1 (`/password/login`) returns the login TICKET, and the implicit
+// authorize redirect mints the R5-TOKEN as its `id_token` — so the ticket, the r5-token, and the password
+// are all sentinels. (Negative-path tests deliberately serve divergent bodies and bypass `wireFixture`.)
 const SSO_LOGIN = `${ENDPOINTS.ssoOrigin}${ENDPOINTS.login}`;
+const SSO_AUTHORIZE = `${ENDPOINTS.ssoOrigin}${ENDPOINTS.authorize}`;
 const GET_RECEIPTS = `${ENDPOINTS.apiOrigin}${ENDPOINTS.getReceipts}`;
 const GET_BILL = `${ENDPOINTS.apiOrigin}${ENDPOINTS.getReceiptBill}`;
 
@@ -58,24 +58,36 @@ function creds(): CredentialContext {
     return asCredentialContext({ kind: 'oauth2', username: USERNAME, secret: new Secret(PASSWORD) });
 }
 
-/** A test browser-at-login port: mints the sentinel r5-token without a browser (and never touches the network). */
-function fakeBrowserLogin(onRequest?: (request: BrowserLoginRequest) => void): BrowserLogin {
-    return {
-        login(request) {
-            onRequest?.(request);
-            return Promise.resolve({ r5Token: new Secret(R5TOKEN) });
-        },
-    };
-}
-
-/** An adapter wired with the fake browser-login seam (and the default `fetch` transport, so MSW intercepts). */
-function adapter(browserLogin: BrowserLogin = fakeBrowserLogin()): MonoprixAdapter {
-    return new MonoprixAdapter({ browserLogin });
+/** A default adapter: the platform `fetch` transport, so MSW intercepts every request (no live network). */
+function adapter(): MonoprixAdapter {
+    return new MonoprixAdapter();
 }
 
 /** Stage 1: `/password/login` exchanges credentials for the opaque login ticket (derives from `loginResponseSchema`, #88). */
 function loginOk() {
     return http.post(SSO_LOGIN, () => HttpResponse.json(wireFixture(loginResponseSchema, { tkn: TKN })));
+}
+
+/**
+ * A synthetic implicit-authorize redirect: a 303 whose `Location` fragment carries the `id_token` (the
+ * r5-token). The redirect target is sourced from `wire.ts` (`OIDC.postLoginRedirectUri`), so the test
+ * holds no hand-authored absolute-URL literal (the anti-circularity gate, #88).
+ */
+function authorizeRedirect(idToken: string) {
+    return new HttpResponse(null, {
+        status: 303,
+        headers: { location: `${OIDC.postLoginRedirectUri}#id_token=${idToken}&state=server-state` },
+    });
+}
+
+/** Stage 2/3: the implicit authorize endpoint mints the r5-token in the redirect fragment (default: the sentinel). */
+function authorizeOk() {
+    return http.get(SSO_AUTHORIZE, () => authorizeRedirect(R5TOKEN));
+}
+
+/** The two OIDC handlers a successful headless authenticate() needs: stage-1 login + the implicit authorize mint. */
+function authOk() {
+    return [loginOk(), authorizeOk()];
 }
 
 /** Serve one `get-receipts` page (the contract returns the whole window in a single call); derives from `receiptsResponseSchema` (#88). */
@@ -106,20 +118,22 @@ function noopWriter(): ReceiptWriter {
 }
 
 describe('MonoprixAdapter — AC1: registration + resolution', () => {
-    it('registers under its canonical domain and resolves by canonical, aliases, and case-insensitively', () => {
+    it('registers under its canonical domain and resolves canonically + case-insensitively (no subdomain aliases)', () => {
         const registry = new SourceAdapterRegistry();
         registry.register(monoprixAdapter);
         const resolver = new SourceResolver(registry);
 
         expect(resolver.resolve('monoprix.fr')).toBe(monoprixAdapter);
-        expect(resolver.resolve('www.monoprix.fr')).toBe(monoprixAdapter);
-        expect(resolver.resolve('client.monoprix.fr')).toBe(monoprixAdapter);
-        expect(resolver.resolve('courses.monoprix.fr')).toBe(monoprixAdapter);
         expect(resolver.resolve('MONOPRIX.fr')).toBe(monoprixAdapter);
         expect(registry.get('monoprix.fr')).toBe(monoprixAdapter);
+        // Flow subdomains (www./client./sso.) are NOT aliases — they belong to the one canonical source —
+        // and courses.monoprix.fr is a different product, so none resolves as a distinct source.
+        expect(resolver.tryResolve('www.monoprix.fr')).toBeUndefined();
+        expect(resolver.tryResolve('client.monoprix.fr')).toBeUndefined();
+        expect(resolver.tryResolve('courses.monoprix.fr')).toBeUndefined();
     });
 
-    it('declares an oauth2 / http-api / pdf-download descriptor with an inclusive issued-date window and no pagination', () => {
+    it('declares an oauth2 / http-api / pdf-download descriptor with an inclusive issued-date window, no aliases, and no pagination', () => {
         const descriptor = monoprixAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
@@ -130,16 +144,18 @@ describe('MonoprixAdapter — AC1: registration + resolution', () => {
             pagination: 'none',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
         });
+        expect(descriptor.aliasDomains).toEqual([]);
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
         expect(new MonoprixAdapter().descriptor.canonicalDomain).toBe('monoprix.fr');
     });
 });
 
-describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)', () => {
-    it('runs OIDC stage 1, mints the r5-token via the browser seam, and authorizes collection with the r5-token + SPA headers (no cookie)', async () => {
+describe('MonoprixAdapter — AC2: authenticate (headless OIDC password flow)', () => {
+    it('runs OIDC stage 1, mints the r5-token via the implicit authorize redirect (manual), and authorizes collection with the r5-token + SPA headers (no cookie)', async () => {
         let loginBody: unknown;
         let loginOrigin: string | null = null;
         let authorizeUrl: URL | undefined;
+        let authorizeRedirectMode: string | undefined;
         let listHeaders: Headers | undefined;
         let listUrl: URL | undefined;
         server.use(
@@ -148,17 +164,18 @@ describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)'
                 loginOrigin = request.headers.get('origin');
                 return HttpResponse.json(wireFixture(loginResponseSchema, { tkn: TKN }));
             }),
+            http.get(SSO_AUTHORIZE, ({ request }) => {
+                authorizeUrl = new URL(request.url);
+                authorizeRedirectMode = request.redirect;
+                return authorizeRedirect(R5TOKEN);
+            }),
             http.get(GET_RECEIPTS, ({ request }) => {
                 listHeaders = request.headers;
                 listUrl = new URL(request.url);
                 return HttpResponse.json(wireFixture(receiptsResponseSchema, { receipts: [] }));
             }),
         );
-        const a = adapter(
-            fakeBrowserLogin((request) => {
-                authorizeUrl = request.authorizeUrl;
-            }),
-        );
+        const a = adapter();
 
         const auth = await a.authenticate(creds());
         await a.list(auth, WIDE);
@@ -166,17 +183,20 @@ describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)'
         // Stage 1: the password reaches the login endpoint alongside the public client_id + scope, from the SPA origin.
         expect(loginBody).toEqual({ client_id: OIDC.clientId, scope: OIDC.scope, email: USERNAME, password: PASSWORD });
         expect(loginOrigin).toBe(ENDPOINTS.apiOrigin);
-        // Stage 2: the authorize URL the browser opens carries the ticket and the OIDC parameters.
+        // Stage 2/3 (implicit): the authorize GET is issued WITHOUT following the redirect, carries the ticket
+        // and the OIDC parameters, asks for `response_type=token`, and points at the post-login redirect.
+        expect(authorizeRedirectMode).toBe('manual');
         expect(authorizeUrl?.origin).toBe(ENDPOINTS.ssoOrigin);
         expect(authorizeUrl?.pathname).toBe(ENDPOINTS.authorize);
         expect(authorizeUrl?.searchParams.get('tkn')).toBe(TKN);
         expect(authorizeUrl?.searchParams.get('client_id')).toBe(OIDC.clientId);
-        expect(authorizeUrl?.searchParams.get('response_type')).toBe('code');
-        expect(authorizeUrl?.searchParams.get('redirect_uri')).toBe(OIDC.sfccRedirectUri);
+        expect(authorizeUrl?.searchParams.get('response_type')).toBe('token');
+        expect(authorizeUrl?.searchParams.get('redirect_uri')).toBe(OIDC.postLoginRedirectUri);
         expect(authorizeUrl?.searchParams.get('scope')).toBe(OIDC.scope);
         expect(authorizeUrl?.searchParams.get('display')).toBe('page');
         expect(authorizeUrl?.searchParams.get('state')).toBeTruthy();
-        // Collection: the minted r5-token authorizes list via the `r5-token` header (never Authorization), no cookie.
+        // Collection: the minted r5-token (the id_token from the fragment) authorizes list via the `r5-token`
+        // header (never Authorization), no cookie.
         expect(listHeaders?.get('r5-token')).toBe(R5TOKEN);
         expect(listHeaders?.get('authorization')).toBeNull();
         expect(listHeaders?.get('cookie')).toBeNull();
@@ -189,7 +209,29 @@ describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)'
         expect(listUrl?.searchParams.get('endDate')).toBe('2026-12-31');
     });
 
-    it('maps rejected credentials to a typed AuthenticationError carrying no secret material', async () => {
+    it('extracts the id_token from anywhere in the redirect fragment, stopping at the next param', async () => {
+        server.use(
+            loginOk(),
+            http.get(
+                SSO_AUTHORIZE,
+                () =>
+                    // id_token is NOT first and is followed by another param — the regex must isolate exactly the JWT.
+                    new HttpResponse(null, {
+                        status: 303,
+                        headers: {
+                            location: `${OIDC.postLoginRedirectUri}#access_token=AT&id_token=${R5TOKEN}&token_type=Bearer`,
+                        },
+                    }),
+            ),
+        );
+        const a = adapter();
+
+        const auth = await a.authenticate(creds());
+
+        expect(a.toStoredSession(auth).token.expose()).toBe(R5TOKEN);
+    });
+
+    it('maps rejected credentials (HTTP 401 on login) to a typed AuthenticationError carrying no secret material', async () => {
         server.use(http.post(SSO_LOGIN, () => new HttpResponse(null, { status: 401 })));
 
         const error: unknown = await authenticate().catch((caught: unknown) => caught);
@@ -221,22 +263,56 @@ describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)'
         expect(error).toBeInstanceOf(AuthenticationError);
     });
 
-    it('requires an operator-supplied browser-at-login: the default build cannot complete auth or leak secrets', async () => {
-        // Stage 1 succeeds (real, mocked); the default port has no browser wired, so auth stops there — and
-        // the raised error names the operator step without echoing the password or the login ticket.
-        server.use(loginOk());
+    it('maps a rejected login ticket (HTTP 403 on authorize) to a typed AuthenticationError carrying no secret material', async () => {
+        // Stage 1 succeeds; the authorize step rejects the ticket — surfaced typed, without echoing the ticket or password.
+        server.use(
+            loginOk(),
+            http.get(SSO_AUTHORIZE, () => new HttpResponse(null, { status: 403 })),
+        );
 
-        const error: unknown = await new MonoprixAdapter().authenticate(creds()).catch((caught: unknown) => caught);
+        const error: unknown = await authenticate().catch((caught: unknown) => caught);
 
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toContain('browser-at-login');
+        expect(error).toBeInstanceOf(AuthenticationError);
+        expect((error as AuthenticationError).reason).toBe('invalid-credentials');
         const surfaces = `${(error as Error).message}\n${(error as Error).stack ?? ''}`;
-        expect(surfaces).not.toContain(PASSWORD);
         expect(surfaces).not.toContain(TKN);
+        expect(surfaces).not.toContain(PASSWORD);
+    });
+
+    it('maps an authorize redirect with no Location to a typed AuthenticationError (nothing to mint)', async () => {
+        server.use(
+            loginOk(),
+            http.get(SSO_AUTHORIZE, () => new HttpResponse(null, { status: 303 })),
+        );
+
+        const error: unknown = await authenticate().catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(AuthenticationError);
+        expect((error as AuthenticationError).reason).toBe('unexpected-response');
+    });
+
+    it('maps an authorize redirect whose fragment carries no id_token to a typed AuthenticationError', async () => {
+        server.use(
+            loginOk(),
+            // A redirect back to post-login but WITHOUT an id_token — drift on the mint path.
+            http.get(
+                SSO_AUTHORIZE,
+                () =>
+                    new HttpResponse(null, {
+                        status: 303,
+                        headers: { location: `${OIDC.postLoginRedirectUri}#state=server-state` },
+                    }),
+            ),
+        );
+
+        const error: unknown = await authenticate().catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(AuthenticationError);
+        expect((error as AuthenticationError).reason).toBe('unexpected-response');
     });
 
     it('projects the minted r5-token (not the password or ticket) into a persistable StoredSession (#17 login ceremony)', async () => {
-        server.use(loginOk());
+        server.use(...authOk());
         const a = adapter();
 
         const auth = await a.authenticate(creds());
@@ -256,7 +332,7 @@ describe('MonoprixAdapter — AC3: list', () => {
         const from = new Date('2026-03-10T00:00:00.000Z');
         const to = new Date('2026-03-20T00:00:00.000Z');
         server.use(
-            loginOk(),
+            ...authOk(),
             receiptsOk([
                 { id: 'before', type: 'store', date: '2026-03-09T23:59:59.999Z', price: 1 },
                 { id: 'on-from', type: 'store', date: from.toISOString(), price: 2 },
@@ -271,7 +347,7 @@ describe('MonoprixAdapter — AC3: list', () => {
     });
 
     it('returns an empty success for a window with no receipts', async () => {
-        server.use(loginOk(), receiptsOk([]));
+        server.use(...authOk(), receiptsOk([]));
 
         const refs = await monoprixAdapter.list(await authenticate(), WIDE);
 
@@ -280,7 +356,7 @@ describe('MonoprixAdapter — AC3: list', () => {
 
     it('de-duplicates receipts that repeat within a response, preserving listing order', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             receiptsOk([
                 { id: 'a', type: 'store', date: ISSUED, price: 1 },
                 { id: 'b', type: 'store', date: ISSUED, price: 2 },
@@ -297,7 +373,7 @@ describe('MonoprixAdapter — AC3: list', () => {
 describe('MonoprixAdapter — AC3: fetch', () => {
     it('mints one ref per receipt, packing id + type, and preserves listing order', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             receiptsOk([
                 { id: 'r1', type: 'store', date: ISSUED, price: 12.3 },
                 { id: 'r2', type: 'online', date: ISSUED, price: 4.5 },
@@ -313,7 +389,7 @@ describe('MonoprixAdapter — AC3: fetch', () => {
         // The contract documents `type` with a "store" default — a receipt without one is a store
         // receipt, not drift, and `fetch` must still resolve a receiptType.
         server.use(
-            loginOk(),
+            ...authOk(),
             // `type` is omitted on the wire (the schema defaults it to "store"); wireFixture validates the
             // input shape but serves it as-authored, so the adapter still exercises the default path.
             http.get(GET_RECEIPTS, () =>
@@ -332,7 +408,7 @@ describe('MonoprixAdapter — AC3: fetch', () => {
     });
 
     it('downloads a receipt bill and returns it as a verified PDF artifact addressed by id + type', async () => {
-        server.use(loginOk(), receiptsOk([{ id: 'r1', type: 'store', date: ISSUED, price: 9.99 }]), billPdf());
+        server.use(...authOk(), receiptsOk([{ id: 'r1', type: 'store', date: ISSUED, price: 9.99 }]), billPdf());
         const auth = await authenticate();
         const ref = (await monoprixAdapter.list(auth, WIDE))[0];
         expect(ref).toBeDefined();
@@ -349,7 +425,7 @@ describe('MonoprixAdapter — AC3: fetch', () => {
     it('round-trips a legitimate internal-underscore id/type to the correct receipt bill', async () => {
         // A single INTERNAL underscore is legal — only an embedded `__` or an EDGE underscore is drift. Such a
         // packed ref must pass the boundary AND split back to the exact (receiptId, receiptType) the bill URL needs.
-        server.use(loginOk(), receiptsOk([{ id: 'MP_2026', type: 'in_store', date: ISSUED, price: 1 }]), billPdf());
+        server.use(...authOk(), receiptsOk([{ id: 'MP_2026', type: 'in_store', date: ISSUED, price: 1 }]), billPdf());
         const auth = await authenticate();
         const refs = await monoprixAdapter.list(auth, WIDE);
         expect(refs.map((ref) => ref.id)).toEqual(['MP_2026__in_store']);
@@ -362,7 +438,7 @@ describe('MonoprixAdapter — AC3: fetch', () => {
 
     it('rejects a fetched bill that is not a valid PDF at the trust boundary', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             receiptsOk([{ id: 'r1', type: 'store', date: ISSUED, price: 1 }]),
             http.get(
                 GET_BILL,
@@ -385,7 +461,7 @@ describe('MonoprixAdapter — AC3: fetch', () => {
 describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => {
     it('rejects a malformed listing response at the trust boundary, labeled by source:stage', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             http.get(GET_RECEIPTS, () =>
                 HttpResponse.json({ receipts: [{ id: '', type: 'store', date: 'not-a-date', price: 'nope' }] }),
             ),
@@ -406,7 +482,7 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
         { label: 'leading underscore in a receipt type', id: 'MP-1', type: '_store' },
     ])('rejects $label, so distinct receipts can never collide', async ({ id, type }) => {
         server.use(
-            loginOk(),
+            ...authOk(),
             http.get(GET_RECEIPTS, () => HttpResponse.json({ receipts: [{ id, type, date: ISSUED, price: 1 }] })),
         );
         const auth = await authenticate();
@@ -419,7 +495,7 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
 
     it('drives a full collect() run end-to-end and leaks no secret into results, manifest, or persisted bytes', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             receiptsOk([
                 { id: 'MP-1', type: 'store', date: ISSUED, price: 10.5 },
                 { id: 'MP-2', type: 'online', date: ISSUED, price: 7.25 },
@@ -478,7 +554,7 @@ describe('MonoprixAdapter — AC4: boundary validation + secret hygiene', () => 
 describe('MonoprixAdapter — re-auth seam vs TLS-impersonation fault', () => {
     it('maps an expired r5-token (HTTP 401 on list) to a ReauthRequiredError', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             http.get(GET_RECEIPTS, () => new HttpResponse(null, { status: 401 })),
         );
         const auth = await authenticate();
@@ -488,7 +564,7 @@ describe('MonoprixAdapter — re-auth seam vs TLS-impersonation fault', () => {
 
     it('treats HTTP 403 as a missing-TLS-impersonation transport fault, NOT a re-auth', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             http.get(GET_RECEIPTS, () => new HttpResponse(null, { status: 403 })),
         );
         const auth = await authenticate();
@@ -502,7 +578,7 @@ describe('MonoprixAdapter — re-auth seam vs TLS-impersonation fault', () => {
 
     it('surfaces an expired r5-token through collect() as a structured reauth-required result', async () => {
         server.use(
-            loginOk(),
+            ...authOk(),
             http.get(GET_RECEIPTS, () => new HttpResponse(null, { status: 401 })),
         );
 
