@@ -83,6 +83,13 @@ export interface SourceDescriptor {
     /** Window `collect()` applies when the caller gives no explicit date range. */
     readonly defaultWindow: RelativeDateWindow;
     readonly pagination: PaginationKind;
+    /**
+     * Whether this source's API host is reached SOLELY via a stable baked constant (no runtime
+     * discovery) — making it a publicly-visible interop fact safe to bake into the public adapter.
+     * `true` promotes the source to host-publication; absent/`false` is fail-closed (host stays
+     * private). Per-source. See {@link @getreceipt/core!resolvePublishableHost} for the gate. (#103)
+     */
+    readonly discoveryOnly?: boolean;
 }
 
 /**

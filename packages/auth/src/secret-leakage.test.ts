@@ -6,8 +6,19 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { assertNoSecretLeaks, scanForSecrets, SecretLeakDetectedError } from './index.js';
+import {
+    assertNoSecretLeaks,
+    scanForPublicationLeaks,
+    scanForRawCaptureArtifacts,
+    scanForSecrets,
+    SecretLeakDetectedError,
+} from './index.js';
 import type { ScannableFile } from './index.js';
+
+// Sentinels assembled at runtime so the committed test source never contains a contiguous match —
+// otherwise the clean-tree / publication scans below would flag this very file.
+const JWT = 'eyJ' + 'h'.repeat(20) + '.' + 'eyJ' + 'p'.repeat(20) + '.' + 's'.repeat(20);
+const RE_MARKER = 'GETRECEIPT-RE-' + 'CAPTURE-DO-NOT-PUBLISH';
 
 // Secret-shaped values are assembled at runtime so the literal is never committed
 // contiguously — otherwise this very file would trip the clean-tree scan below.
@@ -41,6 +52,57 @@ describe('scanForSecrets (pure)', () => {
         const leaks = scanForSecrets([{ path: 'multi.ts', content: `line1\nline2\nconst t = "${planted}";\n` }]);
         expect(leaks).toHaveLength(1);
         expect(leaks[0]?.line).toBe(3);
+    });
+
+    it('flags a JWT (header.payload.signature base64url) as a credential leak (#103)', () => {
+        const leaks = scanForSecrets([{ path: 'token.ts', content: `const t = "${JWT}";` }]);
+        expect(leaks.map((leak) => leak.rule)).toContain('jwt');
+        expect(JSON.stringify(leaks)).not.toContain(JWT);
+    });
+});
+
+describe('scanForRawCaptureArtifacts (#103) — block the capture container by extension', () => {
+    it('flags raw-capture files (.har, .pcap, …) by path, reporting path + rule, not content', () => {
+        const files: ScannableFile[] = [
+            { path: 'packages/adapter-x/captures/login.har', content: '{"log":{"entries":[]}}' },
+            { path: 'dump.pcapng', content: 'binary-ish' },
+            { path: 'src/adapter.ts', content: 'export const x = 1;\n' },
+        ];
+        const leaks = scanForRawCaptureArtifacts(files);
+        expect(leaks).toEqual([
+            { path: 'packages/adapter-x/captures/login.har', line: 1, rule: 'raw-capture-artifact' },
+            { path: 'dump.pcapng', line: 1, rule: 'raw-capture-artifact' },
+        ]);
+    });
+
+    it('does not flag a normal source file whose name merely contains a capture word', () => {
+        expect(scanForRawCaptureArtifacts([{ path: 'src/har-parser.ts', content: '' }])).toEqual([]);
+    });
+});
+
+describe('scanForPublicationLeaks (#103) — secrets + RE-method markers + capture residue', () => {
+    it('is green on clean source AND a discovery_only host literal (host allowlist is enforced elsewhere)', () => {
+        const files: ScannableFile[] = [
+            { path: 'wire.ts', content: "export const ENDPOINTS = { origin: 'https://bff.grandfrais.com' };\n" },
+            { path: 'shape.ts', content: 'const receipt = { receiptId, checkOutDate, amount };\n' },
+        ];
+        expect(scanForPublicationLeaks(files)).toEqual([]);
+    });
+
+    it('blocks a RE-method marker in shipped content', () => {
+        const leaks = scanForPublicationLeaks([{ path: 'note.ts', content: `// ${RE_MARKER}\n` }]);
+        expect(leaks.map((leak) => leak.rule)).toContain('re-method-marker');
+        expect(JSON.stringify(leaks)).not.toContain(RE_MARKER);
+    });
+
+    it('blocks a secret/JWT literal AND a raw-capture artifact in one pass', () => {
+        const leaks = scanForPublicationLeaks([
+            { path: 'leak.ts', content: `const t = "${JWT}";` },
+            { path: 'captures/run.har', content: '{}' },
+        ]);
+        const rules = leaks.map((leak) => leak.rule);
+        expect(rules).toContain('jwt');
+        expect(rules).toContain('raw-capture-artifact');
     });
 });
 

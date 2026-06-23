@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError, fromCredentialContext, PasswordAuthDriver } from '@getreceipt/auth';
 import type { Secret, SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, TrustBoundaryError } from '@getreceipt/core';
+import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -25,13 +25,16 @@ import type { ListPageDto, PdfVariant, ReceiptDetailDto, ReceiptDto } from './wi
 
 const CANONICAL_DOMAIN = 'grandfrais.com';
 
+/** Host-publication finding (#103): the BFF host is a baked constant with no runtime discovery → publishable. */
+const DISCOVERY_ONLY = true;
+
 /**
  * Base host for the receipts API: the mobile app's BFF (a pinned static constant; no runtime
  * Remote-Config fetch). Sourced from the wire contract ({@link ENDPOINTS}) so the adapter and its
  * tests address one endpoint set (#88). The canonical domain stays `grandfrais.com`; only the wire
- * host is `bff.`.
+ * host is `bff.`. Routed through the publication gate ({@link resolvePublishableHost}, #103).
  */
-const API_BASE = ENDPOINTS.origin;
+const API_BASE = resolvePublishableHost(DISCOVERY_ONLY, { bakedHost: ENDPOINTS.origin }).host;
 const LOGIN_URL = new URL(ENDPOINTS.login, API_BASE);
 // `POST /v1/users/token/refresh` also exists, but token expiry is handled by the re-auth seam
 // (ReauthRequiredError → the orchestrator re-authenticates), so the adapter keeps only the bearer token.
@@ -48,6 +51,7 @@ const DESCRIPTOR: SourceDescriptor = {
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
     defaultWindow: { days: 90 },
     pagination: 'cursor',
+    discoveryOnly: DISCOVERY_ONLY,
 };
 
 /** What the opaque {@link AuthHandle} actually carries between stages: the fenced session token. */

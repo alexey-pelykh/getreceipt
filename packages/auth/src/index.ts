@@ -27,7 +27,13 @@ export { Secret } from './secret.js';
 export { asCredentialContext, fromCredentialContext } from './credential-context.js';
 export type { ResolvedCredentials } from './credential-context.js';
 export { sealEnvelope } from './secret-envelope.js';
-export { assertNoSecretLeaks, scanForSecrets, SecretLeakDetectedError } from './secret-leakage.js';
+export {
+    assertNoSecretLeaks,
+    scanForPublicationLeaks,
+    scanForRawCaptureArtifacts,
+    scanForSecrets,
+    SecretLeakDetectedError,
+} from './secret-leakage.js';
 export type { ScannableFile, SecretLeak } from './secret-leakage.js';
 export type { SessionStore, StoredSession } from './session.js';
 export { ReauthDetector } from './reauth-detector.js';

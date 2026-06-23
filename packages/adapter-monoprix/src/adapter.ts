@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AuthenticationError, fromCredentialContext, Secret } from '@getreceipt/auth';
 import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, TrustBoundaryError } from '@getreceipt/core';
+import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -20,12 +20,16 @@ import type { ReceiptDto } from './wire.js';
 
 const CANONICAL_DOMAIN = 'monoprix.fr';
 
+/** Host-publication finding (#103): both hosts are baked constants with no runtime discovery → publishable. */
+const DISCOVERY_ONLY = true;
+
 // Endpoints + protocol constants are sourced from the wire contract ({@link ENDPOINTS}/{@link OIDC}/
 // {@link COLLECTION}) so the adapter and its tests address one endpoint set (#88). Cloudflare gates the
 // account API host on the Chrome TLS fingerprint, so collection runs over the impersonating
-// {@link Transport} with no cookie; the identity host serves the OIDC login + authorize dance.
-const API_BASE = ENDPOINTS.apiOrigin;
-const SSO_BASE = ENDPOINTS.ssoOrigin;
+// {@link Transport} with no cookie; the identity host serves the OIDC login + authorize dance. Both hosts
+// route through the publication gate ({@link resolvePublishableHost}, #103).
+const API_BASE = resolvePublishableHost(DISCOVERY_ONLY, { bakedHost: ENDPOINTS.apiOrigin }).host;
+const SSO_BASE = resolvePublishableHost(DISCOVERY_ONLY, { bakedHost: ENDPOINTS.ssoOrigin }).host;
 const LOGIN_URL = new URL(ENDPOINTS.login, SSO_BASE);
 
 /** "%PDF-" — the magic prefix every PDF stream starts with. */
@@ -42,6 +46,7 @@ const DESCRIPTOR: SourceDescriptor = {
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
     defaultWindow: { days: 90 },
     pagination: 'none',
+    discoveryOnly: DISCOVERY_ONLY,
 };
 
 /**

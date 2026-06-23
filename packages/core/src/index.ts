@@ -68,3 +68,5 @@ export type {
 export { listSources } from './sources.js';
 export type { ListSourcesOptions, SourceListing, VerificationLookup } from './sources.js';
 export { assertE2eCoverage, findAdaptersMissingE2eCoverage, MissingE2eCoverageError } from './e2e-coverage.js';
+export { findUnpublishableHostLiterals, HostNotPublishableError, resolvePublishableHost } from './host-publication.js';
+export type { HostLiteralEntry, HostOrigin, HostResolutionOptions, ResolvedHost } from './host-publication.js';
