@@ -15,24 +15,33 @@ import {
     TrustBoundaryError,
 } from '@getreceipt/core';
 import type { AuthHandle, CredentialContext, DateRange, ReceiptWriter } from '@getreceipt/core';
-import { http, HttpResponse, server } from '@getreceipt/testing';
+import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { describe, expect, it } from 'vitest';
 
 import { MonoprixAdapter, monoprixAdapter } from './index.js';
 import type { BrowserLogin, BrowserLoginRequest } from './index.js';
-import { parseLoginResponse, parseReceiptsResponse } from './wire.js';
+import {
+    COLLECTION,
+    ENDPOINTS,
+    loginResponseSchema,
+    OIDC,
+    parseLoginResponse,
+    parseReceiptsResponse,
+    receiptsResponseSchema,
+} from './wire.js';
+import type { ReceiptDto } from './wire.js';
 
-// Everything below runs against MSW-mocked HTTP — there is no live monoprix.fr in CI, so the fixtures
-// are SYNTHETIC + schema-shaped with obvious leak-sentinel secrets (CONTRIBUTING § captures-stay-local):
-// zero raw capture. Auth is the OIDC dance — stage 1 (`/password/login`) returns the login TICKET, and
-// the browser-at-login seam (option C) mints the R5-TOKEN — so both, plus the password, are sentinels.
-const SSO_LOGIN = 'https://sso.monoprix.fr/identity/v1/password/login';
-const API = 'https://client.monoprix.fr/api/client';
-const GET_RECEIPTS = `${API}/get-receipts`;
-const GET_BILL = `${API}/get-receipt-bill`;
-const SFCC = 'https://www.monoprix.fr/on/demandware.store/Sites-TML-FR-Site/fr_FR/Login-OAuthReentryMPX';
-const CLIENT_ID = '1UdlANOVt4FdstGpM6Kn';
-const SCOPE = 'openid profile email phone offline_access address full_write';
+// Everything below runs against MSW-mocked HTTP — there is no live monoprix.fr in CI. Endpoints AND the
+// OIDC/SPA protocol constants come from the in-repo contract (wire.ts: `ENDPOINTS`/`OIDC`/`COLLECTION`),
+// and every well-formed response is built through `wireFixture(schema, …)` so it provably derives from
+// the wire schema rather than being hand-authored beside the adapter (#88). Fixtures are SYNTHETIC with
+// obvious leak-sentinel secrets (CONTRIBUTING § captures-stay-local): zero raw capture. Auth is the OIDC
+// dance — stage 1 (`/password/login`) returns the login TICKET, and the browser-at-login seam (option C)
+// mints the R5-TOKEN — so both, plus the password, are sentinels. (Negative-path tests deliberately serve
+// divergent bodies and therefore bypass `wireFixture`.)
+const SSO_LOGIN = `${ENDPOINTS.ssoOrigin}${ENDPOINTS.login}`;
+const GET_RECEIPTS = `${ENDPOINTS.apiOrigin}${ENDPOINTS.getReceipts}`;
+const GET_BILL = `${ENDPOINTS.apiOrigin}${ENDPOINTS.getReceiptBill}`;
 
 const USERNAME = 'shopper@monoprix.test';
 const PASSWORD = 'mp-pa55word-LEAK-SENTINEL';
@@ -43,13 +52,7 @@ const R5TOKEN = 'mp-r5-token-LEAK-SENTINEL';
 const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
 const ISSUED = '2026-06-01T10:00:00.000Z';
 
-/** A `get-receipts` receipt, matching `receiptSchema` in wire.ts (the in-repo contract). */
-interface WireReceipt {
-    id: string;
-    type: string;
-    date: string;
-    price: number;
-}
+// The `get-receipts` receipt shape is the schema-derived `ReceiptDto` from wire.ts — not re-declared here.
 
 function creds(): CredentialContext {
     return asCredentialContext({ kind: 'oauth2', username: USERNAME, secret: new Secret(PASSWORD) });
@@ -70,14 +73,16 @@ function adapter(browserLogin: BrowserLogin = fakeBrowserLogin()): MonoprixAdapt
     return new MonoprixAdapter({ browserLogin });
 }
 
-/** Stage 1: `/password/login` exchanges credentials for the opaque login ticket. */
+/** Stage 1: `/password/login` exchanges credentials for the opaque login ticket (derives from `loginResponseSchema`, #88). */
 function loginOk() {
-    return http.post(SSO_LOGIN, () => HttpResponse.json({ tkn: TKN }));
+    return http.post(SSO_LOGIN, () => HttpResponse.json(wireFixture(loginResponseSchema, { tkn: TKN })));
 }
 
-/** Serve one `get-receipts` page (the contract returns the whole window in a single call). */
-function receiptsOk(receipts: readonly WireReceipt[]) {
-    return http.get(GET_RECEIPTS, () => HttpResponse.json({ receipts }));
+/** Serve one `get-receipts` page (the contract returns the whole window in a single call); derives from `receiptsResponseSchema` (#88). */
+function receiptsOk(receipts: readonly ReceiptDto[]) {
+    return http.get(GET_RECEIPTS, () =>
+        HttpResponse.json(wireFixture(receiptsResponseSchema, { receipts: [...receipts] })),
+    );
 }
 
 function billPdf() {
@@ -141,12 +146,12 @@ describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)'
             http.post(SSO_LOGIN, async ({ request }) => {
                 loginBody = await request.json();
                 loginOrigin = request.headers.get('origin');
-                return HttpResponse.json({ tkn: TKN });
+                return HttpResponse.json(wireFixture(loginResponseSchema, { tkn: TKN }));
             }),
             http.get(GET_RECEIPTS, ({ request }) => {
                 listHeaders = request.headers;
                 listUrl = new URL(request.url);
-                return HttpResponse.json({ receipts: [] });
+                return HttpResponse.json(wireFixture(receiptsResponseSchema, { receipts: [] }));
             }),
         );
         const a = adapter(
@@ -159,24 +164,24 @@ describe('MonoprixAdapter — AC2: authenticate (OIDC dance + browser-at-login)'
         await a.list(auth, WIDE);
 
         // Stage 1: the password reaches the login endpoint alongside the public client_id + scope, from the SPA origin.
-        expect(loginBody).toEqual({ client_id: CLIENT_ID, scope: SCOPE, email: USERNAME, password: PASSWORD });
-        expect(loginOrigin).toBe('https://client.monoprix.fr');
+        expect(loginBody).toEqual({ client_id: OIDC.clientId, scope: OIDC.scope, email: USERNAME, password: PASSWORD });
+        expect(loginOrigin).toBe(ENDPOINTS.apiOrigin);
         // Stage 2: the authorize URL the browser opens carries the ticket and the OIDC parameters.
-        expect(authorizeUrl?.origin).toBe('https://sso.monoprix.fr');
-        expect(authorizeUrl?.pathname).toBe('/oauth/authorize');
+        expect(authorizeUrl?.origin).toBe(ENDPOINTS.ssoOrigin);
+        expect(authorizeUrl?.pathname).toBe(ENDPOINTS.authorize);
         expect(authorizeUrl?.searchParams.get('tkn')).toBe(TKN);
-        expect(authorizeUrl?.searchParams.get('client_id')).toBe(CLIENT_ID);
+        expect(authorizeUrl?.searchParams.get('client_id')).toBe(OIDC.clientId);
         expect(authorizeUrl?.searchParams.get('response_type')).toBe('code');
-        expect(authorizeUrl?.searchParams.get('redirect_uri')).toBe(SFCC);
-        expect(authorizeUrl?.searchParams.get('scope')).toBe(SCOPE);
+        expect(authorizeUrl?.searchParams.get('redirect_uri')).toBe(OIDC.sfccRedirectUri);
+        expect(authorizeUrl?.searchParams.get('scope')).toBe(OIDC.scope);
         expect(authorizeUrl?.searchParams.get('display')).toBe('page');
         expect(authorizeUrl?.searchParams.get('state')).toBeTruthy();
         // Collection: the minted r5-token authorizes list via the `r5-token` header (never Authorization), no cookie.
         expect(listHeaders?.get('r5-token')).toBe(R5TOKEN);
         expect(listHeaders?.get('authorization')).toBeNull();
         expect(listHeaders?.get('cookie')).toBeNull();
-        expect(listHeaders?.get('application-caller')).toBe('monoprix-shopping');
-        expect(listHeaders?.get('referer')).toBe('https://client.monoprix.fr/monoprix-shopping/tickets');
+        expect(listHeaders?.get('application-caller')).toBe(COLLECTION.applicationCaller);
+        expect(listHeaders?.get('referer')).toBe(COLLECTION.ticketsReferer);
         expect(listHeaders?.get('accept-language')).toBe('fr');
         // Query: a single bounded call — limit + a day-granular window.
         expect(listUrl?.searchParams.get('limit')).toBe('1000');
@@ -309,7 +314,13 @@ describe('MonoprixAdapter — AC3: fetch', () => {
         // receipt, not drift, and `fetch` must still resolve a receiptType.
         server.use(
             loginOk(),
-            http.get(GET_RECEIPTS, () => HttpResponse.json({ receipts: [{ id: 'r1', date: ISSUED, price: 1 }] })),
+            // `type` is omitted on the wire (the schema defaults it to "store"); wireFixture validates the
+            // input shape but serves it as-authored, so the adapter still exercises the default path.
+            http.get(GET_RECEIPTS, () =>
+                HttpResponse.json(
+                    wireFixture(receiptsResponseSchema, { receipts: [{ id: 'r1', date: ISSUED, price: 1 }] }),
+                ),
+            ),
             billPdf(),
         );
         const auth = await authenticate();
