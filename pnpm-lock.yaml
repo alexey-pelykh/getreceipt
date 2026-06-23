@@ -144,6 +144,25 @@ importers:
         specifier: 'catalog:'
         version: 26.0.0
 
+  packages/adapter-pro-free-fr:
+    dependencies:
+      '@getreceipt/auth':
+        specifier: workspace:^
+        version: link:../auth
+      '@getreceipt/core':
+        specifier: workspace:^
+        version: link:../core
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@getreceipt/testing':
+        specifier: workspace:^
+        version: link:../testing
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.0.0
+
   packages/auth:
     dependencies:
       '@getreceipt/core':
@@ -184,6 +203,9 @@ importers:
       '@getreceipt/adapter-monoprix-fr':
         specifier: workspace:^
         version: link:../adapter-monoprix-fr
+      '@getreceipt/adapter-pro-free-fr':
+        specifier: workspace:^
+        version: link:../adapter-pro-free-fr
       '@getreceipt/auth':
         specifier: workspace:^
         version: link:../auth

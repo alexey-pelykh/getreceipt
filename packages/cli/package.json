@@ -42,6 +42,7 @@
     "@getreceipt/adapter-free-fr": "workspace:^",
     "@getreceipt/adapter-grandfrais-com": "workspace:^",
     "@getreceipt/adapter-monoprix-fr": "workspace:^",
+    "@getreceipt/adapter-pro-free-fr": "workspace:^",
     "@getreceipt/auth": "workspace:^",
     "@getreceipt/core": "workspace:^",
     "@getreceipt/testing": "workspace:^",
