@@ -1,16 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais';
-import { monoprixAdapter } from '@getreceipt/adapter-monoprix';
+import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type { SourceAdapter } from '@getreceipt/core';
+import { createImpersonatingTransport } from '@getreceipt/transport-impersonate';
 
 /**
- * Every source adapter the CLI ships with, in a stable registration order (the order
- * `sources`/`status` list them in). This is the single place adapters are wired into the
- * front-end: adding a source means adding it here, and every verb — `from`, `all`,
- * `sources`, `status` — picks it up. Tests inject their own resolver instead.
+ * Construct the bundled adapters fresh, wiring each anti-bot-gated source with the transport its
+ * descriptor demands. This is the production composition root — `createDefaultResolver()` (every
+ * collection verb) and the live conformance harness both build on it, so injecting here fixes the
+ * shipped CLI/MCP *and* the live oracle in one move (#101).
+ *
+ * monoprix's collection host (`client.monoprix.fr`) is Cloudflare-gated on the TLS/HTTP-2 fingerprint,
+ * so it is driven by a Chrome-impersonating transport SCOPED to exactly that host (read from the wire
+ * contract's `apiOrigin` — single source of truth); auth (`sso.monoprix.fr`) and every other host fall
+ * through to plain `fetch`, keeping the live-validated OIDC flow off the native path. grandfrais is not
+ * gated and stays on plain `fetch`. The `requiresImpersonation` wiring gate (impersonation-gate.test.ts)
+ * asserts every source DECLARING the need is actually constructed this way.
  */
-export const BUNDLED_ADAPTERS: readonly SourceAdapter[] = [grandfraisAdapter, monoprixAdapter];
+export function buildBundledAdapters(): readonly SourceAdapter[] {
+    const monoprix = new MonoprixAdapter({
+        transport: createImpersonatingTransport({ impersonateHosts: [new URL(ENDPOINTS.apiOrigin).host] }),
+    });
+    return [grandfraisAdapter, monoprix];
+}
+
+/**
+ * Every source adapter the CLI ships with, in a stable registration order (the order `sources`/`status`
+ * list them in). Built once via {@link buildBundledAdapters}. Tests inject their own resolver instead.
+ */
+export const BUNDLED_ADAPTERS: readonly SourceAdapter[] = buildBundledAdapters();
 
 /** Build a registry holding the given adapters (defaults to {@link BUNDLED_ADAPTERS}). */
 export function createDefaultRegistry(adapters: readonly SourceAdapter[] = BUNDLED_ADAPTERS): SourceAdapterRegistry {

@@ -5,6 +5,7 @@
     { "path": "packages/core/tsconfig.build.json" },
     { "path": "packages/auth/tsconfig.build.json" },
     { "path": "packages/adapter-grandfrais/tsconfig.build.json" },
-    { "path": "packages/adapter-monoprix/tsconfig.build.json" }
+    { "path": "packages/adapter-monoprix/tsconfig.build.json" },
+    { "path": "packages/transport-impersonate/tsconfig.build.json" }
   ]
 }

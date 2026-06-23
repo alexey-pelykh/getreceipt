@@ -1,0 +1,40 @@
+{
+  "name": "@getreceipt/transport-impersonate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "@getreceipt fetch-compatible Transport with Chrome TLS/HTTP-2 browser impersonation (node-wreq) for anti-bot-gated sources.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/transport-impersonate"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "node-wreq": "catalog:"
+  },
+  "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
+    "@types/node": "catalog:"
+  },
+  "license": "AGPL-3.0-only"
+}

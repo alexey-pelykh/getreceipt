@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "commander": "catalog:",
+    "node-wreq": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },
@@ -43,6 +44,7 @@
     "@getreceipt/auth": "workspace:^",
     "@getreceipt/core": "workspace:^",
     "@getreceipt/testing": "workspace:^",
+    "@getreceipt/transport-impersonate": "workspace:^",
     "@types/node": "catalog:",
     "tsup": "catalog:"
   },

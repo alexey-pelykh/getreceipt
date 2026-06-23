@@ -7,9 +7,12 @@ export default defineConfig({
     },
     format: ['esm'],
     target: 'node24',
-    // The umbrella is the zero-dep binary, so it inlines EVERYTHING cli/mcp leave as runtime deps: the
-    // workspace packages plus their third-party (commander, yaml, zod, @modelcontextprotocol/sdk). A
-    // global / `npx` install then needs nothing else — the umbrella declares no runtime deps (#11, #77).
+    // The umbrella inlines EVERYTHING cli/mcp leave as runtime deps: the workspace packages plus their
+    // third-party (commander, yaml, zod, @modelcontextprotocol/sdk). The lone exception is `node-wreq`
+    // (#101): it is a NATIVE module that resolves its platform binary at runtime, so it cannot be bundled
+    // — left external here and declared as the umbrella's single runtime dependency (its prebuilt
+    // `@node-wreq/*` binary installs via optionalDependencies; no from-source compile). Everything else
+    // stays inlined, so a global / `npx` install needs only node-wreq (#11, #77).
     noExternal: [/^@getreceipt\//, 'commander', 'yaml', 'zod', '@modelcontextprotocol/sdk'],
     // Bundled CJS deps (e.g. `yaml`, via @getreceipt/auth) use dynamic `require`, which esbuild shims
     // to a throwing `__require` in ESM unless a real `require` is in module scope. Inject one via
