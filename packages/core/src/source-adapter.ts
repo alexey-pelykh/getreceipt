@@ -74,7 +74,7 @@ export interface RelativeDateWindow {
 export interface SourceDescriptor {
     /** Canonical domain that uniquely identifies the source (e.g. `free.fr`). Registry key. */
     readonly canonicalDomain: string;
-    /** Other domains that resolve to this same source (e.g. `pro.free.fr` → `free.fr`). */
+    /** Other domains that resolve to this same source (e.g. `adsl.free.fr` → `free.fr`). */
     readonly aliasDomains: readonly string[];
     readonly authKind: AuthKind;
     readonly transportTier: TransportTier;
