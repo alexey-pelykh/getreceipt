@@ -4,7 +4,7 @@ import type { BrowserProfile, WreqInit } from 'node-wreq';
 
 /**
  * A fetch-compatible HTTP transport seam — structurally identical to each adapter's `Transport`
- * (e.g. `@getreceipt/adapter-monoprix!Transport`). Kept as a local alias so this package carries no
+ * (e.g. `@getreceipt/adapter-monoprix-fr!Transport`). Kept as a local alias so this package carries no
  * first-party dependency: the composition root passes the value returned here straight into an
  * adapter's `transport` option, and structural typing makes the two interchangeable.
  */

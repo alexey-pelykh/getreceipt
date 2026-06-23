@@ -18,9 +18,9 @@ import { describe, expect, it } from 'vitest';
  * usage-docs-posture.test.ts (#12), which enforce their postures as executed text the same way.
  * Filesystem-only — these docs ship no code, so the contract is OS-independent.
  *
- * Note: this asserts the convention is DOCUMENTED. The two built adapters are renamed onto it in the
- * companion refactor (#107); a test asserting the package dirs themselves follow the rule belongs
- * there, not here, since they are intentionally still un-suffixed until that lands.
+ * Note: the first suite asserts the convention is DOCUMENTED (CONTRIBUTING.md). The second suite (#107)
+ * asserts the two built adapter packages on disk actually follow the rule — added when the rename landed;
+ * before that they were intentionally un-suffixed, so the dir-level assertion could not exist yet.
  */
 
 // Markdown wraps prose; strip blockquote markers and collapse whitespace before prose assertions, so
@@ -79,5 +79,28 @@ describe('CONTRIBUTING.md documents the adapter package-naming convention (issue
     it('frames the domain-derived name as a nominative reference, not branding', () => {
         expect(flat).toContain('nominative reference');
         expect(raw).toContain('](docs/legitimacy.md#service-names-are-nominative-references)');
+    });
+});
+
+// The companion to the documentation suite above: the two built adapters renamed in #107 must actually
+// carry the TLD-suffixed canonical-domain name on disk. Expected name is DERIVED from the canonical domain
+// via the documented transform (`.` → `-`), so a regression that drops the TLD fails here, not a hardcoded
+// string match. Filesystem-only — reads each package.json, imports no adapter.
+describe('the built adapter packages on disk follow the naming convention (issue #107)', () => {
+    // [package directory, canonical domain it targets] for each adapter the CLI ships in its default sources.
+    it.each([
+        ['adapter-grandfrais-com', 'grandfrais.com'],
+        ['adapter-monoprix-fr', 'monoprix.fr'],
+    ])('package dir %s is named after its canonical domain, TLD included', (dir, canonicalDomain) => {
+        const expectedName = `@getreceipt/adapter-${canonicalDomain.replaceAll('.', '-')}`;
+        const pkgPath = join(workspaceRoot, 'packages', dir, 'package.json');
+        expect(existsSync(pkgPath)).toBe(true);
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+            name?: string;
+            repository?: { directory?: string };
+        };
+        expect(pkg.name).toBe(expectedName);
+        // repository.directory tracks the renamed path too (the metadata publish/registry tooling reads).
+        expect(pkg.repository?.directory).toBe(`packages/${dir}`);
     });
 });
