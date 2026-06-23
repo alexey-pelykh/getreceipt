@@ -39,6 +39,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@getreceipt/adapter-free-fr": "workspace:^",
     "@getreceipt/adapter-grandfrais-com": "workspace:^",
     "@getreceipt/adapter-monoprix-fr": "workspace:^",
     "@getreceipt/auth": "workspace:^",

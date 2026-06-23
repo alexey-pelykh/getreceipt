@@ -91,6 +91,7 @@ describe('the built adapter packages on disk follow the naming convention (issue
     it.each([
         ['adapter-grandfrais-com', 'grandfrais.com'],
         ['adapter-monoprix-fr', 'monoprix.fr'],
+        ['adapter-free-fr', 'free.fr'],
     ])('package dir %s is named after its canonical domain, TLD included', (dir, canonicalDomain) => {
         const expectedName = `@getreceipt/adapter-${canonicalDomain.replaceAll('.', '-')}`;
         const pkgPath = join(workspaceRoot, 'packages', dir, 'package.json');
