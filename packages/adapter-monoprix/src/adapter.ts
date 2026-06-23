@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomUUID } from 'node:crypto';
 
-import { AuthenticationError, fromCredentialContext } from '@getreceipt/auth';
-import type { Secret, SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
+import { AuthenticationError, fromCredentialContext, Secret } from '@getreceipt/auth';
+import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
 import { ReauthRequiredError, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
@@ -33,7 +33,9 @@ const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] as const;
 
 const DESCRIPTOR: SourceDescriptor = {
     canonicalDomain: CANONICAL_DOMAIN,
-    aliasDomains: ['www.monoprix.fr', 'client.monoprix.fr', 'courses.monoprix.fr'],
+    // No aliases: www./client./sso. are flow subdomains of the one canonical source (not alternative
+    // names for it), and courses.monoprix.fr is a different product, not a receipt source.
+    aliasDomains: [],
     authKind: 'oauth2',
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
@@ -52,40 +54,9 @@ export type Transport = (input: URL | string, init?: RequestInit) => Promise<Res
 
 const defaultTransport: Transport = (input, init) => fetch(input, init);
 
-/** The tkn-bearing authorize URL handed to a {@link BrowserLogin} port. */
-export interface BrowserLoginRequest {
-    readonly authorizeUrl: URL;
-}
-
-/** The reusable r5-token JWT a {@link BrowserLogin} port mints. */
-export interface BrowserLoginResult {
-    readonly r5Token: Secret;
-}
-
-/**
- * The browser-at-login seam (option C): drive a real browser through the authorize redirect chain
- * (stage 2) and the post-login `/tickets` SPA call that mints the `r5-token` (stage 3), then return
- * the token. Operator-provided — the default build wires no browser ({@link requireOperatorBrowserLogin});
- * the live gate (#89) supplies a Playwright implementation. The non-blocking follow-up (option B)
- * replaces this with a pure-headless mint once the `/tickets` call is captured.
- */
-export interface BrowserLogin {
-    login(request: BrowserLoginRequest): Promise<BrowserLoginResult>;
-}
-
-/** Default port: no browser is wired, so authentication cannot complete without an operator-supplied {@link BrowserLogin}. */
-const requireOperatorBrowserLogin: BrowserLogin = {
-    login(): Promise<BrowserLoginResult> {
-        throw new Error(
-            'monoprix: browser-at-login (option C) is operator-provided — construct MonoprixAdapter with a BrowserLogin port; the live gate (#89) wires Playwright. No live login is attempted in this build.',
-        );
-    },
-};
-
-/** Construction options: both seams default to a unit-testable, no-live-network implementation. */
+/** Construction options: the transport defaults to a unit-testable, no-live-network implementation. */
 export interface MonoprixAdapterOptions {
     readonly transport?: Transport;
-    readonly browserLogin?: BrowserLogin;
 }
 
 /** What the opaque {@link AuthHandle} carries between stages: the fenced r5-token. */
@@ -97,20 +68,18 @@ interface MonoprixSession {
  * The monoprix.fr source adapter, reusing core (trust boundary, re-auth seam) and auth
  * (Secret fence, typed errors) for every cross-cutting concern rather than re-implementing it.
  *
- * Authentication is an OIDC dance against sso.monoprix.fr: `authenticate` runs stage 1 headlessly
- * (password → login ticket) and builds the stage-2 authorize URL, then delegates the browser-requiring
- * tail (authorize redirect chain + `/tickets` r5-token mint) to the injected {@link BrowserLogin} port
- * — the "browser-at-login, browser-free-at-collect" floor. `list` / `fetch` then carry only the
- * `r5-token` over the TLS-impersonating {@link Transport}; one receipt maps to one {@link ReceiptRef}.
+ * Authentication is a headless OIDC password flow against sso.monoprix.fr (live-validated 2026-06-23,
+ * no browser): `authenticate` runs stage 1 (password → opaque login ticket), then mints the reusable
+ * `r5-token` via the implicit-variant authorize endpoint (`response_type=token`, manual redirect, the
+ * `id_token` read from the redirect fragment). `list` / `fetch` then carry only the `r5-token` over the
+ * TLS-impersonating {@link Transport}; one receipt maps to one {@link ReceiptRef}.
  */
 export class MonoprixAdapter implements SourceAdapter, SessionPersistableAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
     readonly #transport: Transport;
-    readonly #browserLogin: BrowserLogin;
 
     constructor(options: MonoprixAdapterOptions = {}) {
         this.#transport = options.transport ?? defaultTransport;
-        this.#browserLogin = options.browserLogin ?? requireOperatorBrowserLogin;
     }
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
@@ -122,12 +91,10 @@ export class MonoprixAdapter implements SourceAdapter, SessionPersistableAdapter
                 'invalid-credentials',
             );
         }
-        // Stage 1 (headless, POC-validated): exchange credentials for the opaque login ticket.
+        // Stage 1: exchange credentials for the opaque login ticket.
         const tkn = await obtainLoginTicket(this.#transport, resolved.username, resolved.secret);
-        // Stages 2-3 (option C): the browser opens the authorize URL (carrying the ticket), follows the
-        // SFCC re-entry chain, and captures the r5-token the /tickets SPA mints. No live login here —
-        // the default port requires an operator-supplied browser.
-        const { r5Token } = await this.#browserLogin.login({ authorizeUrl: buildAuthorizeUrl(tkn) });
+        // Stages 2-3: mint the reusable r5-token headlessly via the implicit authorize redirect.
+        const r5Token = await mintR5Token(this.#transport, tkn);
         return asAuthHandle({ r5Token });
     }
 
@@ -191,12 +158,41 @@ async function obtainLoginTicket(transport: Transport, email: string, password: 
     return result.data.tkn;
 }
 
-/** Build the stage-2 authorize URL the browser opens — the ticket rides as the `tkn` query param. */
+/**
+ * Stages 2-3 of the OIDC dance, headless: GET the implicit-variant authorize URL WITHOUT following the
+ * redirect, then read the `id_token` the identity provider hands back in the `Location` fragment — that
+ * `id_token` IS the reusable r5-token. A rejected ticket (401/403) or a redirect carrying no `id_token`
+ * is an authentication failure, surfaced secret-safe (never echoing the ticket or token), like stage 1.
+ */
+async function mintR5Token(transport: Transport, tkn: string): Promise<Secret> {
+    let response: Response;
+    try {
+        // `redirect: 'manual'` keeps the 3xx in hand so its Location is readable; the impersonating
+        // transport honors it just as the platform fetch does under MSW in the unit tests.
+        response = await transport(buildAuthorizeUrl(tkn), { redirect: 'manual' });
+    } catch {
+        throw new AuthenticationError('monoprix: authorize request failed', 'transport-error');
+    }
+    if (response.status === 401 || response.status === 403) {
+        throw new AuthenticationError('monoprix: the source rejected the login ticket', 'invalid-credentials');
+    }
+    const location = response.headers.get('location');
+    if (location === null || location === '') {
+        throw new AuthenticationError('monoprix: authorize returned no redirect location', 'unexpected-response');
+    }
+    const idToken = /[#?&]id_token=([^&]+)/.exec(location)?.[1];
+    if (idToken === undefined) {
+        throw new AuthenticationError('monoprix: authorize redirect carried no id_token', 'unexpected-response');
+    }
+    return new Secret(idToken);
+}
+
+/** Build the implicit-variant authorize URL — the ticket rides as `tkn`; the r5-token returns in the redirect fragment. */
 function buildAuthorizeUrl(tkn: string): URL {
     const url = new URL(ENDPOINTS.authorize, SSO_BASE);
     url.searchParams.set('client_id', OIDC.clientId);
-    url.searchParams.set('response_type', 'code');
-    url.searchParams.set('redirect_uri', OIDC.sfccRedirectUri);
+    url.searchParams.set('response_type', 'token');
+    url.searchParams.set('redirect_uri', OIDC.postLoginRedirectUri);
     url.searchParams.set('state', randomUUID());
     url.searchParams.set('scope', OIDC.scope);
     url.searchParams.set('display', 'page');
