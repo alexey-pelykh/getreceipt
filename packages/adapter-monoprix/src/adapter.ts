@@ -10,6 +10,7 @@ import type {
     CredentialContext,
     DateRange,
     ReceiptArtifact,
+    ReceiptMetadatum,
     ReceiptRef,
     SourceAdapter,
     SourceDescriptor,
@@ -238,10 +239,28 @@ function expandToRefs(receipts: readonly ReceiptDto[], range: DateRange): Receip
         }
         const id = `${receipt.id}${REF_ID_DELIMITER}${receipt.type}`;
         if (!byId.has(id)) {
-            byId.set(id, { id, issuedAt });
+            byId.set(id, { id, issuedAt, metadata: receiptMetadata(receipt) });
         }
     }
     return [...byId.values()];
+}
+
+/**
+ * Project a listing receipt's voluntary metadata (#97): merchant / total / status / receipt_type, in that
+ * order, skipping the optional fields the receipt lacks. `total`/`receipt_type` are always present (price is
+ * required, type defaults to "store"); `merchant`/`status` appear only when the source carried them.
+ */
+function receiptMetadata(receipt: ReceiptDto): readonly ReceiptMetadatum[] {
+    const metadata: ReceiptMetadatum[] = [];
+    if (receipt.store_name !== undefined) {
+        metadata.push({ key: 'merchant', label: 'Merchant', value: receipt.store_name });
+    }
+    metadata.push({ key: 'total', label: 'Total', value: `${receipt.price} EUR` });
+    if (receipt.status !== undefined) {
+        metadata.push({ key: 'status', label: 'Status', value: receipt.status });
+    }
+    metadata.push({ key: 'receipt_type', label: 'Type', value: receipt.type });
+    return metadata;
 }
 
 /** Download one receipt's bill, verify it is a PDF, and hand it back as an artifact for the writer to persist. */

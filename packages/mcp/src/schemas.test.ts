@@ -61,12 +61,24 @@ describe('MCP output schemas mirror the canonical domain types', () => {
         ]).toEqual([true, true, true, true]);
     });
 
-    it('collectOutputSchema accepts a canonical OperationResult (incl. reauth-required + optional fields)', () => {
+    it('collectOutputSchema accepts a canonical OperationResult (incl. reauth-required + optional fields + metadata #97)', () => {
         const result: OperationResult = {
             source: 'example.com',
             outcome: 'reauth-required',
             window: { from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z' },
-            written: [{ id: 'r1', issuedAt: '2026-01-02T00:00:00.000Z', title: 'Order #1' }],
+            written: [
+                {
+                    id: 'r1',
+                    issuedAt: '2026-01-02T00:00:00.000Z',
+                    title: 'Order #1',
+                    // The load-bearing MCP exposure: voluntary metadata must round-trip through the tool's output schema.
+                    metadata: [
+                        { key: 'merchant', label: 'Merchant', value: 'Grand Frais Lyon' },
+                        { key: 'total', label: 'Total', value: '42.50 EUR' },
+                    ],
+                },
+            ],
+            // A receipt without metadata omits the field entirely — the optional half of the contract.
             skipped: [{ id: 'r0', issuedAt: '2026-01-01T00:00:00.000Z' }],
             reason: 'session expired; re-authenticate',
         };

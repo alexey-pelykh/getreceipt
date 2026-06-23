@@ -106,6 +106,18 @@ export interface DateRange {
     readonly to: Date;
 }
 
+/**
+ * One voluntary, provider-shaped metadata entry a source carries about a receipt (merchant, total, …).
+ * Not a fixed schema: adapters emit zero or more entries, nothing is required. `key` is the machine-stable
+ * id (snake_case) for programmatic/MCP consumers and cross-adapter consistency; `label` is the human name
+ * for CLI display; `value` is a display string.
+ */
+export interface ReceiptMetadatum {
+    readonly key: string;
+    readonly label: string;
+    readonly value: string;
+}
+
 /** A reference to one listable receipt, returned by {@link SourceAdapter.list} and consumed by {@link SourceAdapter.fetch}. */
 export interface ReceiptRef {
     /** Stable identifier, unique within the source. */
@@ -117,6 +129,8 @@ export interface ReceiptRef {
     readonly issuedAt: Date;
     /** Optional human-friendly label (e.g. an invoice number). */
     readonly title?: string;
+    /** Optional richer per-receipt metadata the source carries (merchant, total, status, …); see {@link ReceiptMetadatum}. */
+    readonly metadata?: readonly ReceiptMetadatum[];
 }
 
 /**

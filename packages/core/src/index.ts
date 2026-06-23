@@ -16,6 +16,7 @@ export type {
     DateRange,
     Opaque,
     PaginationKind,
+    ReceiptMetadatum,
     ReceiptRef,
     RelativeDateWindow,
     SourceAdapter,

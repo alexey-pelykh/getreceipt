@@ -8,6 +8,7 @@ import type {
     CredentialContext,
     DateRange,
     ReceiptArtifact,
+    ReceiptMetadatum,
     ReceiptRef,
     SourceAdapter,
     SourceDescriptor,
@@ -202,7 +203,19 @@ function availableVariants(detail: ReceiptDetailDto): PdfVariant[] {
 
 /** Build a {@link ReceiptRef} titled by shop and variant (shopName is schema-required, so always present). */
 function makeRef(id: string, issuedAt: Date, receipt: ReceiptDto, variant: PdfVariant): ReceiptRef {
-    return { id, issuedAt, title: `${receipt.shopName} (${variant})` };
+    return { id, issuedAt, title: `${receipt.shopName} (${variant})`, metadata: receiptMetadata(receipt) };
+}
+
+/**
+ * Project a listing receipt's voluntary metadata (#97): merchant / total / shop_code, in that order. All
+ * three source fields are schema-required (see {@link ./wire}), so every grandfrais receipt carries all three.
+ */
+function receiptMetadata(receipt: ReceiptDto): readonly ReceiptMetadatum[] {
+    return [
+        { key: 'merchant', label: 'Merchant', value: receipt.shopName },
+        { key: 'total', label: 'Total', value: `${receipt.amount} EUR` },
+        { key: 'shop_code', label: 'Shop code', value: receipt.shopCode },
+    ];
 }
 
 /** Download one variant's PDF, verify it is a PDF, and hand it back as an artifact for the writer to persist. */

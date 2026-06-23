@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { CollectResult } from './collect.js';
-import type { ReceiptRef } from './source-adapter.js';
+import type { ReceiptMetadatum, ReceiptRef } from './source-adapter.js';
 
 /**
  * The shared, serializable description of ONE collection operation — the structural
@@ -39,6 +39,8 @@ export interface ReceiptSummary {
     readonly id: string;
     readonly issuedAt: string;
     readonly title?: string;
+    /** Voluntary per-receipt metadata, carried through verbatim (already display strings, no conversion). */
+    readonly metadata?: readonly ReceiptMetadatum[];
 }
 
 /**
@@ -64,10 +66,13 @@ export interface OperationResult {
 }
 
 function summarize(ref: ReceiptRef): ReceiptSummary {
-    // exactOptionalPropertyTypes: omit `title` entirely when absent, never set it to undefined.
-    return ref.title === undefined
-        ? { id: ref.id, issuedAt: ref.issuedAt.toISOString() }
-        : { id: ref.id, issuedAt: ref.issuedAt.toISOString(), title: ref.title };
+    // exactOptionalPropertyTypes: omit each optional entirely when absent, never set it to undefined.
+    return {
+        id: ref.id,
+        issuedAt: ref.issuedAt.toISOString(),
+        ...(ref.title === undefined ? {} : { title: ref.title }),
+        ...(ref.metadata === undefined ? {} : { metadata: ref.metadata }),
+    };
 }
 
 /**
