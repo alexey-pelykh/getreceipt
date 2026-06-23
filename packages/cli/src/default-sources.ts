@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais';
-import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix';
+import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais-com';
+import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix-fr';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type { SourceAdapter } from '@getreceipt/core';
 import { createImpersonatingTransport } from '@getreceipt/transport-impersonate';

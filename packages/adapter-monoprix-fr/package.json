@@ -1,13 +1,13 @@
 {
-  "name": "@getreceipt/adapter-grandfrais",
+  "name": "@getreceipt/adapter-monoprix-fr",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "@getreceipt source adapter for grandfrais.com (Grand Frais in-store receipts).",
+  "description": "@getreceipt source adapter for monoprix.fr (Monoprix order receipts and invoices).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
-    "directory": "packages/adapter-grandfrais"
+    "directory": "packages/adapter-monoprix-fr"
   },
   "exports": {
     ".": {

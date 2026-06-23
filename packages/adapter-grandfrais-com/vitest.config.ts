@@ -4,6 +4,6 @@ import { sharedVitestConfig } from '../../vitest.shared';
 
 export default mergeConfig(sharedVitestConfig, {
     test: {
-        name: '@getreceipt/adapter-monoprix',
+        name: '@getreceipt/adapter-grandfrais-com',
     },
 });
