@@ -94,6 +94,7 @@ const sourceViewSchema = z.object({
     transportTier: z.enum(['http-api', 'html-scrape', 'headless-browser']),
     artifactMode: z.enum(['pdf-download', 'html-capture', 'rendered']),
     verificationState: z.enum(['unverified', 'e2e-verified', 'stale']),
+    lastVerifiedAt: z.string().optional(),
     configured: z.boolean(),
 });
 

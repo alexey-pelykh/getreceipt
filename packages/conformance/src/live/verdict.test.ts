@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { AuthenticationError } from '@getreceipt/auth';
 import { listSources, SourceAdapterRegistry, TrustBoundaryError, verificationAdvisory } from '@getreceipt/core';
-import type { CollectResult, DateRange, ReceiptRef, SourceAdapter } from '@getreceipt/core';
+import type { CollectResult, DateRange, ReceiptRef, SourceAdapter, SourceVerification } from '@getreceipt/core';
 
 import { verdictFor } from './verdict.js';
 
@@ -159,13 +159,41 @@ describe('verdictFor — integrates with the verification seam', () => {
         // Before any run, the source defaults to unverified (no lookup supplied).
         expect(listSources(registry)[0]?.verificationState).toBe('unverified');
 
-        // The harness's verdict becomes the VerificationLookup the seam reads — the documented
-        // integration point — so a successful live run surfaces the source as e2e-verified.
+        // The harness's verdict (state + verifiedAt) becomes the SourceVerification the seam reads —
+        // the documented integration point — so a successful live run surfaces the source as e2e-verified.
         const verdict = verdictFor(succeeded([REF]), fixedClock);
-        const surfaced = listSources(registry, (domain) => (domain === SOURCE ? verdict.state : undefined));
+        const lookup = (domain: string): SourceVerification | undefined =>
+            domain === SOURCE
+                ? {
+                      state: verdict.state,
+                      ...(verdict.verifiedAt === undefined ? {} : { lastVerifiedAt: verdict.verifiedAt }),
+                  }
+                : undefined;
 
-        expect(surfaced[0]?.verificationState).toBe('e2e-verified');
-        // ...and an e2e-verified source warrants no advisory warning.
+        // Read at the moment of verification: fresh → e2e-verified, last-verified date shipped, no warning.
+        const fresh = listSources(registry, lookup, { now: FIXED });
+        expect(fresh[0]?.verificationState).toBe('e2e-verified');
+        expect(fresh[0]?.lastVerifiedAt).toBe(FIXED.toISOString());
         expect(verificationAdvisory(verdict.state)).toMatchObject({ level: 'ok', proceed: true });
+    });
+
+    it('decays the SAME verdict to stale once read past the freshness horizon (#90 runtime advisory)', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(fakeAdapter(SOURCE));
+
+        const verdict = verdictFor(succeeded([REF]), fixedClock);
+        const lookup = (domain: string): SourceVerification | undefined =>
+            domain === SOURCE
+                ? {
+                      state: verdict.state,
+                      ...(verdict.verifiedAt === undefined ? {} : { lastVerifiedAt: verdict.verifiedAt }),
+                  }
+                : undefined;
+
+        // A year after the run, the unchanged verdict reads as stale — warn-but-proceed, never blocked.
+        const later = listSources(registry, lookup, { now: new Date('2027-06-22T12:00:00Z') });
+        expect(later[0]?.verificationState).toBe('stale');
+        expect(later[0]?.lastVerifiedAt).toBe(FIXED.toISOString());
+        expect(verificationAdvisory('stale')).toMatchObject({ level: 'warn', proceed: true });
     });
 });

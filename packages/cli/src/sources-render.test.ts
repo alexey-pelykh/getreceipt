@@ -9,6 +9,7 @@ function view(
     configured: boolean,
     verificationState: AdapterVerificationState = 'unverified',
     aliasDomains: readonly string[] = [],
+    lastVerifiedAt?: string,
 ): SourceView {
     return {
         canonicalDomain,
@@ -18,6 +19,7 @@ function view(
         artifactMode: 'pdf-download',
         verificationState,
         configured,
+        ...(lastVerifiedAt === undefined ? {} : { lastVerifiedAt }),
     };
 }
 
@@ -38,6 +40,17 @@ describe('renderSourcesText', () => {
             sources: [view('shop.example', true, 'unverified', ['www.shop.example'])],
         });
         expect(text).toContain('aliases: www.shop.example');
+    });
+
+    it('renders the last-verified date on a sub-line when shipped, and omits it otherwise (#90)', () => {
+        const dated = renderSourcesText({
+            profile: 'default',
+            sources: [view('shop.example', true, 'stale', [], '2026-01-01T00:00:00.000Z')],
+        });
+        expect(dated).toContain('last verified: 2026-01-01T00:00:00.000Z');
+
+        const undated = renderSourcesText({ profile: 'default', sources: [view('store.example', false)] });
+        expect(undated).not.toContain('last verified:');
     });
 
     it('surfaces ONE advisory line per distinct not-ok verification state', () => {

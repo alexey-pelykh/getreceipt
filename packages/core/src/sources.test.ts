@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { listSources, SourceAdapterRegistry } from './index.js';
-import type { AdapterVerificationState, SourceAdapter, SourceDescriptor } from './index.js';
+import type { SourceAdapter, SourceDescriptor, SourceVerification } from './index.js';
 
 /** A descriptor-only adapter; the three stages throw because listSources only reads the descriptor. */
 function fakeAdapter(canonicalDomain: string, descriptor: Partial<SourceDescriptor> = {}): SourceAdapter {
@@ -69,18 +69,55 @@ describe('listSources', () => {
         registry.register(fakeAdapter('stale.test'));
         registry.register(fakeAdapter('unknown.test'));
 
-        const states: Record<string, AdapterVerificationState> = {
-            'verified.test': 'e2e-verified',
-            'stale.test': 'stale',
+        const now = new Date('2026-06-23T00:00:00Z');
+        const records: Record<string, SourceVerification> = {
+            // Within the default horizon → stays e2e-verified.
+            'verified.test': { state: 'e2e-verified', lastVerifiedAt: new Date('2026-06-20T00:00:00Z') },
+            'stale.test': { state: 'stale' },
         };
-        const lookup = (domain: string): AdapterVerificationState | undefined => states[domain];
+        const lookup = (domain: string): SourceVerification | undefined => records[domain];
 
         expect(
-            listSources(registry, lookup).map((listing) => [listing.canonicalDomain, listing.verificationState]),
+            listSources(registry, lookup, { now }).map((listing) => [
+                listing.canonicalDomain,
+                listing.verificationState,
+            ]),
         ).toEqual([
             ['verified.test', 'e2e-verified'],
             ['stale.test', 'stale'],
             ['unknown.test', 'unverified'],
         ]);
+    });
+
+    it('decays an e2e-verified source to stale once its last-verified date ages past the horizon (#90)', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(fakeAdapter('aging.test'));
+
+        const verifiedAt = new Date('2026-01-01T00:00:00Z');
+        const lookup = (): SourceVerification => ({ state: 'e2e-verified', lastVerifiedAt: verifiedAt });
+
+        // One day after verification: fresh.
+        expect(listSources(registry, lookup, { now: new Date('2026-01-02T00:00:00Z') })[0]?.verificationState).toBe(
+            'e2e-verified',
+        );
+        // 60 days after verification (> 30-day default horizon): decayed to stale.
+        expect(listSources(registry, lookup, { now: new Date('2026-03-02T00:00:00Z') })[0]?.verificationState).toBe(
+            'stale',
+        );
+    });
+
+    it('ships the last-verified date as ISO when recorded, and omits it when never verified (#90)', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(fakeAdapter('dated.test'));
+        registry.register(fakeAdapter('never.test'));
+
+        const verifiedAt = new Date('2026-06-20T08:30:00Z');
+        const lookup = (domain: string): SourceVerification | undefined =>
+            domain === 'dated.test' ? { state: 'e2e-verified', lastVerifiedAt: verifiedAt } : undefined;
+
+        const [dated, never] = listSources(registry, lookup, { now: new Date('2026-06-23T00:00:00Z') });
+        expect(dated?.lastVerifiedAt).toBe('2026-06-20T08:30:00.000Z');
+        // Never-verified ships no date at all (exactOptionalPropertyTypes: the key is absent, not undefined).
+        expect(never !== undefined && 'lastVerifiedAt' in never).toBe(false);
     });
 });

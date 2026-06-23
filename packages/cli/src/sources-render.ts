@@ -27,8 +27,8 @@ export function renderSourcesJson(report: SourcesReport): string {
 /**
  * Render a {@link SourcesReport} as human-readable text: a header naming the profile, one
  * grep-friendly row per source (domain, auth, transport, artifact, verification, configured)
- * with its aliases on a sub-line, and one advisory line per distinct not-`ok` verification
- * state present (driven by {@link verificationAdvisory}). Pure — no I/O.
+ * with its aliases and last-verified date on sub-lines, and one advisory line per distinct
+ * not-`ok` verification state present (driven by {@link verificationAdvisory}). Pure — no I/O.
  */
 export function renderSourcesText(report: SourcesReport): string {
     const lines: string[] = [`sources (profile: ${report.profile})`];
@@ -51,6 +51,9 @@ export function renderSourcesText(report: SourcesReport): string {
         );
         if (source.aliasDomains.length > 0) {
             lines.push(`    aliases: ${source.aliasDomains.join(', ')}`);
+        }
+        if (source.lastVerifiedAt !== undefined) {
+            lines.push(`    last verified: ${source.lastVerifiedAt}`);
         }
     }
 

@@ -171,9 +171,17 @@ getreceipt sources
 Each source carries a **verification state**:
 
 - **`unverified`** — the flow has never been machine-confirmed against the live service; results are
-  best-effort.
-- **`e2e-verified`** — confirmed current against the live service by the end-to-end harness.
+  best-effort. This is the bootstrap state every adapter starts in.
+- **`e2e-verified`** — confirmed current against the live service by the end-to-end harness, which
+  records _when_ (the last-verified date, shipped alongside the state).
 - **`stale`** — was verified once, but that verification is now out of date.
+
+**Staleness is decided at runtime, not baked in.** An `e2e-verified` source whose last-verified date
+is older than the freshness horizon (30 days by default) is surfaced as `stale` — the last-verified
+date is shipped with each listing (see it under `--json`, and on the `last verified:` line of the text
+output) so a months-old or never-verified confirmation is self-evident. A `stale` (or `unverified`)
+source still **warns but proceeds**: getreceipt fetches your own receipts with your own credentials,
+so staleness is a visible advisory, never a block on collection or on release.
 
 The two bundled sources — **`grandfrais.com`** and **`monoprix.fr`** — are currently `unverified`.
 

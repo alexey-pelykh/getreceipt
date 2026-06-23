@@ -11,6 +11,7 @@ import type {
     AuthHandle,
     AuthKind,
     SourceAdapter,
+    SourceVerification,
     TransportTier,
 } from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
@@ -123,13 +124,31 @@ describe('sources — lists available sources with verification + configured sta
     });
 
     it('drives the verification-state surface from an injected lookup (AC #2)', async () => {
-        const { out } = await runSources(['--json'], {
-            verification: (domain) => (domain === 'shop.example' ? 'e2e-verified' : 'stale'),
-        });
+        const lookup = (domain: string): SourceVerification =>
+            // A fresh last-verified date keeps shop.example e2e-verified through the real (wall-clock) decay.
+            domain === 'shop.example' ? { state: 'e2e-verified', lastVerifiedAt: new Date() } : { state: 'stale' };
+        const { out } = await runSources(['--json'], { verification: lookup });
         const report = JSON.parse(out) as SourcesReport;
         const byDomain = Object.fromEntries(report.sources.map((s) => [s.canonicalDomain, s]));
         expect(byDomain['shop.example']?.verificationState).toBe('e2e-verified');
         expect(byDomain['store.example']?.verificationState).toBe('stale' satisfies AdapterVerificationState);
+    });
+
+    it('decays a long-ago e2e-verified source to stale and ships its last-verified date (#90)', async () => {
+        // A months-old verification: the runtime decay surfaces it as stale, and the (old) date is
+        // shipped verbatim so the drift is self-evident — never blocked.
+        const verifiedAt = new Date('2026-01-01T00:00:00Z');
+        const lookup = (domain: string): SourceVerification | undefined =>
+            domain === 'shop.example' ? { state: 'e2e-verified', lastVerifiedAt: verifiedAt } : undefined;
+
+        const json = await runSources(['--json'], { verification: lookup });
+        const report = JSON.parse(json.out) as SourcesReport;
+        const shop = report.sources.find((s) => s.canonicalDomain === 'shop.example');
+        expect(shop?.verificationState).toBe('stale' satisfies AdapterVerificationState);
+        expect(shop?.lastVerifiedAt).toBe('2026-01-01T00:00:00.000Z');
+
+        const text = await runSources([], { verification: lookup });
+        expect(text.out).toContain('last verified: 2026-01-01T00:00:00.000Z');
     });
 
     it('surfaces a verification advisory in human output for an unverified source', async () => {
