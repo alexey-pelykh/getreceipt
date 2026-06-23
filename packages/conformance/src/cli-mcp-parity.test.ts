@@ -19,6 +19,7 @@ import type {
     ReceiptRef,
     ReceiptWriter,
     SourceAdapter,
+    SourceVerification,
 } from '@getreceipt/core';
 import { createMcpServer } from '@getreceipt/mcp';
 import type { McpToolDeps } from '@getreceipt/mcp';
@@ -119,6 +120,13 @@ const listSources: ListSourcesDeps = {
     resolveConfigPath: () => configFixture,
     loadConfig: authLoadConfig,
     registry: registryWith(fakeAdapter()),
+    // A recorded verification so the shipped last-verified date (#90) is exercised on BOTH surfaces,
+    // not absent. The fixed date is months before any run, so both consistently surface `stale` + the
+    // same ISO date — divergence on this field in either front-end now fails the parity gate too.
+    verification: (domain: string): SourceVerification | undefined =>
+        domain === 'shop.example'
+            ? { state: 'e2e-verified', lastVerifiedAt: new Date('2026-01-15T00:00:00.000Z') }
+            : undefined,
 };
 
 const authStatus: AuthStatusDeps = {

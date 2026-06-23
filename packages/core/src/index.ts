@@ -53,8 +53,18 @@ export type { RateLimiterOptions } from './rate-limiter.js';
 
 export { parseAtBoundary, safeParseAtBoundary, TrustBoundaryError } from './trust-boundary.js';
 export type { BoundaryIssue, BoundaryResult } from './trust-boundary.js';
-export { ADAPTER_VERIFICATION_STATES, verificationAdvisory } from './verification.js';
-export type { AdapterVerificationState, VerificationAdvisory, VerificationAdvisoryLevel } from './verification.js';
+export {
+    ADAPTER_VERIFICATION_STATES,
+    DEFAULT_FRESHNESS_HORIZON_MS,
+    effectiveVerificationState,
+    verificationAdvisory,
+} from './verification.js';
+export type {
+    AdapterVerificationState,
+    SourceVerification,
+    VerificationAdvisory,
+    VerificationAdvisoryLevel,
+} from './verification.js';
 export { listSources } from './sources.js';
-export type { SourceListing, VerificationLookup } from './sources.js';
+export type { ListSourcesOptions, SourceListing, VerificationLookup } from './sources.js';
 export { assertE2eCoverage, findAdaptersMissingE2eCoverage, MissingE2eCoverageError } from './e2e-coverage.js';

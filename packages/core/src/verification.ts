@@ -66,3 +66,45 @@ export function verificationAdvisory(state: AdapterVerificationState): Verificat
         }
     }
 }
+
+/**
+ * A source's recorded verification provenance: its raw trust-state plus the instant it was last
+ * confirmed current. `lastVerifiedAt` is the `verifiedAt` the live harness stamps on a `verified`
+ * run (#89) — present only when {@link state} is `e2e-verified`, absent when never verified.
+ */
+export interface SourceVerification {
+    readonly state: AdapterVerificationState;
+    readonly lastVerifiedAt?: Date;
+}
+
+/**
+ * How long an `e2e-verified` confirmation stays current before it decays to `stale`. 30 days: the
+ * live oracle runs operator-attended and intermittently, and a reverse-engineered web flow can drift
+ * at any deploy, so a month-old confirmation is no longer a strong currency signal. The decay is
+ * warn-only (never blocks), so erring short is the safe direction; override per-call via
+ * {@link effectiveVerificationState}.
+ */
+export const DEFAULT_FRESHNESS_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Apply runtime staleness decay to a recorded verification — the date math #90 adds. An
+ * `e2e-verified` source whose last confirmation is older than `horizonMs` surfaces as `stale`; one
+ * carrying no date can't prove freshness, so it surfaces as `stale` too (loud, not silent).
+ * `unverified` and already-`stale` pass through unchanged. Pure (the comparison instant `now` is
+ * injected) and monotonic by design: decay can only LOWER confidence — only the harness (#89)
+ * promotes to `e2e-verified`.
+ */
+export function effectiveVerificationState(
+    verification: SourceVerification,
+    now: Date,
+    horizonMs: number = DEFAULT_FRESHNESS_HORIZON_MS,
+): AdapterVerificationState {
+    if (verification.state !== 'e2e-verified') {
+        return verification.state;
+    }
+    if (verification.lastVerifiedAt === undefined) {
+        return 'stale';
+    }
+    const age = now.getTime() - verification.lastVerifiedAt.getTime();
+    return age > horizonMs ? 'stale' : 'e2e-verified';
+}
