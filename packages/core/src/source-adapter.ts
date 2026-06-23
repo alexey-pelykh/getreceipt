@@ -90,6 +90,17 @@ export interface SourceDescriptor {
      * private). Per-source. See {@link @getreceipt/core!resolvePublishableHost} for the gate. (#103)
      */
     readonly discoveryOnly?: boolean;
+    /**
+     * Whether this source sits behind an anti-bot gate that fingerprints the TLS / HTTP-2 handshake
+     * (e.g. Cloudflare), so a plain `fetch`/`undici` stack is rejected and the adapter MUST be driven
+     * by a browser-impersonating transport (see `@getreceipt/transport-impersonate`). This is the
+     * anti-bot POSTURE — orthogonal to {@link transportTier}, which describes transport STYLE
+     * (`http-api` vs `html-scrape` vs `headless-browser`). `true` is a GATING fact, not documentation:
+     * the bundled-adapter wiring asserts that every source declaring it is constructed with an
+     * impersonating transport, so an adapter that declares the need but ships unwired FAILS a test
+     * rather than silently falling back to plain `fetch`. Absent/`false` means plain transport. (#101)
+     */
+    readonly requiresImpersonation?: boolean;
 }
 
 /**

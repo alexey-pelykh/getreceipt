@@ -35,6 +35,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "catalog:",
     "commander": "catalog:",
+    "node-wreq": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

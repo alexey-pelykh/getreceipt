@@ -34,6 +34,9 @@
     "lint": "eslint .",
     "prepack": "cp ../../README.md . && cp ../../LICENSE . && node scripts/third-party-notices.mjs"
   },
+  "dependencies": {
+    "node-wreq": "catalog:"
+  },
   "devDependencies": {
     "@getreceipt/cli": "workspace:^",
     "@getreceipt/core": "workspace:^",

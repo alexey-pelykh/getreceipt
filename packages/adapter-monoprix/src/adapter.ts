@@ -48,6 +48,9 @@ const DESCRIPTOR: SourceDescriptor = {
     defaultWindow: { days: 90 },
     pagination: 'none',
     discoveryOnly: DISCOVERY_ONLY,
+    // Cloudflare gates client.monoprix.fr on the TLS/HTTP-2 fingerprint, so collection MUST run over a
+    // browser-impersonating transport; the bundled wiring asserts one is injected (#101).
+    requiresImpersonation: true,
 };
 
 /**
