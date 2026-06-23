@@ -78,7 +78,8 @@ project on the right side of its
 - [ ] **No service marks.** No service **logo, brand color, icon, or screenshot** ships in the repo —
       the plain-text name is all an adapter needs.
 - [ ] **No brand-named published artifact.** Do not name a package, binary, or release after a service.
-      `getreceipt` is the project's own name; service names are nominative references only.
+      `getreceipt` is the project's own name; service names are nominative references only — an adapter
+      package is named after the service's **domain** (see [Adapter package naming](#adapter-package-naming)).
 - [ ] **Nominative framing in docs.** Docs name a service to identify it, imply no endorsement, and
       inherit the **Unofficial** disclaimer — no "official", no claimed affiliation.
 - [ ] **Documents, not data.** The adapter fetches the **documents a service issues to you** (receipts,
@@ -94,6 +95,40 @@ project on the right side of its
 
 The reasoning behind each line lives in [docs/legitimacy.md](docs/legitimacy.md); the checklist is the
 operational form of that posture.
+
+## Adapter package naming
+
+A source adapter is named after the **canonical domain it targets, TLD included** — the package name
+is the source's registry key written as a package:
+
+```
+@getreceipt/adapter-{canonicalDomain, with every "." replaced by "-"}
+```
+
+| Canonical domain | Package                              |
+| ---------------- | ------------------------------------ |
+| `grandfrais.com` | `@getreceipt/adapter-grandfrais-com` |
+| `monoprix.fr`    | `@getreceipt/adapter-monoprix-fr`    |
+| `free.fr`        | `@getreceipt/adapter-free-fr`        |
+| `pro.free.fr`    | `@getreceipt/adapter-pro-free-fr`    |
+
+Keeping the **full** domain — TLD and all — makes the package-to-source mapping lossless and 1:1,
+**collision-safe** across TLD-variant aliases and same-brand international sources (`brand.fr` vs
+`brand.com` → `adapter-brand-fr` vs `adapter-brand-com`), and faithful to the domain-addressing model
+(sources are addressed by their full domain). A subdomain source keeps its full label path
+(`pro.free.fr` → `adapter-pro-free-fr`, distinct from `free.fr` → `adapter-free-fr`), and the package
+follows the **canonical** domain only — never an alias domain.
+
+The **`adapter-` prefix** is a deliberate role marker. The workspace splits into infrastructure
+packages — the engine and tooling (`core`, `cli`, `mcp`, and the rest — no prefix; see the
+[package table](README.md#packages)) — and source adapters (`adapter-*`). The prefix keeps the two
+roles visually distinct under the shared `@getreceipt/` scope, follows the idiomatic `@scope/role-*`
+pattern (`@rollup/plugin-*`, `@aws-sdk/client-*`), and lets `packages/adapter-*` be globbed for
+adapter-only CI / lint / test rules.
+
+Naming the package after the domain is itself a **nominative reference** — it says _which_ service the
+adapter is for, not branding — consistent with the per-adapter mini-gate above and the
+[nominative-use posture](docs/legitimacy.md#service-names-are-nominative-references).
 
 ## Licensing of contributions
 
