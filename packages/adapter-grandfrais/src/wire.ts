@@ -11,9 +11,9 @@ import { z } from 'zod';
  * bff.grandfrais.com service. They are deliberately validated so a drift between this
  * contract and the live service surfaces as a {@link @getreceipt/core!TrustBoundaryError}
  * (the shape mismatch IS the drift detector) rather than a silent mis-parse. The live
- * e2e oracle (#89) is the fidelity check that promotes the adapter past `unverified`;
- * until it runs, a few unspecified details (the listing wrapper key, the next-page token
- * field, and the `amount` JSON type) are best-effort and flagged below.
+ * e2e oracle (#89) is the fidelity check that promotes the adapter past `unverified`; it
+ * confirmed `amount` is a wire STRING. The listing wrapper key and next-page token field
+ * remain best-effort, flagged below.
  */
 
 /**
@@ -69,14 +69,14 @@ const receiptIdSchema = z
 /**
  * One receipt in a listing page (`GET /v1/receipts`). `checkOutDate` is an ISO-8601 instant on the
  * `issued` basis. `shopCode`/`amount` are carried as documented but not consumed by the collection
- * flow; `amount`'s JSON type is best-effort numeric pending the live oracle (#89).
+ * flow; `amount` is a wire STRING (live oracle #89 confirmed — the earlier `z.number()` was wrong).
  */
 export const receiptSchema = z.object({
     receiptId: receiptIdSchema,
     checkOutDate: z.string().refine((value) => !Number.isNaN(new Date(value).getTime())),
     shopCode: z.string().min(1),
     shopName: z.string().min(1),
-    amount: z.number(),
+    amount: z.string(),
 });
 
 /**
