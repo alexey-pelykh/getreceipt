@@ -42,7 +42,7 @@ const CUSTOMER_ID = 'gf-customer-1';
 
 const SHOP_NAME = 'Grand Frais Lyon';
 const SHOP_CODE = 'GF-LYON-01';
-const AMOUNT = 42.5;
+const AMOUNT = '42.50';
 
 /** A wide window that admits every in-range synthetic receipt; the inclusivity test uses a precise one. */
 const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
