@@ -144,7 +144,11 @@ export const freeFrAdapter: SourceAdapter = new FreeFrAdapter();
  * secret-safe {@link AuthenticationError} (never echoing the password or token). Cookies set here are
  * captured into the jar.
  */
-async function login(username: string, password: Secret, jar: Map<string, string>): Promise<{ id: string; idt: string }> {
+async function login(
+    username: string,
+    password: Secret,
+    jar: Map<string, string>,
+): Promise<{ id: string; idt: string }> {
     const body = new URLSearchParams();
     body.set(LOGIN_FORM.loginField, username);
     // expose() ONLY here, at the point of use: the password goes onto the wire, never into a log or error.

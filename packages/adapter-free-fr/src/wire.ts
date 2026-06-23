@@ -139,7 +139,10 @@ const DOWNLOAD_ANCHOR_RE = new RegExp(
     `<a\\b[^>]*\\bclass="[^"]*\\b${LISTING.downloadClass}\\b[^"]*"[^>]*\\bhref="${LISTING.pdfHrefPrefix}\\?([^"]*)"`,
     'gi',
 );
-const COL_CELL_RE = new RegExp(`<span\\b[^>]*\\bclass="[^"]*\\b${LISTING.colClass}\\b[^"]*"[^>]*>([\\s\\S]*?)<\\/span>`, 'gi');
+const COL_CELL_RE = new RegExp(
+    `<span\\b[^>]*\\bclass="[^"]*\\b${LISTING.colClass}\\b[^"]*"[^>]*>([\\s\\S]*?)<\\/span>`,
+    'gi',
+);
 
 /**
  * Parse the (already ISO-8859-15-decoded) `facture_liste.pl` HTML into validated invoice rows. Each

@@ -212,7 +212,10 @@ describe('FreeFrAdapter — AC2: authenticate (three-step dance)', () => {
     it('posts the password form, then threads id+idt AND the accumulated cookies onto later calls', async () => {
         let loginForm: URLSearchParams | undefined;
         let listRequest: Request | undefined;
-        server.use(...authOk((form) => (loginForm = form)), listingOk([], (request) => (listRequest = request)));
+        server.use(
+            ...authOk((form) => (loginForm = form)),
+            listingOk([], (request) => (listRequest = request)),
+        );
 
         const auth = await freeFrAdapter.authenticate(creds());
         await freeFrAdapter.list(auth, WIDE);
@@ -386,7 +389,10 @@ describe('FreeFrAdapter — AC5: boundary validation + secret hygiene', () => {
             `<a class="${LISTING.downloadClass}" href="${LISTING.pdfHrefPrefix}?mois=99&no_facture=X1">PDF</a></li></ul>`;
         server.use(
             ...authOk(),
-            http.get(FACTURE_LISTE, () => new HttpResponse(iso885915Bytes(badRow), { headers: { 'content-type': 'text/html' } })),
+            http.get(
+                FACTURE_LISTE,
+                () => new HttpResponse(iso885915Bytes(badRow), { headers: { 'content-type': 'text/html' } }),
+            ),
         );
         const auth = await authenticate();
 
@@ -403,7 +409,10 @@ describe('FreeFrAdapter — AC5: boundary validation + secret hygiene', () => {
             `<a class="${LISTING.downloadClass}" href="${LISTING.pdfHrefPrefix}?mois=202604&no_facture=X1">PDF</a></li></ul>`;
         server.use(
             ...authOk(),
-            http.get(FACTURE_LISTE, () => new HttpResponse(iso885915Bytes(badRow), { headers: { 'content-type': 'text/html' } })),
+            http.get(
+                FACTURE_LISTE,
+                () => new HttpResponse(iso885915Bytes(badRow), { headers: { 'content-type': 'text/html' } }),
+            ),
         );
         const auth = await authenticate();
 
@@ -439,9 +448,9 @@ describe('FreeFrAdapter — AC5: boundary validation + secret hygiene', () => {
                 expect(surfaces).not.toContain(secret);
             }
 
-            const persisted = (await Promise.all(files.map((name) => readFile(join(dir, 'free.fr', name), 'utf8')))).join(
-                '\n',
-            );
+            const persisted = (
+                await Promise.all(files.map((name) => readFile(join(dir, 'free.fr', name), 'utf8')))
+            ).join('\n');
             for (const secret of [PASSWORD, ID, IDT, SESSION_COOKIE, EXTRA_COOKIE]) {
                 expect(persisted).not.toContain(secret);
             }
@@ -466,14 +475,20 @@ describe('FreeFrAdapter — AC5: boundary validation + secret hygiene', () => {
 
 describe('FreeFrAdapter — re-auth seam', () => {
     it('maps an expired session (HTTP 401 on the listing) to a ReauthRequiredError', async () => {
-        server.use(...authOk(), http.get(FACTURE_LISTE, () => new HttpResponse(null, { status: 401 })));
+        server.use(
+            ...authOk(),
+            http.get(FACTURE_LISTE, () => new HttpResponse(null, { status: 401 })),
+        );
         const auth = await authenticate();
 
         await expect(freeFrAdapter.list(auth, WIDE)).rejects.toBeInstanceOf(ReauthRequiredError);
     });
 
     it('surfaces an expired session through collect() as a structured reauth-required result (HTTP 403)', async () => {
-        server.use(...authOk(), http.get(FACTURE_LISTE, () => new HttpResponse(null, { status: 403 })));
+        server.use(
+            ...authOk(),
+            http.get(FACTURE_LISTE, () => new HttpResponse(null, { status: 403 })),
+        );
 
         const result = await collect({
             adapter: freeFrAdapter,
