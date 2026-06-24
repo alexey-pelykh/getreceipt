@@ -62,10 +62,11 @@ function renderListing(invoices: readonly InvoiceDto[]): string {
         .map(
             (inv) =>
                 `<li class="ligne">` +
+                `<span class="${LISTING.colClass}">` +
+                `<a href="${LISTING.pdfHrefPrefix}?id=ID&idt=IDT&mois=${inv.mois}&no_facture=${inv.noFacture}" ` +
+                `class="${LISTING.downloadClass}"></a></span>` +
                 `<span class="${LISTING.colClass}">${inv.period}</span>` +
-                `<span class="${LISTING.colClass}">${inv.amount}</span>` +
-                `<a class="${LISTING.downloadClass}" ` +
-                `href="${LISTING.pdfHrefPrefix}?id=ID&idt=IDT&mois=${inv.mois}&no_facture=${inv.noFacture}">PDF</a>` +
+                `<span class="${LISTING.colClass} last">${inv.amount}</span>` +
                 `</li>`,
         )
         .join('\n');
@@ -384,9 +385,10 @@ describe('FreeFrAdapter — AC4: fetch', () => {
 describe('FreeFrAdapter — AC5: boundary validation + secret hygiene', () => {
     it('rejects a listing row with a malformed mois at the trust boundary, labeled by source:stage', async () => {
         const badRow =
-            `<ul><li><span class="${LISTING.colClass}">Mars</span>` +
-            `<span class="${LISTING.colClass}">9,99 €</span>` +
-            `<a class="${LISTING.downloadClass}" href="${LISTING.pdfHrefPrefix}?mois=99&no_facture=X1">PDF</a></li></ul>`;
+            `<ul><li><span class="${LISTING.colClass}">` +
+            `<a href="${LISTING.pdfHrefPrefix}?mois=99&no_facture=X1" class="${LISTING.downloadClass}"></a></span>` +
+            `<span class="${LISTING.colClass}">Mars</span>` +
+            `<span class="${LISTING.colClass} last">9,99 €</span></li></ul>`;
         server.use(
             ...authOk(),
             http.get(
@@ -403,10 +405,11 @@ describe('FreeFrAdapter — AC5: boundary validation + secret hygiene', () => {
     });
 
     it('rejects a listing row missing its amount cell at the trust boundary', async () => {
-        // Only ONE col cell (no amount) before the download anchor → amount '' → schema rejects.
+        // Anchor + a single trailing col cell (period only, no amount) → amount '' → schema rejects.
         const badRow =
-            `<ul><li><span class="${LISTING.colClass}">Avril 2026</span>` +
-            `<a class="${LISTING.downloadClass}" href="${LISTING.pdfHrefPrefix}?mois=202604&no_facture=X1">PDF</a></li></ul>`;
+            `<ul><li><span class="${LISTING.colClass}">` +
+            `<a href="${LISTING.pdfHrefPrefix}?mois=202604&no_facture=X1" class="${LISTING.downloadClass}"></a></span>` +
+            `<span class="${LISTING.colClass}">Avril 2026</span></li></ul>`;
         server.use(
             ...authOk(),
             http.get(
