@@ -40,17 +40,23 @@ export type WindowValidation =
     | { readonly ok: false; readonly kind: WindowErrorKind; readonly message: string };
 
 /**
- * Validate a `since`/`until` pair into a canonical ISO window — the pure, I/O-free, throw-free core
- * shared by the CLI `parseWindow` wrapper and the MCP collection tools. Both-or-neither, both strict
- * `YYYY-MM-DD`, and `since <= until`; neither given → no window (the adapter's default applies).
- * Messages carry no `✗` prefix — the front-end adds its own presentation.
+ * Validate a `since`/`until` pair into a canonical CALENDAR window — the pure, I/O-free, throw-free
+ * core shared by the CLI `parseWindow` wrapper and the MCP collection tools. Each bound is a strict
+ * `YYYY-MM-DD` and `since <= until`; the validated strings are carried through verbatim (NOT collapsed
+ * to a UTC instant — the runner resolves each day in the source's zone, #127). `--since` alone is
+ * allowed (open-ended to now); `--until` alone is not (no start bound); neither given → no window (the
+ * adapter's default applies). Messages carry no `✗` prefix — the front-end adds its own presentation.
  */
 export function validateWindow(since: string | undefined, until: string | undefined): WindowValidation {
     if (since === undefined && until === undefined) {
         return { ok: true, window: undefined };
     }
-    if (since === undefined || until === undefined) {
-        return { ok: false, kind: 'incomplete', message: '--since and --until must be provided together' };
+    if (since === undefined) {
+        return {
+            ok: false,
+            kind: 'incomplete',
+            message: '--until requires --since (use --since alone for an open-ended window up to now)',
+        };
     }
     const from = parseIsoDate(since);
     if (from === undefined) {
@@ -59,6 +65,9 @@ export function validateWindow(since: string | undefined, until: string | undefi
             kind: 'bad-date',
             message: `--since is not a valid ISO date (expected YYYY-MM-DD): ${since}`,
         };
+    }
+    if (until === undefined) {
+        return { ok: true, window: { since } };
     }
     const to = parseIsoDate(until);
     if (to === undefined) {
@@ -71,7 +80,7 @@ export function validateWindow(since: string | undefined, until: string | undefi
     if (from.getTime() > to.getTime()) {
         return { ok: false, kind: 'inverted', message: '--since must not be after --until' };
     }
-    return { ok: true, window: { since: from.toISOString(), until: to.toISOString() } };
+    return { ok: true, window: { since, until } };
 }
 
 /** Map a {@link WindowErrorKind} to its CLI exit-code suffix (preserves the per-failure code names). */

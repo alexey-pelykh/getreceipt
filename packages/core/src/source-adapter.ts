@@ -80,6 +80,14 @@ export interface SourceDescriptor {
     readonly transportTier: TransportTier;
     readonly artifactMode: ArtifactMode;
     readonly dateFilter: DateFilter;
+    /**
+     * IANA zone (e.g. `Europe/Paris`) the source's `issuedAt` timestamps and calendar are expressed in.
+     * A `--since`/`--until` calendar date is resolved to a day-boundary instant IN this zone, so a
+     * month-aligned window returns that month's receipts even when the local month-start sits a few
+     * hours before UTC midnight (#127). Omit when the source's zone is unknown — the window then falls
+     * back to the HOST's zone (see {@link @getreceipt/core!hostTimeZone}), never silently UTC.
+     */
+    readonly timezone?: string;
     /** Window `collect()` applies when the caller gives no explicit date range. */
     readonly defaultWindow: RelativeDateWindow;
     readonly pagination: PaginationKind;

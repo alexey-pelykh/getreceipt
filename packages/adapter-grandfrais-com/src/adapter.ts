@@ -50,6 +50,7 @@ const DESCRIPTOR: SourceDescriptor = {
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+    timezone: 'Europe/Paris', // issuedAt + the user's calendar window are Paris-local (#127)
     defaultWindow: { days: 90 },
     pagination: 'cursor',
     discoveryOnly: DISCOVERY_ONLY,

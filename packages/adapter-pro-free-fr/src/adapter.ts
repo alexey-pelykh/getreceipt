@@ -37,6 +37,7 @@ const DESCRIPTOR: SourceDescriptor = {
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+    timezone: 'Europe/Paris', // issuedAt + the user's calendar window are Paris-local (#127)
     defaultWindow: { days: 90 },
     // The listing returns the whole invoice history in one flat array.
     pagination: 'none',

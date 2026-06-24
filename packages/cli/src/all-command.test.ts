@@ -53,6 +53,7 @@ function fakeAdapter(canonicalDomain: string): SourceAdapter {
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+            timezone: 'UTC', // pin the window-resolution zone so date assertions are host-TZ-independent
             defaultWindow: { days: 30 },
             pagination: 'none',
         },
@@ -278,10 +279,11 @@ describe('all — structured output + window (AC #2)', () => {
             },
         });
         expect(seen?.from.toISOString()).toBe('2024-01-01T00:00:00.000Z');
-        expect(seen?.to.toISOString()).toBe('2024-01-31T00:00:00.000Z');
+        expect(seen?.to.toISOString()).toBe('2024-01-31T23:59:59.999Z'); // end-of-day (#127)
 
+        // The batch echoes the REQUESTED calendar window (each source resolves it in its own zone).
         const report = JSON.parse(out) as BatchReport;
-        expect(report.window).toEqual({ from: '2024-01-01T00:00:00.000Z', to: '2024-01-31T00:00:00.000Z' });
+        expect(report.window).toEqual({ from: '2024-01-01', to: '2024-01-31' });
     });
 
     it('reports "(no sources configured)" and exits 0 for an empty profile', async () => {

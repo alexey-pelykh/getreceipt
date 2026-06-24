@@ -8,7 +8,7 @@ import type {
     ResolvedCredentials,
     Secret,
 } from '@getreceipt/auth';
-import { toOperationResult, UnknownSourceError } from '@getreceipt/core';
+import { hostTimeZone, toOperationResult, UnknownSourceError, zonedDayEnd, zonedDayStart } from '@getreceipt/core';
 import type {
     CollectRequest,
     CollectResult,
@@ -23,11 +23,11 @@ import type {
 } from '@getreceipt/core';
 
 /** Why an operation could not even start — each maps to the same `usage` exit code, but the kind tags the failure for diagnostics. */
-export type OperationErrorKind = 'unknown-source' | 'config' | 'not-configured' | 'credentials';
+export type OperationErrorKind = 'unknown-source' | 'config' | 'not-configured' | 'credentials' | 'window';
 
 /**
  * A pre-flight failure: the operation never reached `collect()` (unknown source,
- * unreadable config, source not configured, credentials unresolvable). Distinct from a
+ * unreadable config, source not configured, credentials unresolvable, empty window). Distinct from a
  * {@link OperationResult} — which describes a run that *did* execute — so the caller can
  * map "couldn't start" (usage exit) apart from a collection outcome. Carries no secret
  * material: every message it wraps is pre-sanitized by its source (#6 config, #22 creds).
@@ -73,6 +73,8 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
+    /** Resolves the host IANA zone used when a source declares none; injectable so the fallback is deterministic in tests. Defaults to {@link @getreceipt/core!hostTimeZone}. */
+    readonly localTimeZone?: () => string;
 }
 
 /**
@@ -189,7 +191,14 @@ async function resolveCredentials(
     return resolved;
 }
 
-/** Build the {@link CollectRequest}, materializing the window only when the spec carries one (else the adapter's default applies). */
+/**
+ * Build the {@link CollectRequest}, materializing the calendar window only when the spec carries one
+ * (else the adapter's default applies). Each `YYYY-MM-DD` bound is resolved to a day-boundary instant
+ * in the SOURCE's zone (its declared {@link @getreceipt/core!SourceDescriptor.timezone}, else the host
+ * zone) — `since` → start-of-day, `until` → end-of-day — so a month-aligned window returns that
+ * month's receipts even when the local month-start precedes UTC midnight (#127). An absent `until`
+ * makes the window open-ended to `now`.
+ */
 function buildRequest(
     window: OperationWindow | undefined,
     adapter: SourceAdapter,
@@ -201,6 +210,19 @@ function buildRequest(
     if (window === undefined) {
         return { adapter, credentials, writer, now };
     }
-    const range: DateRange = { from: new Date(window.since), to: new Date(window.until) };
+    const zone = adapter.descriptor.timezone ?? (deps.localTimeZone ?? hostTimeZone)();
+    const range: DateRange = {
+        from: zonedDayStart(window.since, zone),
+        to: window.until === undefined ? now : zonedDayEnd(window.until, zone),
+    };
+    // A `--since` alone whose start resolves after `now` is an empty window the adapter would filter
+    // to nothing and report `succeeded` — the silent miss #127 exists to kill. (A both-bounds window
+    // can't reach here: validateWindow already rejects since > until.)
+    if (range.from.getTime() > range.to.getTime()) {
+        throw new OperationError(
+            'window',
+            '--since is in the future: an open-ended window starting after now matches nothing',
+        );
+    }
     return { adapter, credentials, writer, now, window: range };
 }
