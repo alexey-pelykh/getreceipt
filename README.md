@@ -36,6 +36,10 @@ Requires **Node.js ≥ 24**.
            ref: op://Personal/example.com/password # a 1Password reference, not the secret itself
    ```
 
+   Prefer one 1Password item for both fields? Drop `username`/`secret` and point a single
+   `ref: op://Personal/example.com` at a LOGIN item instead — see the
+   [configuration guide](docs/configuration.md#credentials).
+
    Reopen it in `$EDITOR` at any time with `getreceipt config edit`, which re-validates on save and
    refuses to leave an invalid file in place.
 

@@ -35,6 +35,13 @@ export interface DomainAuthConfig {
     /** Login identifier: a {@link SecretRef} resolved at call-time, or an inline literal. Unlike a secret, an inline username does NOT warn — a username/email is not a secret. */
     readonly username?: CredentialValue;
     readonly secret?: CredentialValue;
+    /**
+     * Single-item form: ONE `op://[account/]vault/item` reference to a 1Password LOGIN item that
+     * resolves BOTH username and secret (via `op item get` + USERNAME/PASSWORD purpose matching).
+     * The item-level alternative to per-field {@link username}/{@link secret}; mutually exclusive
+     * with them, and valid only for `kind: password`. The value is the reference string itself.
+     */
+    readonly ref?: string;
 }
 
 /**
@@ -168,7 +175,31 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
         throw new ConfigError(`unknown auth kind; expected one of ${AUTH_KINDS.join(', ')}`, `${authPath}.kind`);
     }
 
-    const result: { kind: AuthKind; username?: CredentialValue; secret?: CredentialValue } = { kind: auth.kind };
+    // `ref` (single-item) and `username`/`secret` (per-field) are two ways to say the same thing —
+    // accepting both on one source is ambiguous, so reject it rather than silently pick a precedence.
+    // (A bare `op://vault/item` and a field-level `op://vault/item/field` can be shape-identical at
+    // three segments, so the FIELD — not the ref's shape — is what selects the resolution path.)
+    const hasPerField = auth.username !== undefined || auth.secret !== undefined;
+    if (auth.ref !== undefined && hasPerField) {
+        throw new ConfigError(
+            'use either `ref` (a single-item reference resolving both username and secret) or `username`/`secret` (per-field), not both',
+            authPath,
+        );
+    }
+
+    const result: { kind: AuthKind; username?: CredentialValue; secret?: CredentialValue; ref?: string } = {
+        kind: auth.kind,
+    };
+
+    if (auth.ref !== undefined) {
+        // The single-item form reads a LOGIN item's USERNAME + PASSWORD fields, so it only makes
+        // sense for a password source. (The op:// scheme + item-level shape are checked at resolve.)
+        if (auth.kind !== 'password') {
+            throw new ConfigError('single-item `ref` is only valid for `kind: password`', `${authPath}.ref`);
+        }
+        result.ref = parseItemRef(auth.ref, `${authPath}.ref`);
+        return result;
+    }
 
     if (auth.username !== undefined) {
         result.username = parseUsername(auth.username, `${authPath}.username`);
@@ -179,6 +210,20 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     }
 
     return result;
+}
+
+/**
+ * Parse the single-item `ref` into the reference STRING itself (e.g. `op://Vault/item`) — the
+ * pointer to a LOGIN item whose USERNAME + PASSWORD fields the resolver reads. A reference is a
+ * pointer, never an inline secret, so a `{ ref }` wrapper or any non-string is rejected; the op://
+ * scheme and item-level shape are validated at resolve-time. Throws {@link ConfigError}, which
+ * never echoes the configured value.
+ */
+function parseItemRef(raw: unknown, path: string): string {
+    if (typeof raw === 'string' && raw.length > 0) {
+        return raw;
+    }
+    throw new ConfigError('the single-item `ref` must be a reference string, e.g. `ref: op://Vault/item`', path);
 }
 
 /**

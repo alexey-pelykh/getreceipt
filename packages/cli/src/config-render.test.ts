@@ -54,6 +54,14 @@ describe('renderConfigShow', () => {
         expect(output).toContain('kind: password');
     });
 
+    it('renders a single-item `ref` reference unresolved (the pointer, never dereferenced)', () => {
+        const output = renderConfigShow(
+            configWith({ 'shop.example': { kind: 'password', ref: 'op://Vault/Item' } }),
+            'default',
+        );
+        expect(output).toContain('ref: op://Vault/Item');
+    });
+
     it('shows a username reference UNRESOLVED and an inline-literal username AS-IS (a username is not masked)', () => {
         const usernameRefConfig = configWith({
             'ref.example': {

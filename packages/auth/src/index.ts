@@ -29,6 +29,7 @@ export type {
     CommandResult,
     CommandRunner,
     CredentialResolverOptions,
+    LoginSecrets,
     PassphraseProvider,
 } from './credential-resolver.js';
 export { Secret } from './secret.js';

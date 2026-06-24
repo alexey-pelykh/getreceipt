@@ -9,6 +9,7 @@ import type {
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
+    LoginSecrets,
     Secret,
     SessionStore,
     StoredSession,
@@ -39,6 +40,8 @@ export interface LoginCommandEnv {
     /** Resolves a requested domain to its adapter. Defaults to the bundled-adapter resolver. */
     readonly resolver: SourceResolver;
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
+    /** Resolves a single-item login reference to both username and secret. */
+    readonly resolveLogin: (ref: string) => Promise<LoginSecrets>;
     /** Where the established session is persisted. Defaults to the writable encrypted-file store. */
     readonly sessionStore: SessionStore;
 }
@@ -56,6 +59,7 @@ function defaultEnv(): LoginCommandEnv {
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
         resolveCredential: (value) => credentialResolver.resolve(value),
+        resolveLogin: (ref) => credentialResolver.resolveLogin(ref),
         sessionStore: defaultWritableSessionStore(),
     };
 }

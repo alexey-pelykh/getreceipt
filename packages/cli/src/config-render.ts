@@ -37,6 +37,8 @@ interface RedactedAuthView {
     kind: string;
     username?: { readonly ref: string } | string;
     secret?: { readonly ref: string } | string;
+    /** Single-item form: the op:// reference to a LOGIN item (resolved via `op item get`). Shown UNRESOLVED. */
+    ref?: string;
 }
 
 function redactSources(
@@ -50,6 +52,10 @@ function redactSources(
         }
         if (auth.secret !== undefined) {
             view.secret = redactSecret(auth.secret);
+        }
+        if (auth.ref !== undefined) {
+            // The single-item reference is a POINTER to an item — shown UNRESOLVED (never dereferenced).
+            view.ref = auth.ref;
         }
         out[domain] = { auth: view };
     }

@@ -80,6 +80,9 @@ sources: # the sources this profile can collect from
 - **`<domain>.auth.kind`** — one of `none`, `password`, `oauth2`, `api-token`, `passkey`.
 - **`<domain>.auth.username`** — optional string.
 - **`<domain>.auth.secret`** — optional credential (see [Credentials](#credentials)).
+- **`<domain>.auth.ref`** — optional **single-item** 1Password reference that resolves BOTH username
+  and secret from one LOGIN item (see [Credentials](#credentials)). Mutually exclusive with
+  `username`/`secret`; valid only for `kind: password`.
 
 Validate the file at any time — non-zero exit when it is invalid, `--json` for a machine-readable
 verdict:
@@ -128,12 +131,42 @@ value itself is never stored in the config file. Three forms are supported.
 
 ### 1Password — `op://…` (recommended)
 
+Two forms are supported; pick whichever matches how your item is organised.
+
+**Per-field** — one reference per credential:
+
 ```yaml
-secret:
-  ref: op://Personal/example.com/password
+auth:
+  kind: password
+  username:
+    ref: op://Personal/example.com/username
+  secret:
+    ref: op://Personal/example.com/password
 ```
 
-Resolved through the [1Password CLI](https://developer.1password.com/docs/cli/) (`op read`). The `op`
+Each `op://vault/item/field` reference points at a single **field** and is resolved with `op read`.
+
+**Single-item** — one item resolves both:
+
+```yaml
+auth:
+  kind: password
+  ref: op://Personal/example.com # a LOGIN item — no /field suffix
+```
+
+One `op://[account/]vault/item` reference points at a 1Password **LOGIN item**; getreceipt runs
+`op item get` and reads the item's `USERNAME` and `PASSWORD` fields — matched by 1Password field
+**purpose**, not label, so a browser-autosaved login works even when its field labels are HTML input
+names. (This is the form the sibling tool **ttctl** uses.) The `ref` form is **mutually exclusive**
+with `username`/`secret`, is valid only for **`kind: password`**, and accepts an optional account
+prefix (`op://account/vault/item`).
+
+Because a three-segment reference is ambiguous — `op://vault/item/field` (per-field) and
+`op://account/vault/item` (single-item) look identical — the **field you put it in** selects the
+path: a reference under `username`/`secret` resolves per-field (`op read`); a reference under `ref`
+resolves as a single item (`op item get`).
+
+Both forms resolve through the [1Password CLI](https://developer.1password.com/docs/cli/): the `op`
 binary must be installed and on `PATH`, and you must be signed in (`op signin`) when the source runs.
 
 ### Encrypted file — `encrypted-file:<path>`

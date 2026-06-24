@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { ConfigParseResult, CredentialValue, Secret } from '@getreceipt/auth';
+import type { ConfigParseResult, CredentialValue, LoginSecrets, Secret } from '@getreceipt/auth';
 import type { CollectRequest, CollectResult, OperationResult, ReceiptWriter, SourceResolver } from '@getreceipt/core';
 import { Command, CommanderError } from 'commander';
 
@@ -28,6 +28,8 @@ export interface FromCommandEnv {
     /** Resolves a requested domain to its adapter. Defaults to the bundled-adapter resolver ({@link createDefaultResolver}). */
     readonly resolver: SourceResolver;
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
+    /** Resolves a single-item login reference to both username and secret. */
+    readonly resolveLogin: (ref: string) => Promise<LoginSecrets>;
     /** Builds the receipt writer for a target directory. */
     readonly createWriter: (outDir: string) => ReceiptWriter;
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
