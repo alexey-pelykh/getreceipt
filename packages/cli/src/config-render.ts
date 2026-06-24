@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { Secret } from '@getreceipt/auth';
-import type { CredentialValue, DomainAuthConfig, GetReceiptConfig, SecurityWarning } from '@getreceipt/auth';
+import type { CredentialValue, DomainAuthConfig, GetReceiptConfig, MfaConfig, SecurityWarning } from '@getreceipt/auth';
 import { stringify as stringifyYaml } from 'yaml';
 
 /** The profile label reported when `--profile` is not supplied (the home-default file `~/.getreceipt.yaml`). */
@@ -39,6 +39,26 @@ interface RedactedAuthView {
     secret?: { readonly ref: string } | string;
     /** Single-item form: the op:// reference to a LOGIN item (resolved via `op item get`). Shown UNRESOLVED. */
     ref?: string;
+    mfa?: RedactedMfaView;
+}
+
+interface RedactedMfaView {
+    type: string;
+    /** Present only for `type: totp`. A seed reference is shown UNRESOLVED; an inline-literal seed is masked via the {@link Secret} fence — a seed is secret material. */
+    seed?: { readonly ref: string } | string;
+    trustDevice?: boolean;
+}
+
+/** Redact an {@link MfaConfig} for display: type/trustDevice are non-secret; the seed is masked exactly like any other secret. */
+function redactMfa(mfa: MfaConfig): RedactedMfaView {
+    const view: RedactedMfaView = { type: mfa.type };
+    if (mfa.seed !== undefined) {
+        view.seed = redactSecret(mfa.seed);
+    }
+    if (mfa.trustDevice !== undefined) {
+        view.trustDevice = mfa.trustDevice;
+    }
+    return view;
 }
 
 function redactSources(
@@ -56,6 +76,9 @@ function redactSources(
         if (auth.ref !== undefined) {
             // The single-item reference is a POINTER to an item — shown UNRESOLVED (never dereferenced).
             view.ref = auth.ref;
+        }
+        if (auth.mfa !== undefined) {
+            view.mfa = redactMfa(auth.mfa);
         }
         out[domain] = { auth: view };
     }

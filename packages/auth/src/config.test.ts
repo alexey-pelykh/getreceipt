@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { ConfigError, loadConfig, parseConfig, resolveConfigFilePath } from './index.js';
+import { ConfigError, CredentialResolver, loadConfig, parseConfig, resolveConfigFilePath } from './index.js';
 
 describe('parseConfig', () => {
     it('parses a valid flat config into typed per-domain auth', () => {
@@ -235,6 +235,216 @@ describe('parseConfig', () => {
         expect(caught).toBeInstanceOf(ConfigError);
         expect((caught as ConfigError).path).toBe(path);
         expect((caught as ConfigError).message).toContain(path);
+    });
+});
+
+describe('parseConfig — mfa', () => {
+    // AC1: `mfa.type: totp` + a `seed` ref parses (and resolves — see the resolution test below).
+    it('parses `mfa.type: totp` with a seed reference, without warning', () => {
+        const { config, warnings } = parseConfig({
+            sources: {
+                'free.fr': {
+                    auth: {
+                        kind: 'password',
+                        username: 'alice',
+                        secret: { ref: 'PW' },
+                        mfa: { type: 'totp', seed: { ref: 'op://Private/free/totp' } },
+                    },
+                },
+            },
+        });
+
+        expect(warnings).toEqual([]);
+        expect(config.sources['free.fr']?.mfa).toEqual({ type: 'totp', seed: { ref: 'op://Private/free/totp' } });
+    });
+
+    // AC1: the parsed seed is a CredentialValue accepted by the EXISTING secret path (CredentialResolver),
+    // so a totp seed resolves exactly like any other credential reference — no separate resolution channel.
+    it('resolves a parsed `mfa.totp` seed through the existing CredentialResolver path', async () => {
+        const { config } = parseConfig({
+            sources: {
+                'free.fr': {
+                    auth: { kind: 'password', mfa: { type: 'totp', seed: { ref: 'op://Private/free/totp' } } },
+                },
+            },
+        });
+        const seed = config.sources['free.fr']?.mfa?.seed;
+        if (seed === undefined) {
+            throw new Error('expected the parsed config to carry an mfa seed');
+        }
+
+        // Stub the op:// backend so the seam is exercised without the real 1Password CLI.
+        const resolver = new CredentialResolver({
+            commandRunner: () => ({ status: 0, stdout: 'JBSWY3DPEHPK3PXP', stderr: '' }),
+        });
+        expect((await resolver.resolve(seed)).expose()).toBe('JBSWY3DPEHPK3PXP');
+    });
+
+    // AC2: sms | email | push need no stored secret, and accept an optional `trustDevice` flag.
+    it.each(['sms', 'email', 'push'] as const)(
+        'parses `mfa.type: %s` with no seed and an optional `trustDevice`',
+        (type) => {
+            const { config, warnings } = parseConfig({
+                sources: { 'shop.example': { auth: { kind: 'password', mfa: { type, trustDevice: true } } } },
+            });
+
+            expect(warnings).toEqual([]);
+            expect(config.sources['shop.example']?.mfa).toEqual({ type, trustDevice: true });
+        },
+    );
+
+    it.each(['sms', 'email', 'push'] as const)(
+        'parses `mfa.type: %s` without a `trustDevice` (it is optional)',
+        (type) => {
+            const { config } = parseConfig({
+                sources: { 'shop.example': { auth: { kind: 'password', mfa: { type } } } },
+            });
+
+            expect(config.sources['shop.example']?.mfa).toEqual({ type });
+        },
+    );
+
+    it.each(['sms', 'email', 'push'] as const)('rejects a `seed` on the non-totp `mfa.type: %s`', (type) => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: { 'shop.example': { auth: { kind: 'password', mfa: { type, seed: { ref: 'X' } } } } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.shop.example.auth.mfa.seed');
+        expect((caught as ConfigError).message).toContain('out-of-band');
+    });
+
+    // AC3: mfa is optional and orthogonal to the credential choice — existing sources are unaffected.
+    it('leaves a source without `mfa` unaffected (mfa is optional)', () => {
+        const { config } = parseConfig({
+            sources: { 'free.fr': { auth: { kind: 'password', username: 'alice', secret: { ref: 'PW' } } } },
+        });
+        expect(config.sources['free.fr']?.mfa).toBeUndefined();
+    });
+
+    it('accepts `mfa` alongside per-field `username`/`secret`', () => {
+        const { config, warnings } = parseConfig({
+            sources: {
+                'free.fr': {
+                    auth: {
+                        kind: 'password',
+                        username: 'alice',
+                        secret: { ref: 'PW' },
+                        mfa: { type: 'push' },
+                    },
+                },
+            },
+        });
+        expect(warnings).toEqual([]);
+        expect(config.sources['free.fr']?.secret).toEqual({ ref: 'PW' });
+        expect(config.sources['free.fr']?.mfa).toEqual({ type: 'push' });
+    });
+
+    // Orthogonality past the single-item `ref` early-return: mfa must survive that path too.
+    it('accepts `mfa` alongside a single-item `ref` (orthogonal to the credential choice)', () => {
+        const { config, warnings } = parseConfig({
+            sources: {
+                'shop.example': {
+                    auth: {
+                        kind: 'password',
+                        ref: 'op://Vault/Item',
+                        mfa: { type: 'totp', seed: { ref: 'op://Vault/totp' } },
+                    },
+                },
+            },
+        });
+        expect(warnings).toEqual([]);
+        expect(config.sources['shop.example']?.ref).toBe('op://Vault/Item');
+        expect(config.sources['shop.example']?.mfa).toEqual({ type: 'totp', seed: { ref: 'op://Vault/totp' } });
+    });
+
+    // AC4: an inline-literal seed warns (parity with an inline password) and never echoes the value.
+    it('warns — without echoing the value — when an `mfa.totp` seed is an inline literal', () => {
+        const seed = 'JBSWY3DPEHPK3PXP-inline-do-not-leak';
+        const { warnings } = parseConfig({
+            sources: { 'free.fr': { auth: { kind: 'password', mfa: { type: 'totp', seed } } } },
+        });
+
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]?.code).toBe('inline-credential');
+        expect(warnings[0]?.path).toBe('sources.free.fr.auth.mfa.seed');
+        expect(warnings[0]?.message).not.toContain(seed);
+    });
+
+    it('does not warn when an `mfa.totp` seed is a reference', () => {
+        const { warnings } = parseConfig({
+            sources: { 'free.fr': { auth: { kind: 'password', mfa: { type: 'totp', seed: { ref: 'op://V/totp' } } } } },
+        });
+        expect(warnings).toEqual([]);
+    });
+
+    // Validation edges.
+    it('rejects `mfa.type: totp` with no seed (TOTP cannot be computed without one)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { 'free.fr': { auth: { kind: 'password', mfa: { type: 'totp' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.mfa.seed');
+        expect((caught as ConfigError).message).toContain('requires a `seed`');
+    });
+
+    it('rejects an unknown mfa type, naming the path', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { 'free.fr': { auth: { kind: 'password', mfa: { type: 'biometric' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.mfa.type');
+        expect((caught as ConfigError).message).toContain('totp');
+    });
+
+    it('rejects a non-mapping `mfa`, naming the path', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { 'free.fr': { auth: { kind: 'password', mfa: 'totp' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.mfa');
+    });
+
+    it.each([
+        { label: 'a string', trustDevice: 'yes' },
+        { label: 'a number', trustDevice: 1 },
+    ])('rejects a non-boolean `trustDevice` ($label), naming the path', ({ trustDevice }) => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { 'free.fr': { auth: { kind: 'password', mfa: { type: 'push', trustDevice } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.mfa.trustDevice');
+    });
+
+    it('never includes an inline seed value in a validation error raised on the same mfa block', () => {
+        const seed = 'totp-seed-do-not-leak';
+        let caught: unknown;
+        try {
+            // trustDevice is validated before the seed is consumed; the error must still not echo the seed.
+            parseConfig({
+                sources: { 'free.fr': { auth: { kind: 'password', mfa: { type: 'totp', seed, trustDevice: 'bad' } } } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).message).not.toContain(seed);
     });
 });
 

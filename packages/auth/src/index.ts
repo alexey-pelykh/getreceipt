@@ -14,6 +14,8 @@ export type {
     CredentialValue,
     DomainAuthConfig,
     GetReceiptConfig,
+    MfaConfig,
+    MfaType,
     Profile,
     SecretRef,
     SecurityWarning,
