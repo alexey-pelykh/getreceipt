@@ -240,7 +240,7 @@ output) so a months-old or never-verified confirmation is self-evident. A `stale
 source still **warns but proceeds**: getreceipt fetches your own receipts with your own credentials,
 so staleness is a visible advisory, never a block on collection or on release.
 
-The four bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`**, and **`pro.free.fr`** — are currently `unverified`.
+The four bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), and **`pro.free.fr`** (Free Pro) — are currently `unverified`.
 
 Adding a new source means adding a new adapter and registering it with the CLI: it is a code change,
 not a configuration option. The reverse-engineering notes for any specific service are maintained
