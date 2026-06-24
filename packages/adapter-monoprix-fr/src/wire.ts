@@ -57,8 +57,8 @@ export const OIDC = {
 export const COLLECTION = {
     applicationCaller: 'monoprix-shopping',
     ticketsReferer: `${API_ORIGIN}/monoprix-shopping/tickets`,
-    /** Single-call listing cap. ~3-month source retention keeps a date-bounded window well under this. */
-    receiptsLimit: 1000,
+    /** Single-call listing cap. The endpoint 500s on limit > 700; 500 matches the live-validated research POC. */
+    receiptsLimit: 500,
 } as const;
 
 /**

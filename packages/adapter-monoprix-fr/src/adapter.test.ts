@@ -204,7 +204,7 @@ describe('MonoprixAdapter — AC2: authenticate (headless OIDC password flow)', 
         expect(listHeaders?.get('referer')).toBe(COLLECTION.ticketsReferer);
         expect(listHeaders?.get('accept-language')).toBe('fr');
         // Query: a single bounded call — limit + a day-granular window.
-        expect(listUrl?.searchParams.get('limit')).toBe('1000');
+        expect(listUrl?.searchParams.get('limit')).toBe(String(COLLECTION.receiptsLimit));
         expect(listUrl?.searchParams.get('startDate')).toBe('2026-01-01');
         expect(listUrl?.searchParams.get('endDate')).toBe('2026-12-31');
     });
