@@ -390,6 +390,25 @@ describe('from — exit-code ladder (AC #3)', () => {
         }
     });
 
+    it('drives the real pipeline: an unresolvable challenge surfaces as reauth-required with the login remedy (exit 5) [#134]', async () => {
+        // A source that demands a 2FA step mid-authenticate, with NO challenge resolver wired into the
+        // collection path — so the challenge cannot be resolved on this surface.
+        const challenger: SourceAdapter = {
+            ...fakeAdapter(),
+            authenticate: async () => ({
+                challenge: { type: 'otp-sms', prompt: 'Enter the SMS code' },
+                resume: async () => ({}) as unknown as AuthHandle,
+            }),
+        };
+        const { out, error } = await runFrom(['shop.example'], { resolver: resolverWith(challenger) });
+
+        // Never a hang, never a silent success: it surfaces the first-class re-auth signal (exit 5)...
+        expect(error).toMatchObject({ exitCode: 5 });
+        expect(out).toContain('shop.example — reauth-required');
+        // ...carrying the actionable `login` remedy.
+        expect(out).toContain('run `getreceipt login shop.example`');
+    });
+
     it('exits 1 (usage) for an unknown source', async () => {
         const { err, error } = await runFrom(['no-such.example'], {
             resolver: new SourceResolver(new SourceAdapterRegistry()), // empty: nothing resolves

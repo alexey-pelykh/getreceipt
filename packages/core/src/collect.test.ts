@@ -370,6 +370,16 @@ function challengingAuth(type: AuthChallenge['type'] = 'otp-totp'): () => Promis
     });
 }
 
+// An authenticate() that NEVER establishes a session: every resume yields a further challenge, so a
+// resolver that keeps answering eventually trips MAX_AUTH_CHALLENGE_ROUNDS (the `exhausted` path).
+function endlesslyChallengingAuth(type: AuthChallenge['type'] = 'otp-totp'): () => Promise<AuthResult> {
+    const result: AuthResult = {
+        challenge: { type, prompt: 'Enter the code' },
+        resume: async () => result,
+    };
+    return async () => result;
+}
+
 describe('collect — interactive auth challenge (#133)', () => {
     it('resolves an adapter-issued challenge through the injected resolver, then resumes into list/fetch', async () => {
         const { resolver, seen } = recordingResolver();
@@ -390,14 +400,17 @@ describe('collect — interactive auth challenge (#133)', () => {
         expect(seen.map((c) => c.type)).toEqual(['otp-totp']); // the resolver saw exactly the issued challenge
     });
 
-    it('fails structurally — never throws — when a challenge is issued but no resolver is configured', async () => {
+    it('surfaces reauth-required (never failed, never a hang) when a challenge is issued but no resolver is configured [#134]', async () => {
         const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-sms') });
         const writer = makeWriter({ log: probe.log });
 
         const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
 
-        expect(result.outcome).toBe('failed');
-        // Stopped at authenticate: an unresolved challenge never reaches list.
+        // The unresolvable challenge maps onto the first-class re-auth signal (a front-end renders the
+        // `login` remedy from it), not a generic `failed` — and not a silent success.
+        expect(result.outcome).toBe('reauth-required');
+        expect((result as CollectReauthRequired).reason).toContain('otp-sms');
+        // Stopped at authenticate: it never blocked on input and never reached list/fetch/write.
         expect(probe.log).toEqual(['authenticate']);
     });
 
@@ -409,6 +422,50 @@ describe('collect — interactive auth challenge (#133)', () => {
 
         expect(result.outcome).toBe('succeeded');
         expect(probe.log).toEqual(['authenticate', 'list', 'fetch:inv-1', 'write:inv-1']);
+    });
+});
+
+// --- unresolvable challenge → reauth-required (#134) -----------------------
+describe('collect — unresolvable challenge surfaces reauth-required (#134)', () => {
+    it('maps an exhausted challenge chain (a source that never stops challenging) to reauth-required', async () => {
+        const { resolver } = recordingResolver();
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: endlesslyChallengingAuth('otp-totp') });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            challengeResolver: resolver,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('reauth-required');
+        expect((result as CollectReauthRequired).reason).toMatch(/too many authentication challenges/);
+        // The round cap tripped during authenticate; list/fetch were never reached.
+        expect(probe.log).toEqual(['authenticate']);
+    });
+
+    it('keeps the reauth-required reason redaction-fenced: only the challenge type, never the prompt or descriptor', async () => {
+        // The human-facing prompt + descriptor carry recognizable strings; none may surface in the result.
+        const probe = makeAdapter({
+            authenticate: async () => ({
+                challenge: {
+                    type: 'otp-sms',
+                    prompt: 'Enter the 6-digit code we texted to 06-SECRET-89',
+                    metadata: { target: 'phone-ending-SECRET89' },
+                },
+                resume: async () => brand<AuthHandle>({}),
+            }),
+        });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('reauth-required');
+        const reason = (result as CollectReauthRequired).reason ?? '';
+        expect(reason).toContain('otp-sms'); // the safe, closed-enum type is named
+        expect(reason).not.toContain('SECRET'); // neither the prompt nor the descriptor leaks through
     });
 });
 

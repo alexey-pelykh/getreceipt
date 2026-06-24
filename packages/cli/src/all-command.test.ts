@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { scanForSecrets, Secret } from '@getreceipt/auth';
 import type { ConfigParseResult, DomainAuthConfig } from '@getreceipt/auth';
-import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
+import { collect as coreCollect, SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -151,6 +151,35 @@ describe('all — runs every configured source, continue-on-error (AC #1)', () =
         });
         expect(out).toMatch(/shop\.example — succeeded/);
         expect(out).toMatch(/store\.example — error \(unexpected\)/);
+        expect(error).toMatchObject({ exitCode: 3 });
+    });
+
+    it('drives the real pipeline: an unresolvable challenge is one reauth-required entry per source, batch continues [#134]', async () => {
+        // store.example demands a 2FA step; no resolver is wired into the collection path, so it cannot
+        // be resolved here. shop.example is an ordinary source. The real collect() runs both.
+        const challenger: SourceAdapter = {
+            ...fakeAdapter('store.example'),
+            authenticate: async () => ({
+                challenge: { type: 'otp-sms', prompt: 'Enter the SMS code' },
+                resume: async () => ({}) as unknown as AuthHandle,
+            }),
+        };
+        const registry = new SourceAdapterRegistry();
+        registry.register(fakeAdapter('shop.example'));
+        registry.register(challenger);
+
+        const { out, error } = await runAll([], {
+            loadConfig: () => configWith('shop.example', 'store.example'),
+            resolver: new SourceResolver(registry),
+            collect: coreCollect,
+        });
+
+        // One continue-on-error entry per source: the challenge source surfaces reauth-required + remedy...
+        expect(out).toMatch(/store\.example — reauth-required/);
+        expect(out).toContain('run `getreceipt login store.example`');
+        // ...and the unaffected source still ran to success.
+        expect(out).toMatch(/shop\.example — succeeded/);
+        // Mixed batch (one clean, one re-auth) → partial → exit 3.
         expect(error).toMatchObject({ exitCode: 3 });
     });
 });
