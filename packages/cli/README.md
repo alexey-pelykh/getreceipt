@@ -7,7 +7,7 @@ The command surface for [getreceipt](https://github.com/alexey-pelykh/getreceipt
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by any of the services it integrates with. See the [project README](https://github.com/alexey-pelykh/getreceipt#readme) for the full disclaimer.
 
-> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the `config` surface — read-only `show` / `validate` / `path` plus mutating `init` (scaffold a starter file, never clobbering without confirmation) / `edit` (open `$EDITOR`, re-validate on save) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`, `free.fr`, `pro.free.fr`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
+> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the `config` surface — read-only `show` / `validate` / `path` plus mutating `init` (scaffold a starter file, never clobbering without confirmation) / `edit` (open `$EDITOR`, re-validate on save) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`, `free.fr`, `pro.free.fr`, `particuliers.alpiq.fr`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
 
 ## `from <domain>`
 
