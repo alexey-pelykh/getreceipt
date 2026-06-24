@@ -73,8 +73,10 @@ credential forms are in the **[configuration guide](docs/configuration.md)**.
 
 Every verb accepts the global `--config <path>` (use an explicit file) and `-p, --profile <name>`
 (use `~/.getreceipt/<name>.yaml`); `--config` wins when both are given. The collection verbs (`from`,
-`all`) additionally share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied together), `--out <dir>`
-(default `.`), `--json`, and `--verbose`; `all` adds `--concurrency <n>` (default `3`). The
+`all`) additionally share `--since` / `--until` (`YYYY-MM-DD` calendar dates, resolved against the
+source's own timezone so a month-aligned window keeps that month's receipts; `--since` may be given
+alone for an open-ended window up to now), `--out <dir>` (default `.`), `--json`, and `--verbose`;
+`all` adds `--concurrency <n>` (default `3`). The
 introspection verbs (`sources`, `status`) and the read-only `config` sub-verbs (`show` / `validate` /
 `path`) never reveal a secret; `config init` / `config edit` write the file but redact secrets in any
 echoed output.

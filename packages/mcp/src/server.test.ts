@@ -254,17 +254,17 @@ describe('collect tool (↔ CLI `from`)', () => {
         expect(textOf(result)).toContain('No source adapter');
     });
 
-    it('returns an error result for an incomplete window', async () => {
+    it('returns an error result for an incomplete window (until without since)', async () => {
         const client = await connect();
 
         const result = await call(client, 'collect', {
             source: 'shop.example',
-            since: '2024-01-01',
+            until: '2024-01-31',
             acceptConsent: true,
         });
 
         expect(result.isError).toBe(true);
-        expect(textOf(result)).toContain('together');
+        expect(textOf(result)).toContain('requires --since');
     });
 });
 

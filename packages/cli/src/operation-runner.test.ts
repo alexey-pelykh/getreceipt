@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { ConfigError, CredentialBackendUnavailableError, fromCredentialContext, Secret } from '@getreceipt/auth';
 import type { ConfigParseResult, CredentialValue } from '@getreceipt/auth';
-import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
+import { collect, SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -23,7 +23,7 @@ const SUCCEEDED: CollectResult = {
     skipped: [],
 };
 
-function adapter(): SourceAdapter {
+function adapter(timezone?: string): SourceAdapter {
     return {
         descriptor: {
             canonicalDomain: 'shop.example',
@@ -32,6 +32,7 @@ function adapter(): SourceAdapter {
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+            ...(timezone === undefined ? {} : { timezone }),
             defaultWindow: { days: 30 },
             pagination: 'none',
         },
@@ -139,21 +140,59 @@ describe('runOperation — single-item form (the `ref` reference)', () => {
 });
 
 describe('runOperation — happy path', () => {
-    it('returns the mapped OperationResult and passes the materialized window to collect', async () => {
+    it('resolves the calendar window to start-of-day / end-of-day instants for collect', async () => {
         const capture = capturingCollect();
         const result = await runOperation(
-            {
-                source: 'shop.example',
-                profile: 'default',
-                window: { since: '2024-01-01T00:00:00.000Z', until: '2024-01-31T00:00:00.000Z' },
-            },
+            { source: 'shop.example', profile: 'default', window: { since: '2024-01-01', until: '2024-01-31' } },
             undefined,
-            deps({ collect: capture.collect }),
+            deps({ collect: capture.collect, localTimeZone: () => 'UTC' }),
         );
 
         expect(result.outcome).toBe('succeeded');
         expect(capture.request()?.window?.from.toISOString()).toBe('2024-01-01T00:00:00.000Z');
-        expect(capture.request()?.window?.to.toISOString()).toBe('2024-01-31T00:00:00.000Z');
+        // until is the LAST instant of the named day, not its first — the whole day is inside the window (#127).
+        expect(capture.request()?.window?.to.toISOString()).toBe('2024-01-31T23:59:59.999Z');
+    });
+
+    it("resolves the window in the source's declared zone, so a local month-start is NOT missed (#127)", async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default', window: { since: '2026-06-01', until: '2026-06-24' } },
+            undefined,
+            deps({ resolver: resolverWith(adapter('Europe/Paris')), collect: capture.collect }),
+        );
+        // 2026-06-01 00:00 Europe/Paris (CEST, +02:00) = 2026-05-31T22:00:00Z — exactly the invoice instant.
+        expect(capture.request()?.window?.from.toISOString()).toBe('2026-05-31T22:00:00.000Z');
+        expect(capture.request()?.window?.to.toISOString()).toBe('2026-06-24T21:59:59.999Z');
+    });
+
+    it('leaves the window open-ended to now when the spec carries since only', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default', window: { since: '2026-06-01' } },
+            undefined,
+            // now is AFTER since, so the open-ended window is non-empty (a future since would be rejected).
+            deps({
+                resolver: resolverWith(adapter('Europe/Paris')),
+                collect: capture.collect,
+                now: () => new Date('2026-06-15T00:00:00.000Z'),
+            }),
+        );
+        expect(capture.request()?.window?.from.toISOString()).toBe('2026-05-31T22:00:00.000Z');
+        // the open end is exactly the injected now.
+        expect(capture.request()?.window?.to.toISOString()).toBe('2026-06-15T00:00:00.000Z');
+    });
+
+    it('falls back to the host zone when the source declares none', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default', window: { since: '2026-06-01', until: '2026-06-01' } },
+            undefined,
+            // adapter() declares no zone → the injected host zone (New York, EDT −04:00) resolves the window.
+            deps({ collect: capture.collect, localTimeZone: () => 'America/New_York' }),
+        );
+        expect(capture.request()?.window?.from.toISOString()).toBe('2026-06-01T04:00:00.000Z');
+        expect(capture.request()?.window?.to.toISOString()).toBe('2026-06-02T03:59:59.999Z');
     });
 
     it('omits the window (adapter default applies) when the spec carries none', async () => {
@@ -249,6 +288,17 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
         expect((error as OperationError).kind).toBe('credentials');
         expect((error as OperationError).message).not.toContain('inline');
     });
+
+    it('window when --since alone resolves to a start after now (an open-ended future window matches nothing)', async () => {
+        // now = 2024-02-01; --since 2099-01-01 alone → from in the future, to = now → from > to.
+        // Without this guard the adapter filters everything out and reports `succeeded` — the #127 silent miss.
+        const promise = runOperation(
+            { source: 'shop.example', profile: 'default', window: { since: '2099-01-01' } },
+            undefined,
+            deps({ resolver: resolverWith(adapter('UTC')) }),
+        );
+        await expect(promise).rejects.toMatchObject({ name: 'OperationError', kind: 'window' });
+    });
 });
 
 describe('runOperation — username resolves on the same path as the secret', () => {
@@ -312,5 +362,46 @@ describe('runOperation — username resolves on the same path as the secret', ()
         expect((error as OperationError).kind).toBe('credentials');
         // The resolver error names the backend, never the username reference or value.
         expect((error as OperationError).message).not.toContain('shop/username');
+    });
+});
+
+describe('runOperation — #127 behavioral proof through real collect()', () => {
+    // Two invoices at the Paris month-start: collect() drives the REAL window resolution AND a
+    // realistic inclusive issued-date filter, so this composes what the unit tests prove separately.
+    const MAY: ReceiptRef = { id: 'may', issuedAt: new Date('2026-04-30T22:00:00.000Z') }; // 2026-05-01 00:00 Paris
+    const JUNE: ReceiptRef = { id: 'june', issuedAt: new Date('2026-05-31T22:00:00.000Z') }; // 2026-06-01 00:00 Paris
+
+    /** The fake adapter, but `list` applies the canonical inclusive filter (`< from || > to`) against the resolved range. */
+    function filteringAdapter(timezone: string): SourceAdapter {
+        return {
+            ...adapter(timezone),
+            list: async (_auth, range) => {
+                const fromMs = range.from.getTime();
+                const toMs = range.to.getTime();
+                return [MAY, JUNE].filter((ref) => !(ref.issuedAt.getTime() < fromMs || ref.issuedAt.getTime() > toMs));
+            },
+        };
+    }
+
+    it('keeps the local-month-start June invoice a UTC window silently dropped', async () => {
+        // Europe/Paris: --since 2026-06-01 resolves to 2026-05-31T22:00Z — exactly the June invoice
+        // instant — so the inclusive lower bound keeps it; May (a month earlier) is excluded.
+        const paris = await runOperation(
+            { source: 'shop.example', profile: 'default', window: { since: '2026-06-01', until: '2026-06-30' } },
+            undefined,
+            deps({ resolver: resolverWith(filteringAdapter('Europe/Paris')), collect }),
+        );
+        expect(paris.outcome).toBe('succeeded');
+        expect(paris.written.map((r) => r.id)).toEqual(['june']);
+
+        // The OLD bug reproduced: a UTC-resolved window starts at 2026-06-01T00:00Z — AFTER the June
+        // invoice — so collect() returns it empty yet `succeeded`: the silent month-start miss.
+        const utc = await runOperation(
+            { source: 'shop.example', profile: 'default', window: { since: '2026-06-01', until: '2026-06-30' } },
+            undefined,
+            deps({ resolver: resolverWith(filteringAdapter('UTC')), collect }),
+        );
+        expect(utc.outcome).toBe('succeeded');
+        expect(utc.written.map((r) => r.id)).toEqual([]);
     });
 });

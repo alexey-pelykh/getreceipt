@@ -76,6 +76,7 @@ function fakeAdapter(options: FakeAdapterOptions = {}): SourceAdapter {
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+            timezone: 'UTC', // pin the window-resolution zone so date assertions are host-TZ-independent
             defaultWindow: { days: 30 },
             pagination: 'none',
         },
@@ -220,7 +221,33 @@ describe('from <domain> — collection (AC #1)', () => {
             rmSync(dir, { recursive: true, force: true });
         }
         expect(listRange?.from.toISOString()).toBe('2024-01-01T00:00:00.000Z');
-        expect(listRange?.to.toISOString()).toBe('2024-01-31T00:00:00.000Z');
+        // `--until` covers the WHOLE named day (end-of-day in the source zone), not its first instant (#127).
+        expect(listRange?.to.toISOString()).toBe('2024-01-31T23:59:59.999Z');
+    });
+
+    it('accepts --since alone, leaving the window open-ended to now (#127)', async () => {
+        let listRange: DateRange | undefined;
+        const adapter = fakeAdapter();
+        const wrapped: SourceAdapter = {
+            ...adapter,
+            list: async (auth, range) => {
+                listRange = range;
+                return adapter.list(auth, range);
+            },
+        };
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-since-'));
+        try {
+            const { error } = await runFrom(['shop.example', '--since', '2024-01-01', '--out', dir], {
+                resolver: resolverWith(wrapped),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+                now: () => new Date('2024-02-01T00:00:00.000Z'),
+            });
+            expect(error).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        expect(listRange?.from.toISOString()).toBe('2024-01-01T00:00:00.000Z');
+        expect(listRange?.to.toISOString()).toBe('2024-02-01T00:00:00.000Z'); // open end = injected now
     });
 
     it('resolves an alias domain and finds its credentials under the canonical key', async () => {
@@ -378,10 +405,10 @@ describe('from — exit-code ladder (AC #3)', () => {
         expect(err).toContain('config file could not be read');
     });
 
-    it('exits 1 (usage) on an incomplete window', async () => {
-        const { err, error } = await runFrom(['shop.example', '--since', '2024-01-01']);
+    it('exits 1 (usage) on an incomplete window (--until without --since)', async () => {
+        const { err, error } = await runFrom(['shop.example', '--until', '2024-01-31']);
         expect(error).toMatchObject({ exitCode: 1 });
-        expect(err).toContain('together');
+        expect(err).toContain('requires --since');
     });
 
     // `2024-02-30`/`2024-04-31` (impossible day) and `2024-1-1`/`01/15/2024` (locale-dependent

@@ -22,13 +22,15 @@ export interface OperationSpec {
 }
 
 /**
- * An explicit collection window as ISO-8601 date strings. Strings (not `Date`) keep
- * {@link OperationSpec} serializable; `collect()` works in `Date`, so the runner
- * materializes these at execution time.
+ * An explicit collection window as `YYYY-MM-DD` CALENDAR dates (not instants), kept as strings so
+ * {@link OperationSpec} stays serializable. The runner materializes each bound to a `Date` at
+ * execution time, resolving the calendar day in the SOURCE's zone ({@link @getreceipt/core!SourceDescriptor.timezone},
+ * host zone as fallback): `since` → start-of-day, `until` → end-of-day (#127). `until` is optional —
+ * omitting it makes the window open-ended to "now" (a rolling `--since`-only collection).
  */
 export interface OperationWindow {
     readonly since: string;
-    readonly until: string;
+    readonly until?: string;
 }
 
 /** The four outcomes a front-end reports — {@link CollectResult}'s three, plus `partial` split out of a failure with progress. */

@@ -58,6 +58,7 @@ const DESCRIPTOR: SourceDescriptor = {
     // PDF arrives base64 in a JSON envelope (`pdfContent`); the base64 is unwrapped inside fetch() — still pdf-download.
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+    timezone: 'Europe/Paris', // issuedAt + the user's calendar window are Paris-local (#127)
     defaultWindow: { days: 90 },
     // One GenericAPI call returns the account's full invoice set; the window is filtered client-side.
     pagination: 'none',

@@ -159,7 +159,16 @@ export async function runCollectAll(params: CollectAllParams, deps: CollectionDe
         profile: params.profile,
         outcome: deriveBatchOutcome(sources),
         concurrency: params.concurrency,
-        ...(params.window === undefined ? {} : { window: { from: params.window.since, to: params.window.until } }),
+        // Echo the REQUESTED calendar window (each source resolves it in its own zone, so no single
+        // instant pair fits the batch); an open-ended `--since`-only window echoes "today" as its end.
+        ...(params.window === undefined
+            ? {}
+            : {
+                  window: {
+                      from: params.window.since,
+                      to: params.window.until ?? deps.now().toISOString().slice(0, 10),
+                  },
+              }),
         sources,
     };
 }
