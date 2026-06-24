@@ -112,6 +112,149 @@ describe('CredentialResolver — op:// (1Password CLI)', () => {
     });
 });
 
+describe('CredentialResolver — resolveLogin (single-item, `op item get`)', () => {
+    const ref = 'op://Private/Shop';
+    const loginItem = JSON.stringify({
+        fields: [
+            { purpose: 'USERNAME', value: 'alice@shop.example' },
+            { purpose: 'PASSWORD', value: 's3cr3t' },
+        ],
+    });
+
+    it('resolves BOTH username and secret from one login item', async () => {
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ status: 0, stdout: loginItem, stderr: '' }),
+        });
+        const login = await resolver.resolveLogin(ref);
+        expect(login.username.expose()).toBe('alice@shop.example');
+        expect(login.secret.expose()).toBe('s3cr3t');
+    });
+
+    it('invokes `op item get <item> --vault <vault> --format json` for a 2-segment ref', async () => {
+        const calls: Array<{ command: string; args: readonly string[] }> = [];
+        const resolver = new CredentialResolver({
+            commandRunner: (command, args) => {
+                calls.push({ command, args });
+                return { status: 0, stdout: loginItem, stderr: '' };
+            },
+        });
+        await resolver.resolveLogin('op://Private/Shop');
+        expect(calls).toEqual([
+            { command: 'op', args: ['item', 'get', 'Shop', '--vault', 'Private', '--format', 'json'] },
+        ]);
+    });
+
+    it('forwards --account for a 3-segment ref (op://account/vault/item)', async () => {
+        const calls: Array<{ command: string; args: readonly string[] }> = [];
+        const resolver = new CredentialResolver({
+            commandRunner: (command, args) => {
+                calls.push({ command, args });
+                return { status: 0, stdout: loginItem, stderr: '' };
+            },
+        });
+        await resolver.resolveLogin('op://my-acct/Private/Shop');
+        expect(calls[0]?.args).toEqual([
+            'item',
+            'get',
+            'Shop',
+            '--vault',
+            'Private',
+            '--account',
+            'my-acct',
+            '--format',
+            'json',
+        ]);
+    });
+
+    it('matches fields by `purpose`, NOT by `label` (browser-autosaved items)', async () => {
+        // A browser-autosaved item inherits its label from the HTML input name; only purpose is canonical.
+        const autosaved = JSON.stringify({
+            fields: [
+                { label: 'user[password]', purpose: 'PASSWORD', value: 'the-password' },
+                { label: 'user[email]', purpose: 'USERNAME', value: 'the-username' },
+            ],
+        });
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ status: 0, stdout: autosaved, stderr: '' }),
+        });
+        const login = await resolver.resolveLogin(ref);
+        expect(login.username.expose()).toBe('the-username');
+        expect(login.secret.expose()).toBe('the-password');
+    });
+
+    it('normalizes the bare-array shape older `op` CLIs returned', async () => {
+        const bareArray = JSON.stringify([
+            { purpose: 'USERNAME', value: 'u' },
+            { purpose: 'PASSWORD', value: 'p' },
+        ]);
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ status: 0, stdout: bareArray, stderr: '' }),
+        });
+        const login = await resolver.resolveLogin(ref);
+        expect(login.username.expose()).toBe('u');
+        expect(login.secret.expose()).toBe('p');
+    });
+
+    it('rejects a 4-segment ref (account/vault/item/FIELD) — that is a per-field reference, not a login item', async () => {
+        // 2-3 segments are item-level (a 3-segment ref is account/vault/item — see the --account test above);
+        // a 4th segment is a /field suffix, i.e. a per-field reference that belongs on the `op read` path.
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ status: 0, stdout: loginItem, stderr: '' }),
+        });
+        await expect(resolver.resolveLogin('op://my-acct/Private/Shop/password')).rejects.toMatchObject({
+            name: 'CredentialResolutionError',
+            reason: 'unsupported-scheme',
+        });
+    });
+
+    it('throws CredentialResolutionError(not-found) for a non-login item (no USERNAME/PASSWORD purpose)', async () => {
+        const apiKeyItem = JSON.stringify({
+            fields: [
+                { purpose: 'NOTES', value: 'x' },
+                { label: 'credential', value: 'k' },
+            ],
+        });
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ status: 0, stdout: apiKeyItem, stderr: '' }),
+        });
+        await expect(resolver.resolveLogin(ref)).rejects.toMatchObject({
+            name: 'CredentialResolutionError',
+            reason: 'not-found',
+        });
+    });
+
+    it('throws a distinct CredentialBackendUnavailableError when the op CLI is missing (ENOENT)', async () => {
+        const enoent: NodeJS.ErrnoException = Object.assign(new Error('spawn op ENOENT'), { code: 'ENOENT' });
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ spawnError: enoent, status: null, stdout: '', stderr: '' }),
+        });
+        await expect(resolver.resolveLogin(ref)).rejects.toBeInstanceOf(CredentialBackendUnavailableError);
+    });
+
+    it('throws CredentialResolutionError(not-authenticated) when not signed in', async () => {
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({
+                status: 1,
+                stdout: '',
+                stderr: '[ERROR] you are not currently signed in. Please run `op signin`.',
+            }),
+        });
+        await expect(resolver.resolveLogin(ref)).rejects.toMatchObject({
+            name: 'CredentialResolutionError',
+            reason: 'not-authenticated',
+        });
+    });
+
+    it('keeps the resolved values out of every serialization of the returned Secrets', async () => {
+        const resolver = new CredentialResolver({
+            commandRunner: fixedRunner({ status: 0, stdout: loginItem, stderr: '' }),
+        });
+        const login = await resolver.resolveLogin(ref);
+        expect(JSON.stringify(login)).not.toContain('s3cr3t');
+        expect(String(login.secret)).not.toContain('s3cr3t');
+    });
+});
+
 describe('defaultCommandRunner (real spawnSync, never the real `op`)', () => {
     it('captures status 0 and stdout from a real successful command', () => {
         const result = defaultCommandRunner(process.execPath, ['--version']);

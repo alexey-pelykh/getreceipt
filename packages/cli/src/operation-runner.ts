@@ -4,6 +4,7 @@ import type {
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
+    LoginSecrets,
     ResolvedCredentials,
     Secret,
 } from '@getreceipt/auth';
@@ -55,6 +56,8 @@ export interface ResolveSourceDeps {
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Resolves a configured credential reference to its fenced secret value. */
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
+    /** Resolves a single-item login reference (`op://[account/]vault/item`) to both username and secret. */
+    readonly resolveLogin: (ref: string) => Promise<LoginSecrets>;
 }
 
 /**
@@ -149,19 +152,32 @@ function findSourceConfig(parsed: ConfigParseResult, source: string, adapter: So
 
 async function resolveCredentials(
     deps: ResolveSourceDeps,
-    sourceConfig: { kind: ResolvedCredentials['kind']; username?: CredentialValue; secret?: CredentialValue },
+    sourceConfig: {
+        kind: ResolvedCredentials['kind'];
+        username?: CredentialValue;
+        secret?: CredentialValue;
+        ref?: string;
+    },
 ): Promise<ResolvedCredentials> {
     const resolved: { kind: ResolvedCredentials['kind']; username?: string; secret?: Secret } = {
         kind: sourceConfig.kind,
     };
     try {
-        // The username resolves on the SAME path as the secret — a configured `{ ref }` is dereferenced
-        // at call-time and exposed to a plain string here (intended; a username is not a secret).
-        if (sourceConfig.username !== undefined) {
-            resolved.username = (await deps.resolveCredential(sourceConfig.username)).expose();
-        }
-        if (sourceConfig.secret !== undefined) {
-            resolved.secret = await deps.resolveCredential(sourceConfig.secret);
+        if (sourceConfig.ref !== undefined) {
+            // Single-item: ONE reference resolves BOTH credentials from a login item. The username is
+            // exposed to a plain string (intended — a username is not a secret); the secret stays fenced.
+            const login = await deps.resolveLogin(sourceConfig.ref);
+            resolved.username = login.username.expose();
+            resolved.secret = login.secret;
+        } else {
+            // Per-field: the username resolves on the SAME path as the secret — a configured `{ ref }` is
+            // dereferenced at call-time and exposed to a plain string here (intended; a username is not a secret).
+            if (sourceConfig.username !== undefined) {
+                resolved.username = (await deps.resolveCredential(sourceConfig.username)).expose();
+            }
+            if (sourceConfig.secret !== undefined) {
+                resolved.secret = await deps.resolveCredential(sourceConfig.secret);
+            }
         }
     } catch (error) {
         // The credential errors (#22) never carry the resolved value in their message.

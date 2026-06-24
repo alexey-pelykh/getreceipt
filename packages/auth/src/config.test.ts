@@ -25,6 +25,61 @@ describe('parseConfig', () => {
         expect(source?.secret).toEqual({ ref: 'FREE_PW' });
     });
 
+    it('parses a single-item `ref` reference (the item-level form)', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'shop.example': { auth: { kind: 'password', ref: 'op://Vault/Item' } } },
+        });
+
+        expect(warnings).toEqual([]);
+        const source = config.sources['shop.example'];
+        expect(source?.ref).toBe('op://Vault/Item');
+        expect(source?.username).toBeUndefined();
+        expect(source?.secret).toBeUndefined();
+    });
+
+    it('rejects `ref` together with `username`/`secret` — the two forms are mutually exclusive', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: {
+                    'shop.example': {
+                        auth: { kind: 'password', ref: 'op://Vault/Item', username: 'alice' },
+                    },
+                },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.shop.example.auth');
+        expect((caught as ConfigError).message).toContain('either');
+    });
+
+    it('rejects a single-item `ref` for a non-password kind (it reads a LOGIN item)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { 'shop.example': { auth: { kind: 'oauth2', ref: 'op://Vault/Item' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.shop.example.auth.ref');
+        expect((caught as ConfigError).message).toContain('password');
+    });
+
+    it('rejects a `ref` given as a `{ ref }` wrapper instead of the reference string', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: { 'shop.example': { auth: { kind: 'password', ref: { ref: 'op://Vault/Item' } } } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.shop.example.auth.ref');
+    });
+
     it('throws an actionable ConfigError, naming the path, when `sources` is missing', () => {
         expect(() => parseConfig({})).toThrow(ConfigError);
 

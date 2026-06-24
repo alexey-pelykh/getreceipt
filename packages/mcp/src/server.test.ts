@@ -97,6 +97,8 @@ function baseCollection(): CollectionDeps {
         loadConfig: authLoadConfig,
         resolveCredential: (value) =>
             Promise.resolve(value instanceof Object ? new Secret('resolved') : new Secret(value)),
+        resolveLogin: () =>
+            Promise.resolve({ username: new Secret('resolved-user'), secret: new Secret('resolved-secret') }),
         createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
         collect: coreCollect,
         now: FIXED_NOW,

@@ -61,6 +61,8 @@ function deps(overrides: Partial<OperationRunnerDeps> = {}): OperationRunnerDeps
         resolveConfigPath: () => '/test/.getreceipt.yaml',
         loadConfig: () => config,
         resolveCredential: () => Promise.resolve(new Secret('resolved')),
+        resolveLogin: () =>
+            Promise.resolve({ username: new Secret('resolved-user'), secret: new Secret('resolved-secret') }),
         createWriter: () => ({ has: async () => false, write: async () => {} }),
         collect: () => Promise.resolve(SUCCEEDED),
         now: () => new Date('2024-02-01T00:00:00.000Z'),
@@ -79,6 +81,62 @@ function capturingCollect(): { collect: OperationRunnerDeps['collect']; request:
         request: () => captured,
     };
 }
+
+describe('runOperation — single-item form (the `ref` reference)', () => {
+    const loginConfig: ConfigParseResult = {
+        config: { sources: { 'shop.example': { kind: 'password', ref: 'op://Vault/Item' } } },
+        warnings: [],
+    };
+
+    it('resolves BOTH username and secret from one login reference via resolveLogin', async () => {
+        const seen: string[] = [];
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                loadConfig: () => loginConfig,
+                collect: capture.collect,
+                // The per-field path MUST NOT run for a single-item source.
+                resolveCredential: () => Promise.reject(new Error('per-field resolveCredential must not be called')),
+                resolveLogin: (ref) => {
+                    seen.push(ref);
+                    return Promise.resolve({
+                        username: new Secret('alice@shop.example'),
+                        secret: new Secret('s3cr3t'),
+                    });
+                },
+            }),
+        );
+
+        expect(seen).toEqual(['op://Vault/Item']);
+        const resolved = fromCredentialContext(capture.request()!.credentials);
+        expect(resolved.username).toBe('alice@shop.example');
+        expect(resolved.secret?.expose()).toBe('s3cr3t');
+    });
+
+    it('uses the per-field path (resolveCredential, NOT resolveLogin) when no login reference is set', async () => {
+        let loginCalled = false;
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                collect: capture.collect,
+                resolveCredential: (value) =>
+                    Promise.resolve(new Secret(typeof value === 'string' ? value : `ref:${value.ref}`)),
+                resolveLogin: () => {
+                    loginCalled = true;
+                    return Promise.resolve({ username: new Secret('x'), secret: new Secret('y') });
+                },
+            }),
+        );
+
+        expect(loginCalled).toBe(false);
+        // The default config carries an inline username 'alice@shop.example'.
+        expect(fromCredentialContext(capture.request()!.credentials).username).toBe('alice@shop.example');
+    });
+});
 
 describe('runOperation — happy path', () => {
     it('returns the mapped OperationResult and passes the materialized window to collect', async () => {
