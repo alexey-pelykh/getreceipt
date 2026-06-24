@@ -21,20 +21,19 @@ Requires **Node.js ≥ 24**.
 ## Quickstart
 
 1. **Create `~/.getreceipt.yaml`.** Run `getreceipt config init` to scaffold a commented starter (it
-   never overwrites an existing file without `--force`), or write it by hand — one source under the
-   `default` profile. Substitute a real source from `getreceipt sources` for the `example.com`
-   placeholder:
+   never overwrites an existing file without `--force`), or write it by hand. Each config file is one
+   **profile** — `~/.getreceipt.yaml` is the default; a named profile lives at
+   `~/.getreceipt/<name>.yaml`. List your sources at the top level; substitute a real source from
+   `getreceipt sources` for the `example.com` placeholder:
 
    ```yaml
-   profiles:
-     default:
-       sources:
-         example.com:
-           auth:
-             kind: password
-             username: you@example.com
-             secret:
-               ref: op://Personal/example.com/password # a 1Password reference, not the secret itself
+   sources:
+     example.com:
+       auth:
+         kind: password
+         username: you@example.com
+         secret:
+           ref: op://Personal/example.com/password # a 1Password reference, not the secret itself
    ```
 
    Reopen it in `$EDITOR` at any time with `getreceipt config edit`, which re-validates on save and
@@ -68,11 +67,13 @@ credential forms are in the **[configuration guide](docs/configuration.md)**.
 | `config` `show`/`validate`/`path`/`init`/`edit` | Inspect (read-only, redacted) and manage the config file — `init` scaffolds a starter, `edit` opens `$EDITOR` and re-validates. |
 | `mcp`                                           | Serve the receipt-collection tools to an MCP client over stdio.                                                                 |
 
-The collection verbs (`from`, `all`) share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied
-together), `--profile <name>` (default `default`), `--out <dir>` (default `.`), `--json`, and
-`--verbose`; `all` adds `--concurrency <n>` (default `3`). The introspection verbs (`sources`,
-`status`) and the read-only `config` sub-verbs (`show` / `validate` / `path`) never reveal a secret;
-`config init` / `config edit` write the file but redact secrets in any echoed output.
+Every verb accepts the global `--config <path>` (use an explicit file) and `-p, --profile <name>`
+(use `~/.getreceipt/<name>.yaml`); `--config` wins when both are given. The collection verbs (`from`,
+`all`) additionally share `--since` / `--until` (ISO `YYYY-MM-DD`, supplied together), `--out <dir>`
+(default `.`), `--json`, and `--verbose`; `all` adds `--concurrency <n>` (default `3`). The
+introspection verbs (`sources`, `status`) and the read-only `config` sub-verbs (`show` / `validate` /
+`path`) never reveal a secret; `config init` / `config edit` write the file but redact secrets in any
+echoed output.
 
 The session verbs persist auth between runs: `getreceipt login <domain>` authenticates once and
 stores a reusable session; `getreceipt logout <domain>` clears it (to rotate, switch account, or

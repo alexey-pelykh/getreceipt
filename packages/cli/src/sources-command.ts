@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { ConfigParseResult } from '@getreceipt/auth';
+import type { ConfigParseResult, ConfigSelection } from '@getreceipt/auth';
 import type { SourceAdapterRegistry, VerificationLookup } from '@getreceipt/core';
 import { Command } from 'commander';
 
-import { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
+import { resolveActiveProfile } from './config-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { defaultListSourcesDeps, runListSources } from './operations.js';
+import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 import { renderSourcesJson, renderSourcesText } from './sources-render.js';
 
 /**
@@ -16,7 +17,7 @@ import { renderSourcesJson, renderSourcesText } from './sources-render.js';
  */
 export interface SourcesCommandEnv {
     readonly io: CliIO;
-    readonly resolveConfigPath: () => string;
+    readonly resolveConfigPath: (selection?: ConfigSelection) => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** The registry whose adapters are listed. Defaults to the bundled-adapter registry. */
     readonly registry: SourceAdapterRegistry;
@@ -40,11 +41,11 @@ export function createSourcesCommand(overrides: Partial<SourcesCommandEnv> = {})
 
     return new Command('sources')
         .description('List configured / available sources and their verification state.')
-        .option('-p, --profile <name>', 'config profile to report configured-state against', DEFAULT_PROFILE)
         .option('--json', 'emit the structured sources report as JSON')
-        .action((options: { profile?: string; json?: boolean }) => {
+        .action((options: { json?: boolean }, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
             const report = runListSources(
-                { profile: resolveActiveProfile(options.profile) },
+                { profile: resolveActiveProfile(resolveGlobalOptions(command).profile), selection },
                 {
                     resolveConfigPath: env.resolveConfigPath,
                     loadConfig: env.loadConfig,

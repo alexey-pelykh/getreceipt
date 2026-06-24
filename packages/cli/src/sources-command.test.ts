@@ -19,8 +19,18 @@ import { describe, expect, it } from 'vitest';
 import { createSourcesCommand } from './sources-command.js';
 import type { SourcesCommandEnv } from './sources-command.js';
 import type { SourcesReport } from './sources-render.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 const configFixture = fileURLToPath(new URL('./__fixtures__/multi.getreceipt.yaml', import.meta.url));
+const workFixture = fileURLToPath(new URL('./__fixtures__/multi.work.getreceipt.yaml', import.meta.url));
+
+/** Selection-aware resolver: `--config` path wins; `--profile work` → the work fixture; else the default multi fixture. */
+function fixtureResolver(selection?: { path?: string; profile?: string }): string {
+    if (selection?.path !== undefined && selection.path !== '') {
+        return selection.path;
+    }
+    return selection?.profile === 'work' ? workFixture : configFixture;
+}
 
 /** A descriptor-only adapter — `sources` reads only the descriptor (never invokes a stage). */
 function fakeAdapter(
@@ -68,11 +78,13 @@ async function runSources(args: string[], overrides: Partial<SourcesCommandEnv> 
     const err: string[] = [];
     const env: Partial<SourcesCommandEnv> = {
         io: { writeOut: (t) => out.push(t), writeErr: (t) => err.push(t) },
-        resolveConfigPath: () => configFixture,
+        resolveConfigPath: fixtureResolver,
         registry: registryWithTwo(),
         ...overrides,
     };
     const cmd = createSourcesCommand(env);
+    // Standalone command (not via createProgram), so add the global --config/--profile it inherits there.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
 
     let error: unknown;
@@ -171,9 +183,7 @@ describe('sources — lists available sources with verification + configured sta
     it('never emits secret-shaped output even though the config holds inline credentials', async () => {
         const inlineSecret = 'sk' + '_live_' + 'Z'.repeat(28);
         const config: ConfigParseResult = {
-            config: {
-                profiles: { default: { sources: { 'shop.example': { kind: 'password', secret: inlineSecret } } } },
-            },
+            config: { sources: { 'shop.example': { kind: 'password', secret: inlineSecret } } },
             warnings: [],
         };
         const { out } = await runSources(['--json'], { loadConfig: () => config });

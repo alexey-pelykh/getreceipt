@@ -16,15 +16,14 @@ import { describe, expect, it } from 'vitest';
 import { ConsentRequiredError } from './consent-gate.js';
 import { createLoginCommand } from './login-command.js';
 import type { LoginCommandEnv } from './login-command.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 const TOKEN = 'login-session-token-LEAK-SENTINEL';
 
-/** A `default` profile that configures `shop.example` with a referenced (never inline) password. */
+/** A flat config (one profile per file) that configures `shop.example` with a referenced (never inline) password. */
 const CONFIG: ConfigParseResult = {
     config: {
-        profiles: {
-            default: { sources: { 'shop.example': { kind: 'password', username: 'shopper', secret: { ref: 'PW' } } } },
-        },
+        sources: { 'shop.example': { kind: 'password', username: 'shopper', secret: { ref: 'PW' } } },
     },
     warnings: [],
 };
@@ -99,6 +98,8 @@ async function runLogin(args: string[], overrides: Partial<LoginCommandEnv> = {}
         ...overrides,
     };
     const cmd = createLoginCommand(env);
+    // Standalone command (not via createProgram), so add the global --config/--profile it inherits there.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
 
     let error: unknown;

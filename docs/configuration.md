@@ -5,32 +5,49 @@
 > personal use only. See the [project README](../README.md) and [legitimacy & posture](legitimacy.md)
 > for the full posture.
 
-`getreceipt` reads a single YAML file, `~/.getreceipt.yaml`, listing the sources you collect from and
-the credentials to reach them. Nothing in it is sent anywhere except the service whose receipts you
-request — your credentials and the documents you fetch stay on your machine.
+`getreceipt` reads a YAML config file listing the sources you collect from and the credentials to
+reach them. Nothing in it is sent anywhere except the service whose receipts you request — your
+credentials and the documents you fetch stay on your machine.
 
-## File location
+Each config file is **one profile**: its sources live at the top level (there is no `profiles:`
+map), and the file's location names the profile. Keep separate accounts in separate files.
 
-The config is read from `~/.getreceipt.yaml` (in your home directory). To print the exact path in
-use, the active profile, and whether the file exists:
+## File location and resolution
+
+The file to read is chosen by this precedence — the first that applies wins:
+
+1. **`--config <path>`** — an explicit file (any path), e.g. `getreceipt from x --config ./my.yaml`.
+2. **`GETRECEIPT_CONFIG_FILE`** — an environment variable holding a path.
+3. **`-p, --profile <name>`** — the named profile `~/.getreceipt/<name>.yaml`.
+4. **`~/.getreceipt.yaml`** — the home default (the unnamed profile), used when none of the above is set.
+
+`--config` and `--profile` are **global** — write them on either side of the verb
+(`getreceipt --profile work from x` or `getreceipt from x --profile work`). The current directory is
+never inspected; to use a project-local file, pass `--config` (or set the env var). When `--config`
+is given alongside a divergent `GETRECEIPT_CONFIG_FILE` or `--profile`, a one-line warning notes that
+`--config` wins.
+
+To print the exact path in use, the active profile, and whether the file exists:
 
 ```sh
-getreceipt config path
+getreceipt config path                 # the default profile (~/.getreceipt.yaml)
+getreceipt config path --profile work  # ~/.getreceipt/work.yaml
 ```
 
 ## Creating and editing the file
 
-Scaffold a starter `~/.getreceipt.yaml` — a commented template with one example source, ready to
-edit — with:
+Scaffold a starter config — a commented template with one example source, ready to edit — with:
 
 ```sh
-getreceipt config init
+getreceipt config init                 # scaffolds ~/.getreceipt.yaml (the default profile)
+getreceipt config init --profile work  # scaffolds ~/.getreceipt/work.yaml
 ```
 
 `init` writes the file only when none exists; an existing file is **never overwritten without
-explicit confirmation** (pass `--force`, or answer `y` at the interactive prompt). `--profile <name>`
-names the scaffolded profile (default `default`). The starter validates cleanly out of the box —
-replace the `example.com` placeholder with a real source (`getreceipt sources`).
+explicit confirmation** (pass `--force`, or answer `y` at the interactive prompt). The target file is
+the one the resolution rules above pick — `--profile`, `--config`, or `GETRECEIPT_CONFIG_FILE` choose
+where it lands. The starter validates cleanly out of the box — replace the `example.com` placeholder
+with a real source (`getreceipt sources`).
 
 To change the configuration later, open it in your editor:
 
@@ -45,22 +62,21 @@ Secrets are redacted in any echoed output, exactly as for `config show`.
 
 ## Schema
 
-The file is a set of named **profiles**. Each profile maps a **source domain** to an **auth** block:
+Each file is one profile. It lists **source domains** at the top level under `sources:`, each mapping
+to an **auth** block:
 
 ```yaml
-profiles: # one or more named profiles
-  default: # the profile used when --profile is omitted
-    sources: # the sources this profile can collect from
-      example.com: # a source domain (canonical, or a known alias of one)
-        auth:
-          kind: password # how the source authenticates (see "Auth kinds")
-          username: you@example.com # optional; omit for kinds that need no username
-          secret: # optional; a credential reference (see "Credentials")
-            ref: op://Personal/example.com/password
+sources: # the sources this profile can collect from
+  example.com: # a source domain (canonical, or a known alias of one)
+    auth:
+      kind: password # how the source authenticates (see "Auth kinds")
+      username: you@example.com # optional; omit for kinds that need no username
+      secret: # optional; a credential reference (see "Credentials")
+        ref: op://Personal/example.com/password
 ```
 
-- **`profiles`** — a mapping of profile name → profile. The `profiles` key is required.
-- **`<profile>.sources`** — a mapping of domain → source config (may be empty).
+- **`sources`** — a mapping of domain → source config (required; may be empty). There is **no**
+  `profiles:` map — see [Migrating](#migrating-from-the-profiles-map) if you used one.
 - **`<domain>.auth.kind`** — one of `none`, `password`, `oauth2`, `api-token`, `passkey`.
 - **`<domain>.auth.username`** — optional string.
 - **`<domain>.auth.secret`** — optional credential (see [Credentials](#credentials)).
@@ -76,21 +92,29 @@ Validation errors never echo the file's contents, so a message can't leak a secr
 
 ## Profiles
 
-A profile is a named bundle of sources and credentials — for example `default` for personal accounts
-and another for a side project. Every verb accepts `--profile <name>` (default `default`):
+A profile is one config file — a self-contained bundle of sources and credentials, e.g. the default
+(`~/.getreceipt.yaml`) for personal accounts and `~/.getreceipt/work.yaml` for a side project. Select
+one with `-p, --profile <name>` (or an explicit `--config <path>`); the flag is global, so it works
+on every verb:
 
 ```sh
 getreceipt from example.com --profile work
 getreceipt all --profile work
 getreceipt sources --profile work
 getreceipt status --profile work
+getreceipt config show --profile work   # inspect the resolved file, secrets redacted
+getreceipt from example.com --config ./project.getreceipt.yaml  # or an explicit file
 ```
 
-Inspect the resolved configuration with secrets redacted:
+The MCP server inherits `--config` / `--profile` at launch (`getreceipt mcp --profile work`); each
+tool call may also pass its own `profile` argument, which overrides the launch default for that call.
 
-```sh
-getreceipt config show --profile work
-```
+### Migrating from the `profiles:` map
+
+Earlier versions nested everything under a single `profiles:` map. That map was removed: each profile
+is now its own file. To migrate, give each profile its own file and lift its `sources:` to the top
+level — `default` → `~/.getreceipt.yaml`, any other `<name>` → `~/.getreceipt/<name>.yaml`. Loading a
+file that still has a top-level `profiles:` key fails fast with a message pointing here.
 
 ## Auth kinds
 

@@ -5,7 +5,7 @@ import {
     defaultCollectionDeps,
     defaultListSourcesDeps,
 } from '@getreceipt/cli';
-import type { AuthStatusDeps, CollectionDeps, ConsentGate, ListSourcesDeps } from '@getreceipt/cli';
+import type { AuthStatusDeps, CollectionDeps, ConsentGate, ListSourcesDeps, McpLaunchSelection } from '@getreceipt/cli';
 
 /**
  * The collaborators the four MCP tools need — the SAME operation-layer seams the CLI verbs use,
@@ -23,6 +23,11 @@ export interface McpToolDeps {
     readonly listSources: ListSourcesDeps;
     /** Resolver + config + session-store seams for `auth_status`. */
     readonly authStatus: AuthStatusDeps;
+    /**
+     * The launch-time config selection (`mcp --config`/`--profile`) — the default config file each
+     * tool uses when its per-call `profile` arg is absent. Omitted → the home-default file.
+     */
+    readonly launch?: McpLaunchSelection;
 }
 
 /**

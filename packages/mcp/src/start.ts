@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import type { McpLaunchSelection } from '@getreceipt/cli';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
+import { defaultMcpToolDeps } from './deps.js';
 import { createMcpServer } from './server.js';
 
 /**
@@ -9,6 +11,8 @@ import { createMcpServer } from './server.js';
  * `ProgramOptions.startMcpServer`, so `@getreceipt/cli` need not depend on this package). stdout is the
  * JSON-RPC channel; all human-facing output goes to stderr. `version` (the umbrella's package.json
  * version) surfaces in the `initialize` serverInfo; it defaults to the bootstrap version when absent.
+ * `launch` is the `mcp --config`/`--profile` default config file the tools load when a per-call
+ * `profile` arg is absent.
  *
  * Resolves only when the transport CLOSES (client disconnects / stdin ends). This wait is load-bearing:
  * `connect()` returns as soon as the stdin listener is attached — it does NOT block — and the umbrella
@@ -18,8 +22,9 @@ import { createMcpServer } from './server.js';
 export async function startMcpServer(
     transport: Transport = new StdioServerTransport(),
     version?: string,
+    launch: McpLaunchSelection = {},
 ): Promise<void> {
-    const server = createMcpServer(undefined, version);
+    const server = createMcpServer({ ...defaultMcpToolDeps(), launch }, version);
     // Protocol.onclose (distinct from transport.onclose, which connect() owns) fires on transport close.
     const closed = new Promise<void>((resolve) => {
         server.server.onclose = resolve;

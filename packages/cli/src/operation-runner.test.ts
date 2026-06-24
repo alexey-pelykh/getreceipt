@@ -50,11 +50,7 @@ function resolverWith(source: SourceAdapter): SourceResolver {
 
 const config: ConfigParseResult = {
     config: {
-        profiles: {
-            default: {
-                sources: { 'shop.example': { kind: 'password', username: 'alice@shop.example', secret: 'inline' } },
-            },
-        },
+        sources: { 'shop.example': { kind: 'password', username: 'alice@shop.example', secret: 'inline' } },
     },
     warnings: [],
 };
@@ -93,6 +89,7 @@ describe('runOperation — happy path', () => {
                 profile: 'default',
                 window: { since: '2024-01-01T00:00:00.000Z', until: '2024-01-31T00:00:00.000Z' },
             },
+            undefined,
             deps({ collect: capture.collect }),
         );
 
@@ -103,14 +100,34 @@ describe('runOperation — happy path', () => {
 
     it('omits the window (adapter default applies) when the spec carries none', async () => {
         const capture = capturingCollect();
-        await runOperation({ source: 'shop.example', profile: 'default' }, deps({ collect: capture.collect }));
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ collect: capture.collect }),
+        );
         expect(capture.request()?.window).toBeUndefined();
+    });
+
+    it('passes the config selection through to the resolveConfigPath seam', async () => {
+        let seen: { config?: string; profile?: string } | undefined;
+        await runOperation(
+            { source: 'shop.example', profile: 'work' },
+            { profile: 'work' },
+            deps({
+                resolveConfigPath: (selection) => {
+                    seen = selection;
+                    return '/test/.getreceipt/work.yaml';
+                },
+            }),
+        );
+        expect(seen).toEqual({ profile: 'work' });
     });
 
     it('applies the instrument wrapper to the adapter before collecting', async () => {
         let wrapped = false;
         await runOperation(
             { source: 'shop.example', profile: 'default' },
+            undefined,
             deps({
                 instrument: (a) => {
                     wrapped = true;
@@ -126,6 +143,7 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
     it('unknown-source when the domain resolves to no adapter', async () => {
         const promise = runOperation(
             { source: 'no-such.example', profile: 'default' },
+            undefined,
             deps({ resolver: new SourceResolver(new SourceAdapterRegistry()) }),
         );
         await expect(promise).rejects.toMatchObject({ name: 'OperationError', kind: 'unknown-source' });
@@ -134,6 +152,7 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
     it('config when the config file cannot be loaded (path preserved)', async () => {
         const promise = runOperation(
             { source: 'shop.example', profile: 'default' },
+            undefined,
             deps({
                 loadConfig: () => {
                     throw new ConfigError('config file could not be read', '/test/.getreceipt.yaml');
@@ -144,15 +163,22 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
         await expect(promise).rejects.toThrow('/test/.getreceipt.yaml');
     });
 
-    it('not-configured when the profile is absent', async () => {
-        await expect(runOperation({ source: 'shop.example', profile: 'ghost' }, deps())).rejects.toMatchObject({
-            kind: 'not-configured',
-        });
+    it('not-configured when the (registered) source is absent from the file (names the file, not a profile)', async () => {
+        // shop.example resolves to an adapter, but this file configures no sources → not-configured.
+        const emptyConfig: ConfigParseResult = { config: { sources: {} }, warnings: [] };
+        const promise = runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ loadConfig: () => emptyConfig }),
+        );
+        await expect(promise).rejects.toMatchObject({ kind: 'not-configured' });
+        await expect(promise).rejects.toThrow('/test/.getreceipt.yaml');
     });
 
     it('credentials when the credential cannot be resolved (message carries no secret)', async () => {
         const error = await runOperation(
             { source: 'shop.example', profile: 'default' },
+            undefined,
             deps({
                 resolveCredential: () =>
                     Promise.reject(
@@ -171,15 +197,11 @@ describe('runOperation — username resolves on the same path as the secret', ()
     /** Config whose username is a reference (not an inline literal), exercising call-time resolution. */
     const refUsernameConfig: ConfigParseResult = {
         config: {
-            profiles: {
-                default: {
-                    sources: {
-                        'shop.example': {
-                            kind: 'password',
-                            username: { ref: 'op://Personal/shop/username' },
-                            secret: { ref: 'op://Personal/shop/password' },
-                        },
-                    },
+            sources: {
+                'shop.example': {
+                    kind: 'password',
+                    username: { ref: 'op://Personal/shop/username' },
+                    secret: { ref: 'op://Personal/shop/password' },
                 },
             },
         },
@@ -198,6 +220,7 @@ describe('runOperation — username resolves on the same path as the secret', ()
         const capture = capturingCollect();
         await runOperation(
             { source: 'shop.example', profile: 'default' },
+            undefined,
             deps({ loadConfig: () => refUsernameConfig, resolveCredential: resolverByRef, collect: capture.collect }),
         );
 
@@ -211,6 +234,7 @@ describe('runOperation — username resolves on the same path as the secret', ()
     it('surfaces a username-resolution failure as OperationError(credentials), carrying no value', async () => {
         const error = await runOperation(
             { source: 'shop.example', profile: 'default' },
+            undefined,
             deps({
                 loadConfig: () => refUsernameConfig,
                 resolveCredential: (value) => {

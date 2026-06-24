@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
     buildValidateVerdict,
     DEFAULT_PROFILE,
-    ProfileNotFoundError,
     renderConfigPathText,
     renderConfigShow,
     renderValidateJson,
@@ -17,8 +16,8 @@ import {
 // clean-tree leakage scan never flags this file) — used to prove inline literals are masked.
 const INLINE_LITERAL = 'hunter2-do-not-leak';
 
-function configWith(profiles: GetReceiptConfig['profiles']): GetReceiptConfig {
-    return { profiles };
+function configWith(sources: GetReceiptConfig['sources']): GetReceiptConfig {
+    return { sources };
 }
 
 describe('resolveActiveProfile', () => {
@@ -33,19 +32,12 @@ describe('resolveActiveProfile', () => {
 
 describe('renderConfigShow', () => {
     const config = configWith({
-        default: {
-            sources: {
-                'free.fr': {
-                    kind: 'password',
-                    username: 'alice@free.fr',
-                    secret: { ref: 'op://Personal/free.fr/password' },
-                },
-                'amazon.fr': { kind: 'api-token', secret: INLINE_LITERAL },
-            },
+        'free.fr': {
+            kind: 'password',
+            username: 'alice@free.fr',
+            secret: { ref: 'op://Personal/free.fr/password' },
         },
-        work: {
-            sources: { 'corp.example': { kind: 'password', secret: { ref: 'WORK_PW' } } },
-        },
+        'amazon.fr': { kind: 'api-token', secret: INLINE_LITERAL },
     });
 
     it('masks inline literals and shows references unresolved', () => {
@@ -64,19 +56,15 @@ describe('renderConfigShow', () => {
 
     it('shows a username reference UNRESOLVED and an inline-literal username AS-IS (a username is not masked)', () => {
         const usernameRefConfig = configWith({
-            default: {
-                sources: {
-                    'ref.example': {
-                        kind: 'password',
-                        username: { ref: 'op://Personal/ref.example/username' },
-                        secret: { ref: 'op://Personal/ref.example/password' },
-                    },
-                    'literal.example': {
-                        kind: 'password',
-                        username: 'bob@literal.example',
-                        secret: { ref: 'op://Personal/literal.example/password' },
-                    },
-                },
+            'ref.example': {
+                kind: 'password',
+                username: { ref: 'op://Personal/ref.example/username' },
+                secret: { ref: 'op://Personal/ref.example/password' },
+            },
+            'literal.example': {
+                kind: 'password',
+                username: 'bob@literal.example',
+                secret: { ref: 'op://Personal/literal.example/password' },
             },
         });
 
@@ -89,26 +77,15 @@ describe('renderConfigShow', () => {
         expect(output).not.toContain('[redacted]');
     });
 
-    it('selects the requested profile', () => {
-        const output = renderConfigShow(config, 'work');
+    it('labels the output with the active profile name (display only — the file IS the profile)', () => {
+        // The file IS one profile, so the name is a header label, not a key lookup; any label renders.
+        const output = renderConfigShow(
+            configWith({ 'corp.example': { kind: 'password', secret: { ref: 'WORK_PW' } } }),
+            'work',
+        );
+        expect(output).toContain('profile: work');
         expect(output).toContain('corp.example');
         expect(output).toContain('WORK_PW');
-        // The default profile's sources are not present.
-        expect(output).not.toContain('free.fr');
-    });
-
-    it('throws ProfileNotFoundError (naming available profiles, no secrets) for an unknown profile', () => {
-        let caught: unknown;
-        try {
-            renderConfigShow(config, 'missing');
-        } catch (error) {
-            caught = error;
-        }
-        expect(caught).toBeInstanceOf(ProfileNotFoundError);
-        expect((caught as ProfileNotFoundError).message).toContain('missing');
-        expect((caught as ProfileNotFoundError).message).toContain('default');
-        expect((caught as ProfileNotFoundError).message).toContain('work');
-        expect((caught as ProfileNotFoundError).message).not.toContain(INLINE_LITERAL);
     });
 });
 

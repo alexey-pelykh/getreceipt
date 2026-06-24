@@ -6,26 +6,29 @@ import { parse as parseYaml } from 'yaml';
 import { decideInitDisposition, parseEditorCommand, renderStarterConfig } from './config-init.js';
 
 describe('renderStarterConfig', () => {
-    it('renders a starter that parses + validates with NO warnings (default profile) [AC: valid starter]', () => {
+    it('renders a FLAT starter that parses + validates with NO warnings [AC: valid starter]', () => {
         const result = parseConfig(parseYaml(renderStarterConfig('default')));
 
-        expect(result.config.profiles.default).toBeDefined();
-        expect(result.config.profiles.default?.sources['example.com']?.kind).toBe('password');
+        // Flat per-file profile: sources live at the top level (no `profiles:` map).
+        expect(result.config.sources['example.com']?.kind).toBe('password');
         // The active example uses an op:// reference, so a freshly scaffolded file is warning-clean.
         expect(result.warnings).toEqual([]);
     });
 
-    it('keys the scaffold by the requested profile name', () => {
-        const result = parseConfig(parseYaml(renderStarterConfig('work')));
+    it('names the profile in the header comment (the file IS that profile)', () => {
+        const text = renderStarterConfig('work');
 
-        expect(result.config.profiles.work).toBeDefined();
-        expect(result.config.profiles.default).toBeUndefined();
+        // The profile name appears as a comment label, not a YAML key — and there is NO `profiles:` map.
+        expect(text).toContain('profile: work');
+        expect(text).not.toMatch(/^profiles:/m);
+        // It still parses as the same flat shape regardless of the profile name.
+        expect(parseConfig(parseYaml(text)).config.sources['example.com']).toBeDefined();
     });
 
-    it('quotes an unsafe profile name so the file still parses', () => {
+    it('parses to the same flat shape even for an unusual profile name (name is only a comment)', () => {
         const result = parseConfig(parseYaml(renderStarterConfig('needs: quoting')));
 
-        expect(result.config.profiles['needs: quoting']).toBeDefined();
+        expect(result.config.sources['example.com']).toBeDefined();
     });
 
     it('shows the op:// reference (active) and the inline-literal form (commented, discouraged)', () => {

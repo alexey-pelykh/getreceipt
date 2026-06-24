@@ -1,24 +1,15 @@
-# Multi-source config exercised by the all / sources / status command tests.
-# `shop.example` matches the tests' fake adapter (canonical domain); `ghost.example`
-# is configured but has NO registered adapter (exercises unregistered / unknown-source
-# handling). The inline secrets are obvious non-secrets (the #7 clean-tree scan ignores
-# them) and the tests inject the credential resolver anyway.
-profiles:
-  default:
-    sources:
-      shop.example:
-        auth:
-          kind: password
-          username: alice@shop.example
-          secret: hunter2-not-real
-      ghost.example:
-        auth:
-          kind: api-token
-          secret: token-not-real
-  work:
-    sources:
-      shop.example:
-        auth:
-          kind: password
-          username: bob@shop.example
-          secret: hunter2-work-only
+# Flat multi-source config exercised by the all / sources / status command tests (the "default"
+# profile). `shop.example` matches the tests' fake adapter (canonical domain); `ghost.example` is
+# configured but has NO registered adapter (exercises unregistered / unknown-source handling). The
+# inline secrets are obvious non-secrets (the #7 clean-tree scan ignores them) and the tests inject
+# the credential resolver anyway.
+sources:
+  shop.example:
+    auth:
+      kind: password
+      username: alice@shop.example
+      secret: hunter2-not-real
+  ghost.example:
+    auth:
+      kind: api-token
+      secret: token-not-real

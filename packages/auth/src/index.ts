@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-export { defaultConfigPath, loadConfig, parseConfig } from './config.js';
+export {
+    CONFIG_DIR,
+    CONFIG_FILE_ENV,
+    defaultConfigPath,
+    loadConfig,
+    parseConfig,
+    resolveConfigFilePath,
+} from './config.js';
 export type {
     ConfigParseResult,
+    ConfigSelection,
     CredentialValue,
     DomainAuthConfig,
     GetReceiptConfig,

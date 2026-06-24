@@ -19,6 +19,6 @@ const { version } = JSON.parse(readFileSync(join(import.meta.dirname, '../packag
 process.exit(
     await runCli(process.argv.slice(2), {
         version,
-        mcpEnv: { startMcpServer: () => startMcpServer(undefined, version) },
+        mcpEnv: { startMcpServer: (launch) => startMcpServer(undefined, version, launch) },
     }),
 );

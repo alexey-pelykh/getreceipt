@@ -9,6 +9,7 @@ import { EXIT_CODES } from './from-render.js';
 import { createLoginCommand, type LoginCommandEnv } from './login-command.js';
 import { createLogoutCommand, type LogoutCommandEnv } from './logout-command.js';
 import { createMcpCommand, type McpCommandEnv } from './mcp-command.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 import { createSourcesCommand, type SourcesCommandEnv } from './sources-command.js';
 import { createStatusCommand, type StatusCommandEnv } from './status-command.js';
 
@@ -65,7 +66,23 @@ export function createProgram(options: ProgramOptions = {}): Command {
     program.addCommand(createConfigCommand(options.configEnv ?? {}));
     program.addCommand(createMcpCommand(options.mcpEnv ?? {}));
 
+    // `--config`/`--profile` are global: add them to the root AND every (sub)command so a user can
+    // write the flag on either side of the verb (Commander does not inherit options), and
+    // resolveGlobalOptions reconciles them child-over-parent. `logout` is the lone exception — it
+    // reads no config (it clears a session by domain), so it carries no config-selection options.
+    applyGlobalConfigOptions(program);
+
     return program;
+}
+
+/** Add the global `--config`/`--profile` to a command and recurse into its subcommands. Skips `logout` (config-free). */
+function applyGlobalConfigOptions(command: Command): void {
+    if (command.name() !== 'logout') {
+        addGlobalConfigOptions(command);
+    }
+    for (const sub of command.commands) {
+        applyGlobalConfigOptions(sub);
+    }
 }
 
 /**

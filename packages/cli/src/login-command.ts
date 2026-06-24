@@ -1,20 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import {
     CredentialResolver,
-    defaultConfigPath,
     isSessionPersistable,
     loadConfig as authLoadConfig,
+    resolveConfigFilePath,
 } from '@getreceipt/auth';
-import type { ConfigParseResult, CredentialValue, Secret, SessionStore, StoredSession } from '@getreceipt/auth';
+import type {
+    ConfigParseResult,
+    ConfigSelection,
+    CredentialValue,
+    Secret,
+    SessionStore,
+    StoredSession,
+} from '@getreceipt/auth';
 import type { CredentialContext, SourceAdapter, SourceResolver } from '@getreceipt/core';
 import { Command, CommanderError } from 'commander';
 
-import { DEFAULT_PROFILE } from './config-render.js';
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError, resolveSourceContext } from './operation-runner.js';
+import { resolveConfigSelection } from './resolve-options.js';
 import { defaultWritableSessionStore } from './sessions.js';
 
 /**
@@ -27,7 +34,7 @@ export interface LoginCommandEnv {
     readonly io: CliIO;
     /** Runtime consent pre-flight (#32): gates login BEFORE the source is touched with credentials. */
     readonly consent: ConsentGate;
-    readonly resolveConfigPath: () => string;
+    readonly resolveConfigPath: (selection?: ConfigSelection) => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Resolves a requested domain to its adapter. Defaults to the bundled-adapter resolver. */
     readonly resolver: SourceResolver;
@@ -37,7 +44,6 @@ export interface LoginCommandEnv {
 }
 
 interface LoginOptions {
-    readonly profile?: string;
     readonly acceptConsent?: boolean;
 }
 
@@ -46,7 +52,7 @@ function defaultEnv(): LoginCommandEnv {
     return {
         io: processStreamsIO(),
         consent: createConsentGate(),
-        resolveConfigPath: defaultConfigPath,
+        resolveConfigPath: resolveConfigFilePath,
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
         resolveCredential: (value) => credentialResolver.resolve(value),
@@ -74,9 +80,8 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
     return new Command('login')
         .description('Authenticate to a configured source and store a reusable session.')
         .argument('<domain>', 'source domain to log in to (canonical or alias)')
-        .option('-p, --profile <name>', 'config profile supplying credentials', DEFAULT_PROFILE)
         .option('--accept-consent', 'record the one-time consent acknowledgment non-interactively (for CI / piped use)')
-        .action(async (domain: string, options: LoginOptions) => {
+        .action(async (domain: string, options: LoginOptions, command: Command) => {
             // Consent gate FIRST — login touches the service with the user's credentials (#32), like `from`.
             try {
                 await env.consent.ensure({ acceptFlag: options.acceptConsent === true });
@@ -87,12 +92,12 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
                 throw error;
             }
 
-            const profile = options.profile ?? DEFAULT_PROFILE;
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
 
             let adapter: SourceAdapter;
             let credentials: CredentialContext;
             try {
-                ({ adapter, credentials } = await resolveSourceContext({ source: domain, profile }, env));
+                ({ adapter, credentials } = await resolveSourceContext({ source: domain, selection }, env));
             } catch (error) {
                 if (error instanceof OperationError) {
                     env.io.writeErr(`✗ ${error.message}\n`);

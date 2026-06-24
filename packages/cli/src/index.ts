@@ -28,7 +28,7 @@ export { decideInitDisposition, parseEditorCommand, renderStarterConfig } from '
 export type { EditorCommand, InitDisposition } from './config-init.js';
 
 export { createMcpCommand } from './mcp-command.js';
-export type { McpCommandEnv } from './mcp-command.js';
+export type { McpCommandEnv, McpLaunchSelection } from './mcp-command.js';
 
 export { createLoginCommand } from './login-command.js';
 export type { LoginCommandEnv } from './login-command.js';
@@ -86,6 +86,14 @@ export type { SessionState, SourceSessionView, StatusReport } from './status-ren
 
 export { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
 export type { ConfigPathInfo, ConfigValidateVerdict, ConfigWarningView } from './config-render.js';
+
+export {
+    addGlobalConfigOptions,
+    buildConfigSelection,
+    resolveConfigSelection,
+    resolveGlobalOptions,
+} from './resolve-options.js';
+export type { GlobalConfigOptions } from './resolve-options.js';
 
 export { validateWindow } from './window.js';
 export type { WindowErrorKind, WindowValidation } from './window.js';

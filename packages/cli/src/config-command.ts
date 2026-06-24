@@ -3,13 +3,12 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 
-import { ConfigError, defaultConfigPath, loadConfig as authLoadConfig, scanForSecrets } from '@getreceipt/auth';
-import type { ConfigParseResult } from '@getreceipt/auth';
+import { ConfigError, loadConfig as authLoadConfig, resolveConfigFilePath, scanForSecrets } from '@getreceipt/auth';
+import type { ConfigParseResult, ConfigSelection } from '@getreceipt/auth';
 import { Command, CommanderError } from 'commander';
 
 import {
     buildValidateVerdict,
-    ProfileNotFoundError,
     renderConfigPathText,
     renderConfigShow,
     renderValidateJson,
@@ -19,6 +18,7 @@ import {
 } from './config-render.js';
 import { decideInitDisposition, parseEditorCommand, renderStarterConfig, type EditorCommand } from './config-init.js';
 import { processStreamsIO, type CliIO } from './io.js';
+import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 
 /** The outcome of launching the editor: whether it exited cleanly, and a value-free reason when it did not. */
 export interface EditorLaunchResult {
@@ -70,8 +70,8 @@ async function readlineConfirm(io: CliIO, input: NodeJS.ReadableStream = process
  */
 export interface ConfigCommandEnv {
     readonly io: CliIO;
-    /** Resolve the config file path. Defaults to `~/.getreceipt.yaml`. */
-    readonly resolveConfigPath: () => string;
+    /** Resolve WHICH config file to operate on from a {@link ConfigSelection} (`--config`/`--profile`/env/home default). */
+    readonly resolveConfigPath: (selection?: ConfigSelection) => string;
     /** Load + validate a config file (ConfigLoader #6). */
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Whether the config file exists on disk. */
@@ -93,7 +93,7 @@ export interface ConfigCommandEnv {
 function defaultEnv(): ConfigCommandEnv {
     return {
         io: processStreamsIO(),
-        resolveConfigPath: defaultConfigPath,
+        resolveConfigPath: resolveConfigFilePath,
         loadConfig: authLoadConfig,
         fileExists: existsSync,
         readConfigFileRaw: (path) => readFileSync(path, 'utf8'),
@@ -147,9 +147,9 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
     config
         .command('show')
         .description('Print the resolved configuration with secrets redacted.')
-        .option('-p, --profile <name>', 'profile to show')
-        .action((options: { profile?: string }) => {
-            const path = env.resolveConfigPath();
+        .action((_options: Record<string, never>, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            const path = env.resolveConfigPath(selection);
             let parsed: ConfigParseResult;
             try {
                 parsed = env.loadConfig(path);
@@ -158,16 +158,10 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
                 throw exitFailure('getreceipt.config.load-failed');
             }
 
-            let rendered: string;
-            try {
-                rendered = renderConfigShow(parsed.config, resolveActiveProfile(options.profile));
-            } catch (error) {
-                if (error instanceof ProfileNotFoundError) {
-                    env.io.writeErr(`✗ ${error.message}\n`);
-                    throw exitFailure('getreceipt.config.unknown-profile');
-                }
-                throw error;
-            }
+            const rendered = renderConfigShow(
+                parsed.config,
+                resolveActiveProfile(resolveGlobalOptions(command).profile),
+            );
 
             // Defense in depth: `show` is a secret-egress surface. Literals are masked and refs are
             // pointers by contract — but a reference mis-set to a literal secret would print verbatim.
@@ -187,8 +181,9 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
         .command('validate')
         .description('Validate the resolved configuration file; non-zero exit when invalid.')
         .option('--json', 'emit a machine-readable verdict')
-        .action((options: { json?: boolean }) => {
-            const path = env.resolveConfigPath();
+        .action((options: { json?: boolean }, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            const path = env.resolveConfigPath(selection);
             const verdict = (() => {
                 try {
                     const parsed = env.loadConfig(path);
@@ -218,12 +213,12 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
     config
         .command('path')
         .description('Print the resolved config path, active profile, and whether it exists.')
-        .option('-p, --profile <name>', 'profile to report as active')
-        .action((options: { profile?: string }) => {
-            const path = env.resolveConfigPath();
+        .action((_options: Record<string, never>, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            const path = env.resolveConfigPath(selection);
             const info: ConfigPathInfo = {
                 path,
-                profile: resolveActiveProfile(options.profile),
+                profile: resolveActiveProfile(resolveGlobalOptions(command).profile),
                 exists: env.fileExists(path),
             };
             env.io.writeOut(renderConfigPathText(info));
@@ -232,11 +227,11 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
     config
         .command('init')
         .description('Scaffold a starter configuration file (refuses to overwrite an existing one without --force).')
-        .option('-p, --profile <name>', 'name for the scaffolded profile')
         .option('-f, --force', 'overwrite an existing config file')
-        .action(async (options: { profile?: string; force?: boolean }) => {
-            const path = env.resolveConfigPath();
-            const profile = resolveActiveProfile(options.profile);
+        .action(async (options: { force?: boolean }, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            const path = env.resolveConfigPath(selection);
+            const profile = resolveActiveProfile(resolveGlobalOptions(command).profile);
 
             const disposition = decideInitDisposition({
                 exists: env.fileExists(path),
@@ -285,9 +280,9 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
     config
         .command('edit')
         .description('Open the configuration in $EDITOR and re-validate on save (never persists an invalid file).')
-        .option('-p, --profile <name>', 'profile expected to be present after the edit')
-        .action(async (options: { profile?: string }) => {
-            const path = env.resolveConfigPath();
+        .action(async (_options: Record<string, never>, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            const path = env.resolveConfigPath(selection);
 
             if (!env.fileExists(path)) {
                 env.io.writeErr(
@@ -340,9 +335,6 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
 
             const out = `✓ ${path}: configuration is valid\n`;
             const warnings = parsed.warnings.map((w) => `⚠ ${w.message}\n`);
-            if (options.profile !== undefined && !Object.hasOwn(parsed.config.profiles, options.profile)) {
-                warnings.push(`⚠ profile "${options.profile}" is not present in ${path}\n`);
-            }
 
             // Defense in depth: warnings carry only paths by contract, but `edit` is secret-adjacent — scan
             // the composed output through the #7 lint and refuse rather than emit a leak (as `show` does).

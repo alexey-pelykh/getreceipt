@@ -10,6 +10,7 @@ import { parse as parseYaml } from 'yaml';
 
 import { createConfigCommand } from './config-command.js';
 import type { ConfigCommandEnv } from './config-command.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 /**
  * Build the `config` command and genuinely execute a mutating sub-verb through Commander — against a
@@ -29,8 +30,12 @@ async function runConfig(
         io: { writeOut: (text) => out.push(text), writeErr: (text) => err.push(text) },
         ...overrides,
     });
+    // Standalone command tree (not via createProgram): mirror the global --config/--profile the
+    // program adds to the root AND every (sub)command.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
     for (const sub of cmd.commands) {
+        addGlobalConfigOptions(sub);
         sub.exitOverride();
     }
 
@@ -43,16 +48,14 @@ async function runConfig(
     return { out: out.join(''), err: err.join(''), error };
 }
 
-/** A minimal valid config used as a starting / snapshot state for `edit` tests. */
+/** A minimal valid FLAT config used as a starting / snapshot state for `edit` tests. */
 const VALID_CONFIG = [
-    'profiles:',
-    '  default:',
-    '    sources:',
-    '      example.com:',
-    '        auth:',
-    '          kind: password',
-    '          secret:',
-    '            ref: op://Personal/example.com/password',
+    'sources:',
+    '  example.com:',
+    '    auth:',
+    '      kind: password',
+    '      secret:',
+    '        ref: op://Personal/example.com/password',
     '',
 ].join('\n');
 
@@ -86,7 +89,7 @@ describe('config init', () => {
 
             // The file genuinely parses + validates (no warnings — the active example uses an op:// ref).
             const result = parseConfig(parseYaml(readFileSync(path, 'utf8')));
-            expect(result.config.profiles.default).toBeDefined();
+            expect(result.config.sources['example.com']).toBeDefined();
             expect(result.warnings).toEqual([]);
 
             // …and the read-only `validate` verb, run over the same file, agrees it is valid.
@@ -134,7 +137,7 @@ describe('config init', () => {
 
             expect(error).toBeUndefined();
             const result = parseConfig(parseYaml(readFileSync(path, 'utf8')));
-            expect(result.config.profiles.default).toBeDefined();
+            expect(result.config.sources['example.com']).toBeDefined();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -152,7 +155,7 @@ describe('config init', () => {
             });
 
             expect(error).toBeUndefined();
-            expect(parseConfig(parseYaml(readFileSync(path, 'utf8'))).config.profiles.default).toBeDefined();
+            expect(parseConfig(parseYaml(readFileSync(path, 'utf8'))).config.sources['example.com']).toBeDefined();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -177,19 +180,24 @@ describe('config init', () => {
         }
     });
 
-    it('keys the scaffold by --profile', async () => {
+    it('scaffolds a FLAT file and names the --profile in the header (the file IS that profile)', async () => {
         const dir = tempDir();
         const path = join(dir, '.getreceipt.yaml');
         try {
-            const { error } = await runConfig(['init', '--profile', 'work'], {
+            const { out, error } = await runConfig(['init', '--profile', 'work'], {
                 resolveConfigPath: () => path,
                 isInteractive: () => false,
             });
 
             expect(error).toBeUndefined();
-            const result = parseConfig(parseYaml(readFileSync(path, 'utf8')));
-            expect(result.config.profiles.work).toBeDefined();
-            expect(result.config.profiles.default).toBeUndefined();
+            // The success line reports the profile name…
+            expect(out).toContain('profile: work');
+            const raw = readFileSync(path, 'utf8');
+            // …the file names the profile in a comment and has NO `profiles:` map…
+            expect(raw).toContain('profile: work');
+            expect(raw).not.toMatch(/^profiles:/m);
+            // …and it is the flat shape (sources at the top level).
+            expect(parseConfig(parseYaml(raw)).config.sources['example.com']).toBeDefined();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -221,15 +229,7 @@ describe('config edit', () => {
         const dir = tempDir();
         const path = join(dir, '.getreceipt.yaml');
         writeFileSync(path, VALID_CONFIG);
-        const broken = [
-            'profiles:',
-            '  default:',
-            '    sources:',
-            '      example.com:',
-            '        auth:',
-            '          kind: not-a-real-kind',
-            '',
-        ].join('\n');
+        const broken = ['sources:', '  example.com:', '    auth:', '      kind: not-a-real-kind', ''].join('\n');
         try {
             const { err, error } = await runConfig(['edit'], {
                 resolveConfigPath: () => path,
@@ -309,7 +309,7 @@ describe('config edit', () => {
                 resolveEditor: () => 'fake-editor',
                 // Simulate an editor that mangles the file and THEN crashes (non-zero exit).
                 launchEditor: (_editor, p) => {
-                    writeFileSync(p, 'profiles: {} # half-written garbage\n');
+                    writeFileSync(p, 'sources: {} # half-written garbage\n');
                     return { ok: false, detail: 'editor terminated by signal SIGKILL' };
                 },
             });
@@ -323,20 +323,22 @@ describe('config edit', () => {
         }
     });
 
-    it('warns when --profile is not present after the edit (but still succeeds)', async () => {
+    it('selects the file via --config, editing exactly that path [per-file model]', async () => {
         const dir = tempDir();
-        const path = join(dir, '.getreceipt.yaml');
+        const path = join(dir, 'custom.yaml');
         writeFileSync(path, VALID_CONFIG);
+        const edited = VALID_CONFIG.replace('example.com', 'shop.example');
         try {
-            const { out, err, error } = await runConfig(['edit', '--profile', 'work'], {
-                resolveConfigPath: () => path,
+            // No resolveConfigPath override → the real resolver honors --config, so the edit lands on `path`.
+            const { out, error } = await runConfig(['edit', '--config', path], {
                 resolveEditor: () => 'fake-editor',
-                launchEditor: editorWriting(VALID_CONFIG), // leaves a valid file WITHOUT a `work` profile
+                launchEditor: editorWriting(edited),
             });
 
             expect(error).toBeUndefined();
             expect(out).toContain('configuration is valid');
-            expect(err).toContain('profile "work" is not present');
+            expect(out).toContain(path);
+            expect(readFileSync(path, 'utf8')).toBe(edited);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -353,13 +355,11 @@ describe('config edit — secret redaction (#7/#22)', () => {
         const path = join(dir, '.getreceipt.yaml');
         writeFileSync(path, VALID_CONFIG);
         const withInlineSecret = [
-            'profiles:',
-            '  default:',
-            '    sources:',
-            '      shop.example:',
-            '        auth:',
-            '          kind: api-token',
-            `          secret: ${stripeShaped}`,
+            'sources:',
+            '  shop.example:',
+            '    auth:',
+            '      kind: api-token',
+            `      secret: ${stripeShaped}`,
             '',
         ].join('\n');
         try {
@@ -388,11 +388,11 @@ describe('config edit — secret redaction (#7/#22)', () => {
         // A contrived loader whose warning message carries a secret-shaped value — proves the #7 scan
         // backstop refuses rather than emit it (warnings are path-only by contract; this is defense in depth).
         const leakyLoad = (): ConfigParseResult => ({
-            config: { profiles: {} },
+            config: { sources: {} },
             warnings: [
                 {
                     code: 'inline-credential',
-                    path: 'profiles.default.sources.x.auth.secret',
+                    path: 'sources.x.auth.secret',
                     message: `leak ${stripeShaped}`,
                 },
             ],

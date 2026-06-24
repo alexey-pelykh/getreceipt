@@ -18,10 +18,31 @@ import { createAllCommand } from './all-command.js';
 import type { AllCommandEnv } from './all-command.js';
 import type { BatchReport } from './all-render.js';
 import { ConsentRequiredError } from './consent-gate.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 const configFixture = fileURLToPath(new URL('./__fixtures__/multi.getreceipt.yaml', import.meta.url));
+const workFixture = fileURLToPath(new URL('./__fixtures__/multi.work.getreceipt.yaml', import.meta.url));
 const NOW = new Date('2024-06-01T00:00:00.000Z');
 const WINDOW: DateRange = { from: NOW, to: NOW };
+
+/**
+ * A selection-aware `resolveConfigPath` that maps the per-file model onto the test fixtures: an
+ * explicit `--config` path wins; `--profile work` → the work fixture; anything else → the default
+ * multi fixture; an unknown profile → a deliberately-missing path (so loadConfig fails like a real
+ * absent profile file would).
+ */
+function fixtureResolver(selection?: { path?: string; profile?: string }): string {
+    if (selection?.path !== undefined && selection.path !== '') {
+        return selection.path;
+    }
+    if (selection?.profile === 'work') {
+        return workFixture;
+    }
+    if (selection?.profile !== undefined) {
+        return `/nonexistent/${selection.profile}.getreceipt.yaml`;
+    }
+    return configFixture;
+}
 
 function fakeAdapter(canonicalDomain: string): SourceAdapter {
     return {
@@ -74,7 +95,7 @@ async function runAll(args: string[], overrides: Partial<AllCommandEnv> = {}): P
         // Consent is its own concern (consent-gate.test.ts); pass it through here so these tests
         // exercise the batch path. Tests that target the gate override this seam.
         consent: { ensure: () => Promise.resolve() },
-        resolveConfigPath: () => configFixture,
+        resolveConfigPath: fixtureResolver,
         resolver: resolverWith('shop.example'),
         resolveCredential: (value) =>
             Promise.resolve(value instanceof Object ? new Secret('resolved') : new Secret(value)),
@@ -84,6 +105,8 @@ async function runAll(args: string[], overrides: Partial<AllCommandEnv> = {}): P
         ...overrides,
     };
     const cmd = createAllCommand(env);
+    // Standalone command (not via createProgram), so add the global --config/--profile it inherits there.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
 
     let error: unknown;
@@ -95,13 +118,13 @@ async function runAll(args: string[], overrides: Partial<AllCommandEnv> = {}): P
     return { out: out.join(''), err: err.join(''), error };
 }
 
-/** A config whose `default` profile configures exactly `domains`. */
+/** A flat config (one profile per file) configuring exactly `domains`. */
 function configWith(...domains: string[]): ConfigParseResult {
     const sources: Record<string, DomainAuthConfig> = {};
     for (const domain of domains) {
         sources[domain] = { kind: 'password', secret: 'x-not-real' };
     }
-    return { config: { profiles: { default: { sources } } }, warnings: [] };
+    return { config: { sources }, warnings: [] };
 }
 
 describe('all — runs every configured source, continue-on-error (AC #1)', () => {
@@ -301,9 +324,10 @@ describe('all — usage errors', () => {
         expect(err).toContain('boom: unreadable');
     });
 
-    it('exits 1 when the requested profile is not defined', async () => {
+    it('exits 1 when the requested profile file does not exist (per-file model)', async () => {
+        // --profile absent → ~/.getreceipt/absent.yaml; here a deliberately-missing path → a config read error.
         const { err, error } = await runAll(['--profile', 'absent']);
         expect(error).toMatchObject({ exitCode: 1 });
-        expect(err).toContain('profile "absent" is not defined');
+        expect(err).toContain('config file could not be read');
     });
 });
