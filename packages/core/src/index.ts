@@ -23,6 +23,7 @@ export type {
     SourceDescriptor,
     TransportTier,
 } from './source-adapter.js';
+export type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeType } from './challenge.js';
 export { SourceAdapterRegistry } from './registry.js';
 export { SourceResolver } from './resolver.js';
 export { DuplicateSourceError, ReauthRequiredError, UnknownSourceError } from './errors.js';
