@@ -136,7 +136,9 @@ function decodeEntities(text: string): string {
 }
 
 const DOWNLOAD_ANCHOR_RE = new RegExp(
-    `<a\\b[^>]*\\bclass="[^"]*\\b${LISTING.downloadClass}\\b[^"]*"[^>]*\\bhref="${LISTING.pdfHrefPrefix}\\?([^"]*)"`,
+    // Order-independent (the live page emits href before class): a lookahead asserts the btn_download
+    // class is in the tag, then href is captured wherever it sits.
+    `<a\\b(?=[^>]*\\bclass="[^"]*\\b${LISTING.downloadClass}\\b)[^>]*\\bhref="${LISTING.pdfHrefPrefix}\\?([^"]*)"`,
     'gi',
 );
 const COL_CELL_RE = new RegExp(
@@ -146,24 +148,24 @@ const COL_CELL_RE = new RegExp(
 
 /**
  * Parse the (already ISO-8859-15-decoded) `facture_liste.pl` HTML into validated invoice rows. Each
- * `btn_download` anchor is one invoice; its href query carries `mois`+`no_facture`, and the two `col`
- * cells immediately preceding it (in the page region since the previous anchor) carry the month label
- * and amount. The extracted rows are boundary-validated against {@link listingSchema}, so a structural
- * drift (a missing field, a malformed `mois`) throws a secret-safe `TrustBoundaryError` — the live
- * oracle's `contract-drift` signal. A page that renders no matching anchor yields `[]` (an empty
+ * `btn_download` anchor is one invoice; its href query carries `mois`+`no_facture`. The anchor sits in
+ * the row's first `col` cell, so the month label and amount are the next two `col` cells after it (up to
+ * the following anchor). The extracted rows are boundary-validated against {@link listingSchema}, so a
+ * structural drift (a missing field, a malformed `mois`) throws a secret-safe `TrustBoundaryError` — the
+ * live oracle's `contract-drift` signal. A page that renders no matching anchor yields `[]` (an empty
  * window is a success, not drift).
  */
 export function parseListing(html: string, boundary: string): readonly InvoiceDto[] {
     const rows: unknown[] = [];
-    let regionStart = 0;
-    for (const match of html.matchAll(DOWNLOAD_ANCHOR_RE)) {
-        const anchorIndex = match.index ?? 0;
-        const region = html.slice(regionStart, anchorIndex);
-        regionStart = anchorIndex + match[0].length;
+    const anchors = [...html.matchAll(DOWNLOAD_ANCHOR_RE)];
+    for (const [i, match] of anchors.entries()) {
+        const regionStart = (match.index ?? 0) + match[0].length;
+        const regionEnd = anchors[i + 1]?.index ?? html.length;
+        const region = html.slice(regionStart, regionEnd);
         const query = new URLSearchParams(match[1] ?? '');
-        // The two cells closest to the download anchor are this invoice's month label + amount.
+        // The two `col` cells right after the anchor are this invoice's month label + amount.
         const cells = [...region.matchAll(COL_CELL_RE)].map((cell) => cleanText(cell[1] ?? ''));
-        const [period, amount] = cells.slice(-2);
+        const [period, amount] = cells;
         rows.push({
             mois: query.get('mois') ?? '',
             noFacture: query.get('no_facture') ?? '',
