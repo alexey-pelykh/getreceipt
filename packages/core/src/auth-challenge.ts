@@ -18,7 +18,8 @@ export type UnresolvedChallengeReason = 'no-resolver' | 'exhausted';
  * {@link ChallengeResolver} was supplied to answer it (`no-resolver`), or the source chained more
  * than {@link MAX_AUTH_CHALLENGE_ROUNDS} challenges without establishing one (`exhausted`). Carries
  * no secret material — only the redaction-safe {@link ChallengeType}. `collect()` catches it and
- * surfaces a structured `failed` result; it never escapes the pipeline boundary.
+ * surfaces a structured `reauth-required` result pointing at the `login` ceremony (#134); it never
+ * escapes the pipeline boundary.
  */
 export class UnresolvedChallengeError extends Error {
     override readonly name = 'UnresolvedChallengeError';

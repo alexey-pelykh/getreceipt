@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { resolveAuthChallenges } from './auth-challenge.js';
+import { resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';
 import type { ChallengeResolver } from './challenge.js';
 import { ReauthRequiredError } from './errors.js';
 import type { RateLimiter } from './rate-limiter.js';
@@ -33,8 +33,9 @@ export interface CollectRequest {
     /**
      * Resolves an interactive {@link @getreceipt/core!AuthChallenge} (2FA / human step) the adapter
      * emits from `authenticate`. Injected at the composition root; omit for sources that never
-     * challenge. When a challenge appears and none is supplied, the run fails structurally rather
-     * than prompting inline. (#133)
+     * challenge. When a challenge appears and none is supplied — or none can resolve it on this
+     * surface — the run never prompts inline: it surfaces a `reauth-required` result pointing at the
+     * `login` ceremony (#134), rather than hanging or failing opaquely.
      */
     readonly challengeResolver?: ChallengeResolver;
 }
@@ -68,10 +69,15 @@ export interface CollectFailed extends CollectResultBase {
     readonly skipped: readonly ReceiptRef[];
 }
 
-/** The source needs fresh credentials — the single typed re-auth signal, never an inline prompt. */
+/**
+ * The source needs fresh interactive credentials — the single typed re-auth signal, never an
+ * inline prompt. Raised both for a terminally-expired session ({@link ReauthRequiredError}) and for
+ * an interactive challenge that could not be resolved on this surface ({@link UnresolvedChallengeError},
+ * #134); a front-end turns either into the same `login`-remedy line.
+ */
 export interface CollectReauthRequired extends CollectResultBase {
     readonly outcome: 'reauth-required';
-    /** Optional detail from the adapter; carries no secret material. */
+    /** Optional detail; redaction-safe — names at most the challenge TYPE, never a code or descriptor. */
     readonly reason?: string;
 }
 
@@ -87,9 +93,9 @@ type Disposition = 'written' | 'skipped';
  * the re-auth seam, per-source concurrency/pacing, idempotent skipping, and
  * turning any failure into a structured result — so adapters stay thin.
  *
- * Never throws for an expected source-level condition: a dead session yields a
- * `reauth-required` result and any other error yields a `failed` result. The only
- * way out is a {@link CollectResult}.
+ * Never throws for an expected source-level condition: a dead session — or an interactive
+ * challenge that cannot be resolved on this surface (#134) — yields a `reauth-required` result,
+ * and any other error yields a `failed` result. The only way out is a {@link CollectResult}.
  */
 export async function collect(request: CollectRequest): Promise<CollectResult> {
     const { adapter, credentials, writer, rateLimiter } = request;
@@ -176,10 +182,10 @@ function partition(
 }
 
 /**
- * Collapse one-or-more captured errors into a single structured result. Re-auth
- * wins precedence — it is the one actionable signal — so a dead session reported
- * by several receipts surfaces as exactly one `reauth-required`; otherwise the
- * first error becomes the `failed` reason.
+ * Collapse one-or-more captured errors into a single structured result. A re-auth signal wins
+ * precedence — it is the one actionable signal — so whether a source reports a dead session or an
+ * unresolvable interactive challenge (across one or many receipts), it surfaces as exactly one
+ * `reauth-required`; otherwise the first error becomes the `failed` reason.
  */
 function summarizeErrors(
     errors: readonly unknown[],
@@ -188,11 +194,11 @@ function summarizeErrors(
     written: readonly ReceiptRef[],
     skipped: readonly ReceiptRef[],
 ): CollectFailed | CollectReauthRequired {
-    const reauth = errors.find((error): error is ReauthRequiredError => error instanceof ReauthRequiredError);
-    if (reauth !== undefined) {
-        return reauth.reason === undefined
-            ? { outcome: 'reauth-required', source, window }
-            : { outcome: 'reauth-required', source, window, reason: reauth.reason };
+    for (const error of errors) {
+        const reauth = asReauthResult(error, source, window);
+        if (reauth !== undefined) {
+            return reauth;
+        }
     }
     const first = errors[0];
     return {
@@ -204,4 +210,36 @@ function summarizeErrors(
         written,
         skipped,
     };
+}
+
+/**
+ * Recognize the two errors that mean "only fresh interactive credentials recover this source" and
+ * project either onto the shared `reauth-required` result: a terminally-expired session
+ * ({@link ReauthRequiredError}) or an interactive challenge that could not be resolved here
+ * ({@link UnresolvedChallengeError}, #134). Anything else is not a re-auth signal (returns undefined).
+ */
+function asReauthResult(error: unknown, source: string, window: DateRange): CollectReauthRequired | undefined {
+    if (error instanceof ReauthRequiredError) {
+        return error.reason === undefined
+            ? { outcome: 'reauth-required', source, window }
+            : { outcome: 'reauth-required', source, window, reason: error.reason };
+    }
+    if (error instanceof UnresolvedChallengeError) {
+        return { outcome: 'reauth-required', source, window, reason: unresolvedChallengeReason(error) };
+    }
+    return undefined;
+}
+
+/**
+ * A redaction-safe re-auth reason for an unresolvable challenge: it names at most the challenge TYPE
+ * (a closed enum). The prompt, the descriptor, and any response never reach the error, so they
+ * cannot leak through here — the result stays redaction-fenced by construction.
+ */
+function unresolvedChallengeReason(error: UnresolvedChallengeError): string {
+    if (error.reason === 'exhausted') {
+        return 'the source issued too many authentication challenges without completing sign-in';
+    }
+    return error.challengeType === undefined
+        ? 'an interactive authentication challenge could not be completed on this surface'
+        : `an interactive ${error.challengeType} challenge could not be completed on this surface`;
 }
