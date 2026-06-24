@@ -10,6 +10,7 @@ import {
     collect,
     FilesystemReceiptWriter,
     ReauthRequiredError,
+    resolveAuthChallenges,
     SourceAdapterRegistry,
     SourceResolver,
     TrustBoundaryError,
@@ -94,8 +95,10 @@ function pdfBytes(tag: string): Uint8Array {
     return new TextEncoder().encode(`%PDF-1.4\n% pro.free ${tag}\n%%EOF\n`);
 }
 
-function authenticate(): Promise<AuthHandle> {
-    return proFreeFrAdapter.authenticate(creds());
+async function authenticate(): Promise<AuthHandle> {
+    // A SourceAdapter-typed authenticate() returns AuthResult; resolve down to the session handle.
+    // pro.free.fr never emits a challenge, so resolution is a pass-through (#133).
+    return resolveAuthChallenges(await proFreeFrAdapter.authenticate(creds()));
 }
 
 function noopWriter(): ReceiptWriter {
@@ -151,7 +154,7 @@ describe('ProFreeFrAdapter — AC2: authenticate (cookie session)', () => {
             invoicesOk([], (request) => (listRequest = request)),
         );
 
-        const auth = await proFreeFrAdapter.authenticate(creds());
+        const auth = await authenticate();
         await proFreeFrAdapter.list(auth, WIDE);
 
         // do_login receives the JSON credentials AND the seeded cookie jar (so the server authenticates THIS session).
@@ -205,7 +208,7 @@ describe('ProFreeFrAdapter — AC2: authenticate (cookie session)', () => {
     it('projects the authenticated cookie jar (not the password) into a persistable StoredSession token (#17 login ceremony)', async () => {
         server.use(...authOk());
 
-        const auth = await proFreeFrAdapter.authenticate(creds());
+        const auth = await authenticate();
 
         expect(isSessionPersistable(proFreeFrAdapter)).toBe(true);
         if (isSessionPersistable(proFreeFrAdapter)) {

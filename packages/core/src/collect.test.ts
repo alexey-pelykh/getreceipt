@@ -6,7 +6,11 @@ import { http, HttpResponse, server } from '@getreceipt/testing';
 import { collect, ReauthRequiredError, SourceAdapterRegistry, SourceResolver } from './index.js';
 import type {
     ArtifactHandle,
+    AuthChallenge,
     AuthHandle,
+    AuthResult,
+    ChallengeResolution,
+    ChallengeResolver,
     CollectFailed,
     CollectReauthRequired,
     CredentialContext,
@@ -44,7 +48,8 @@ function ref(id: string, issuedAt = '2026-03-01T00:00:00.000Z'): ReceiptRef {
 interface AdapterScript {
     readonly descriptor?: Partial<SourceDescriptor>;
     readonly refs?: readonly ReceiptRef[];
-    readonly authenticate?: () => Promise<AuthHandle>;
+    // Widened to AuthResult (#133) so a script can emit an interactive challenge, not only a session.
+    readonly authenticate?: () => Promise<AuthResult>;
     readonly fetch?: (auth: AuthHandle, ref: ReceiptRef) => Promise<ArtifactHandle>;
 }
 
@@ -336,6 +341,74 @@ describe('collect', () => {
 
         expect(result.outcome).toBe('succeeded');
         expect(peak).toBe(2); // fan-out never exceeded the cap
+    });
+});
+
+// --- interactive auth challenge (#133) ------------------------------------
+// A resolver that answers every challenge with a fixed resolution, recording the challenges it saw.
+function recordingResolver(resolution: ChallengeResolution = { response: '123456' }): {
+    readonly resolver: ChallengeResolver;
+    readonly seen: AuthChallenge[];
+} {
+    const seen: AuthChallenge[] = [];
+    return {
+        resolver: {
+            resolve: async (challenge) => {
+                seen.push(challenge);
+                return resolution;
+            },
+        },
+        seen,
+    };
+}
+
+// An authenticate() that demands one challenge, then resumes to a session.
+function challengingAuth(type: AuthChallenge['type'] = 'otp-totp'): () => Promise<AuthResult> {
+    return async () => ({
+        challenge: { type, prompt: 'Enter the code' },
+        resume: async () => brand<AuthHandle>({ resumed: true }),
+    });
+}
+
+describe('collect — interactive auth challenge (#133)', () => {
+    it('resolves an adapter-issued challenge through the injected resolver, then resumes into list/fetch', async () => {
+        const { resolver, seen } = recordingResolver();
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-totp') });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            challengeResolver: resolver,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('succeeded');
+        // The flow resumed past authenticate into list + fetch.
+        expect(probe.log).toEqual(['authenticate', 'list', 'fetch:inv-1', 'write:inv-1']);
+        expect(seen.map((c) => c.type)).toEqual(['otp-totp']); // the resolver saw exactly the issued challenge
+    });
+
+    it('fails structurally — never throws — when a challenge is issued but no resolver is configured', async () => {
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-sms') });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('failed');
+        // Stopped at authenticate: an unresolved challenge never reaches list.
+        expect(probe.log).toEqual(['authenticate']);
+    });
+
+    it('leaves a non-challenge adapter unaffected: succeeds with no resolver supplied', async () => {
+        const probe = makeAdapter({ refs: [ref('inv-1')] }); // default authenticate returns a bare AuthHandle
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(probe.log).toEqual(['authenticate', 'list', 'fetch:inv-1', 'write:inv-1']);
     });
 });
 

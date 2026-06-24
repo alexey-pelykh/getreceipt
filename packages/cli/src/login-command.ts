@@ -14,7 +14,8 @@ import type {
     SessionStore,
     StoredSession,
 } from '@getreceipt/auth';
-import type { CredentialContext, SourceAdapter, SourceResolver } from '@getreceipt/core';
+import { resolveAuthChallenges } from '@getreceipt/core';
+import type { ChallengeResolver, CredentialContext, SourceAdapter, SourceResolver } from '@getreceipt/core';
 import { Command, CommanderError } from 'commander';
 
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
@@ -44,6 +45,12 @@ export interface LoginCommandEnv {
     readonly resolveLogin: (ref: string) => Promise<LoginSecrets>;
     /** Where the established session is persisted. Defaults to the writable encrypted-file store. */
     readonly sessionStore: SessionStore;
+    /**
+     * Resolves an interactive challenge (2FA / human step) a source may demand mid-login (#133).
+     * Omitted by default — no shipped source challenges yet; a concrete resolver is injected here when
+     * one does. Without it, a challenge surfaces as a usage-level authentication failure.
+     */
+    readonly challengeResolver?: ChallengeResolver;
 }
 
 interface LoginOptions {
@@ -117,9 +124,14 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
 
             let session: StoredSession;
             try {
-                // The adapter runs its real auth (incl. any multi-step token mint) and projects the
-                // just-authenticated handle into the persistable session — the token stays fenced.
-                session = adapter.toStoredSession(await adapter.authenticate(credentials));
+                // The adapter runs its real auth (incl. any multi-step token mint); the orchestrator
+                // resolves any interactive challenge it emits and resumes (#133), then the just-
+                // authenticated handle projects into the persistable session — the token stays fenced.
+                const handle = await resolveAuthChallenges(
+                    await adapter.authenticate(credentials),
+                    env.challengeResolver,
+                );
+                session = adapter.toStoredSession(handle);
             } catch (error) {
                 // Auth failures are typed + secret-free (AuthenticationError); surface the message, never the cause.
                 env.io.writeErr(`✗ ${domain}: ${error instanceof Error ? error.message : 'authentication failed'}\n`);

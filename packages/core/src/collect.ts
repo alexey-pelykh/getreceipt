@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { resolveAuthChallenges } from './auth-challenge.js';
+import type { ChallengeResolver } from './challenge.js';
 import { ReauthRequiredError } from './errors.js';
 import type { RateLimiter } from './rate-limiter.js';
 import { Semaphore } from './semaphore.js';
@@ -28,6 +30,13 @@ export interface CollectRequest {
     readonly fetchConcurrency?: number;
     /** Optional pacing applied to each fetch. */
     readonly rateLimiter?: RateLimiter;
+    /**
+     * Resolves an interactive {@link @getreceipt/core!AuthChallenge} (2FA / human step) the adapter
+     * emits from `authenticate`. Injected at the composition root; omit for sources that never
+     * challenge. When a challenge appears and none is supplied, the run fails structurally rather
+     * than prompting inline. (#133)
+     */
+    readonly challengeResolver?: ChallengeResolver;
 }
 
 interface CollectResultBase {
@@ -95,7 +104,9 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
         // Inside the boundary so an invalid fetchConcurrency surfaces as a structured
         // result rather than an uncaught throw (Semaphore rejects a bad capacity).
         semaphore = new Semaphore(request.fetchConcurrency ?? 1);
-        auth = await adapter.authenticate(credentials);
+        // authenticate may demand an interactive challenge; the orchestrator resolves it through
+        // the injected resolver and resumes, yielding the session (#133).
+        auth = await resolveAuthChallenges(await adapter.authenticate(credentials), request.challengeResolver);
         refs = await adapter.list(auth, window);
     } catch (error) {
         // authenticate/list run before any write, so there is no partial progress.
