@@ -12,6 +12,9 @@ import { ConfigError } from './errors.js';
 /** The auth kinds the config accepts — mirrors core's {@link AuthKind} vocabulary. */
 const AUTH_KINDS: readonly AuthKind[] = ['none', 'password', 'oauth2', 'api-token', 'passkey'];
 
+/** The MFA types the config accepts (the config-facing vocabulary; the auth flow maps these to core's challenge types). */
+const MFA_TYPES: readonly MfaType[] = ['totp', 'sms', 'email', 'push'];
+
 /** Directory under the user's home holding named profiles: `~/.getreceipt/{profile}.yaml`. */
 export const CONFIG_DIR = '.getreceipt';
 
@@ -29,6 +32,29 @@ export interface SecretRef {
 /** A credential: either a {@link SecretRef} (recommended) or an inline literal string (discouraged — triggers a security warning). */
 export type CredentialValue = SecretRef | string;
 
+/**
+ * The second factor a source can require. `totp` is computed locally from a stored {@link MfaConfig.seed};
+ * `sms` / `email` / `push` deliver the code/approval out-of-band, so they store no secret.
+ */
+export type MfaType = 'totp' | 'sms' | 'email' | 'push';
+
+/**
+ * Optional multi-factor step, layered on a source's primary credential and orthogonal to the
+ * per-field {@link DomainAuthConfig.username}/{@link DomainAuthConfig.secret} vs single-item
+ * {@link DomainAuthConfig.ref} choice — an `mfa` block may accompany either.
+ *
+ * - `totp` carries a {@link seed} (the shared secret), resolved through the SAME secret path as any
+ *   other {@link CredentialValue}; the one-time code is derived from it locally.
+ * - `sms` / `email` / `push` carry NO seed — the code/approval arrives out-of-band.
+ */
+export interface MfaConfig {
+    readonly type: MfaType;
+    /** The TOTP shared secret — present (and required) only for `type: totp`; resolved via the existing secret path. */
+    readonly seed?: CredentialValue;
+    /** Opt into the source's "remember this device" offer, when it makes one, to reduce future prompts. */
+    readonly trustDevice?: boolean;
+}
+
 /** Per-domain authentication configuration. */
 export interface DomainAuthConfig {
     readonly kind: AuthKind;
@@ -42,6 +68,8 @@ export interface DomainAuthConfig {
      * with them, and valid only for `kind: password`. The value is the reference string itself.
      */
     readonly ref?: string;
+    /** Optional second factor, orthogonal to the credential choice above (see {@link MfaConfig}). */
+    readonly mfa?: MfaConfig;
 }
 
 /**
@@ -96,6 +124,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAuthKind(value: unknown): value is AuthKind {
     return typeof value === 'string' && (AUTH_KINDS as readonly string[]).includes(value);
+}
+
+function isMfaType(value: unknown): value is MfaType {
+    return typeof value === 'string' && (MFA_TYPES as readonly string[]).includes(value);
 }
 
 /**
@@ -187,9 +219,21 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
         );
     }
 
-    const result: { kind: AuthKind; username?: CredentialValue; secret?: CredentialValue; ref?: string } = {
+    const result: {
+        kind: AuthKind;
+        username?: CredentialValue;
+        secret?: CredentialValue;
+        ref?: string;
+        mfa?: MfaConfig;
+    } = {
         kind: auth.kind,
     };
+
+    // `mfa` is orthogonal to the credential choice below — parse it BEFORE the single-item `ref`
+    // early-return so it survives both that path and the per-field path.
+    if (auth.mfa !== undefined) {
+        result.mfa = parseMfa(auth.mfa, `${authPath}.mfa`, warnings);
+    }
 
     if (auth.ref !== undefined) {
         // The single-item form reads a LOGIN item's USERNAME + PASSWORD fields, so it only makes
@@ -262,6 +306,58 @@ function parseCredential(raw: unknown, path: string, warnings: SecurityWarning[]
         return raw;
     }
     throw new ConfigError('expected a string literal or a `{ ref }` secret reference', path);
+}
+
+/**
+ * Parse the optional `mfa` sub-block. `type` selects the second factor; `totp` REQUIRES a `seed`
+ * (the shared secret, later resolved through the SAME path as any other credential) while
+ * `sms`/`email`/`push` take NO seed — the code/approval arrives out-of-band, so a seed on those is a
+ * config error rather than a silently-ignored field. An inline-literal seed warns exactly like an
+ * inline password (it routes through {@link parseCredential}). Throws {@link ConfigError}, which
+ * never echoes a configured value.
+ */
+function parseMfa(raw: unknown, path: string, warnings: SecurityWarning[]): MfaConfig {
+    if (!isRecord(raw)) {
+        throw new ConfigError('expected an `mfa` mapping', path);
+    }
+    if (!isMfaType(raw.type)) {
+        throw new ConfigError(`unknown mfa type; expected one of ${MFA_TYPES.join(', ')}`, `${path}.type`);
+    }
+    const type = raw.type;
+    const result: { type: MfaType; seed?: CredentialValue; trustDevice?: boolean } = { type };
+    const trustDevice = parseTrustDevice(raw.trustDevice, `${path}.trustDevice`);
+    if (trustDevice !== undefined) {
+        result.trustDevice = trustDevice;
+    }
+
+    if (type === 'totp') {
+        // TOTP codes are computed from the seed — without one there is nothing to compute.
+        if (raw.seed === undefined) {
+            throw new ConfigError('`mfa.type: totp` requires a `seed` (the TOTP shared secret)', `${path}.seed`);
+        }
+        result.seed = parseCredential(raw.seed, `${path}.seed`, warnings);
+        return result;
+    }
+
+    // sms | email | push: the code/approval is delivered out-of-band, so there is no seed to store.
+    if (raw.seed !== undefined) {
+        throw new ConfigError(
+            `\`mfa.type: ${type}\` takes no \`seed\` — its code is delivered out-of-band, not computed from a stored secret`,
+            `${path}.seed`,
+        );
+    }
+    return result;
+}
+
+/** Parse an optional `trustDevice` flag: a boolean, or undefined when absent. Throws {@link ConfigError} for any non-boolean. */
+function parseTrustDevice(raw: unknown, path: string): boolean | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    if (typeof raw === 'boolean') {
+        return raw;
+    }
+    throw new ConfigError('`trustDevice` must be a boolean', path);
 }
 
 /** Resolve the home-default config path: `~/.getreceipt.yaml` (precedence tier 4 — the unnamed profile). */

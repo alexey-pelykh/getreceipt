@@ -85,6 +85,44 @@ describe('renderConfigShow', () => {
         expect(output).not.toContain('[redacted]');
     });
 
+    it('renders an mfa block: a totp seed reference shown unresolved, plus type and trustDevice', () => {
+        const output = renderConfigShow(
+            configWith({
+                'free.fr': {
+                    kind: 'password',
+                    secret: { ref: 'op://Personal/free.fr/password' },
+                    mfa: { type: 'totp', seed: { ref: 'op://Personal/free.fr/totp' }, trustDevice: true },
+                },
+            }),
+            'default',
+        );
+        expect(output).toContain('type: totp');
+        // The seed reference is shown UNRESOLVED (the ref string, never dereferenced).
+        expect(output).toContain('op://Personal/free.fr/totp');
+        expect(output).toContain('trustDevice: true');
+    });
+
+    it('masks an inline-literal mfa seed via the Secret fence (a seed is secret material)', () => {
+        const output = renderConfigShow(
+            configWith({
+                'free.fr': { kind: 'password', mfa: { type: 'totp', seed: INLINE_LITERAL } },
+            }),
+            'default',
+        );
+        // The raw seed never reaches output; the masked placeholder does.
+        expect(output).not.toContain(INLINE_LITERAL);
+        expect(output).toContain('[redacted]');
+        expect(output).toContain('type: totp');
+    });
+
+    it('renders a seedless mfa block (sms/email/push) with just its type', () => {
+        const output = renderConfigShow(
+            configWith({ 'shop.example': { kind: 'password', mfa: { type: 'sms' } } }),
+            'default',
+        );
+        expect(output).toContain('type: sms');
+    });
+
     it('labels the output with the active profile name (display only — the file IS the profile)', () => {
         // The file IS one profile, so the name is a header label, not a key lookup; any label renders.
         const output = renderConfigShow(

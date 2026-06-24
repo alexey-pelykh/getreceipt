@@ -83,6 +83,8 @@ sources: # the sources this profile can collect from
 - **`<domain>.auth.ref`** — optional **single-item** 1Password reference that resolves BOTH username
   and secret from one LOGIN item (see [Credentials](#credentials)). Mutually exclusive with
   `username`/`secret`; valid only for `kind: password`.
+- **`<domain>.auth.mfa`** — optional **second factor** (see [Two-factor authentication](#two-factor-authentication-mfa)).
+  Orthogonal to the credential choice above — it may accompany either `username`/`secret` or `ref`.
 
 Validate the file at any time — non-zero exit when it is invalid, `--json` for a machine-readable
 verdict:
@@ -195,6 +197,39 @@ secret: 'your-secret-here' # a plain string — stored verbatim in the config fi
 A bare string is taken as the secret value itself. It is supported but **discouraged**: the value
 sits in the config file in plain text, so `config validate` reports an `inline-credential` security
 warning and `config show` masks it. Prefer one of the `ref` forms above.
+
+## Two-factor authentication (MFA)
+
+A source that asks for a second factor after the password declares it under an optional `mfa` block.
+It is **orthogonal** to the credential choice above — add it alongside either `username`/`secret` or a
+single-item `ref`, and sources without it are unaffected.
+
+```yaml
+auth:
+  kind: password
+  username: you@example.com
+  secret:
+    ref: op://Personal/example.com/password
+  mfa:
+    type: totp # one of: totp, sms, email, push
+    seed: # totp only — the shared secret, as a credential reference
+      ref: op://Personal/example.com/totp
+    trustDevice: true # optional — opt into a "remember this device" offer
+```
+
+- **`type`** — `totp`, `sms`, `email`, or `push`.
+  - **`totp`** computes the one-time code locally from a **`seed`** (the shared secret you were given
+    when enrolling). The `seed` is a **credential reference** resolved through the **same path** as any
+    other secret — `op://…`, `encrypted-file:…`, or an inline literal (see [Credentials](#credentials))
+    — so an inline-literal seed reports the same `inline-credential` warning and is masked by
+    `config show`. A `totp` block **requires** a `seed`.
+  - **`sms`**, **`email`**, and **`push`** receive the code or approval out-of-band, so they take **no
+    `seed`** — providing one is a validation error.
+- **`trustDevice`** — optional boolean. When the source offers to remember the device, set this to opt
+  in and reduce future prompts.
+
+`config validate` checks the block (unknown type, a `seed` on a non-`totp` type, a `totp` without a
+seed, or a non-boolean `trustDevice` all fail) without ever echoing the seed.
 
 ## Where receipts are written
 
