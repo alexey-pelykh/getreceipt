@@ -27,10 +27,30 @@ import { describe, expect, it, vi } from 'vitest';
 import { ConsentRequiredError, createConsentGate } from './consent-gate.js';
 import { createFromCommand } from './from-command.js';
 import type { FromCommandEnv } from './from-command.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 const configFixture = fileURLToPath(new URL('./__fixtures__/from.getreceipt.yaml', import.meta.url));
+const workFixture = fileURLToPath(new URL('./__fixtures__/from.work.getreceipt.yaml', import.meta.url));
 
 const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF"
+
+/**
+ * A selection-aware `resolveConfigPath` mapping the per-file model onto the fixtures: `--config` path
+ * wins; `--profile work` → the work fixture; an unknown profile → a deliberately-missing path; else
+ * the default `from` fixture.
+ */
+function fixtureResolver(selection?: { path?: string; profile?: string }): string {
+    if (selection?.path !== undefined && selection.path !== '') {
+        return selection.path;
+    }
+    if (selection?.profile === 'work') {
+        return workFixture;
+    }
+    if (selection?.profile !== undefined) {
+        return `/nonexistent/${selection.profile}.getreceipt.yaml`;
+    }
+    return configFixture;
+}
 
 function ref(id: string, day: number, title?: string): ReceiptRef {
     const issuedAt = new Date(Date.UTC(2024, 0, day, 9, 0, 0));
@@ -110,13 +130,15 @@ async function runFrom(args: string[], overrides: Partial<FromCommandEnv> = {}):
         // Consent is its own concern (consent-gate.test.ts); pass it through here so these tests
         // exercise the collection path. Tests that target the gate override this seam.
         consent: { ensure: () => Promise.resolve() },
-        resolveConfigPath: () => configFixture,
+        resolveConfigPath: fixtureResolver,
         resolver: resolverWith(fakeAdapter()),
         resolveCredential: (value) =>
             Promise.resolve(value instanceof Object ? new Secret('resolved') : new Secret(value)),
         ...overrides,
     };
     const cmd = createFromCommand(env);
+    // Standalone command (not via createProgram), so add the global --config/--profile it inherits there.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
 
     let error: unknown;
@@ -217,6 +239,39 @@ describe('from <domain> — collection (AC #1)', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+
+    it('--profile selects a FILE (the work profile), resolving its credentials from that file', async () => {
+        // The work fixture configures shop.example with the username bob@shop.example; resolving the
+        // username (a literal → itself) proves the work FILE was loaded, not the default.
+        let received: CredentialContext | undefined;
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-profile-'));
+        try {
+            const { error } = await runFrom(['shop.example', '--profile', 'work', '--out', dir], {
+                resolver: resolverWith(fakeAdapter({ onAuthenticate: (c) => (received = c) })),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(error).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        expect(fromCredentialContext(received!).username).toBe('bob@shop.example');
+    });
+
+    it('--config selects an explicit file, overriding the default resolution', async () => {
+        let received: CredentialContext | undefined;
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-config-'));
+        try {
+            const { error } = await runFrom(['shop.example', '--config', workFixture, '--out', dir], {
+                resolver: resolverWith(fakeAdapter({ onAuthenticate: (c) => (received = c) })),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            expect(error).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        // The work fixture's bob@shop.example proves --config loaded that explicit file.
+        expect(fromCredentialContext(received!).username).toBe('bob@shop.example');
+    });
 });
 
 describe('from --json — structured result parity (AC #2)', () => {
@@ -316,10 +371,11 @@ describe('from — exit-code ladder (AC #3)', () => {
         expect(err).toContain('No source adapter is registered');
     });
 
-    it('exits 1 (usage) when the requested profile is not defined', async () => {
+    it('exits 1 (usage) when the requested profile file does not exist (per-file model)', async () => {
+        // --profile absent → ~/.getreceipt/absent.yaml; here a deliberately-missing path → a config read error.
         const { err, error } = await runFrom(['shop.example', '--profile', 'absent']);
         expect(error).toMatchObject({ exitCode: 1 });
-        expect(err).toContain('profile "absent" is not defined');
+        expect(err).toContain('config file could not be read');
     });
 
     it('exits 1 (usage) on an incomplete window', async () => {

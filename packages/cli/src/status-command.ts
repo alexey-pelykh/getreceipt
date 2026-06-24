@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { Command, CommanderError } from 'commander';
 
-import { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
+import { resolveActiveProfile } from './config-render.js';
 import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError } from './operation-runner.js';
 import { defaultAuthStatusDeps, runAuthStatus, type AuthStatusDeps } from './operations.js';
+import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 import { renderStatusJson, renderStatusText, type StatusReport } from './status-render.js';
 
 /**
@@ -39,12 +40,15 @@ export function createStatusCommand(overrides: Partial<StatusCommandEnv> = {}): 
 
     return new Command('status')
         .description('Show stored-session / auth status per configured source.')
-        .option('-p, --profile <name>', 'config profile to report status for', DEFAULT_PROFILE)
         .option('--json', 'emit the structured status report as JSON')
-        .action(async (options: { profile?: string; json?: boolean }) => {
+        .action(async (options: { json?: boolean }, command: Command) => {
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
             let report: StatusReport;
             try {
-                report = await runAuthStatus({ profile: resolveActiveProfile(options.profile) }, env);
+                report = await runAuthStatus(
+                    { profile: resolveActiveProfile(resolveGlobalOptions(command).profile), selection },
+                    env,
+                );
             } catch (error) {
                 if (error instanceof OperationError) {
                     env.io.writeErr(`✗ ${error.message}\n`);

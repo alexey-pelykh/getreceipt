@@ -9,9 +9,19 @@ import { describe, expect, it } from 'vitest';
 
 import { createConfigCommand } from './config-command.js';
 import type { ConfigCommandEnv } from './config-command.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 const validFixture = fileURLToPath(new URL('./__fixtures__/valid.getreceipt.yaml', import.meta.url));
+const workFixture = fileURLToPath(new URL('./__fixtures__/valid.work.getreceipt.yaml', import.meta.url));
 const invalidFixture = fileURLToPath(new URL('./__fixtures__/invalid.getreceipt.yaml', import.meta.url));
+
+/** Selection-aware resolver: `--config` path wins; `--profile work` → the work fixture; else the default valid fixture. */
+function fixtureResolver(selection?: { path?: string; profile?: string }): string {
+    if (selection?.path !== undefined && selection.path !== '') {
+        return selection.path;
+    }
+    return selection?.profile === 'work' ? workFixture : validFixture;
+}
 
 /**
  * Build the `config` command and genuinely execute it through Commander — capturing
@@ -28,8 +38,12 @@ async function runConfig(
         io: { writeOut: (text) => out.push(text), writeErr: (text) => err.push(text) },
         ...overrides,
     });
+    // Standalone command tree (not via createProgram): the program adds the global --config/--profile
+    // to the root AND every (sub)command, so mirror that on the `config` subcommands here.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
     for (const sub of cmd.commands) {
+        addGlobalConfigOptions(sub);
         sub.exitOverride();
     }
 
@@ -56,25 +70,30 @@ describe('config show', () => {
         expect(out).not.toContain('inline-token-value');
     });
 
-    it('--profile selects which profile is shown', async () => {
+    it('--profile selects which FILE is shown (the work profile)', async () => {
         const { out, error } = await runConfig(['show', '--profile', 'work'], {
-            resolveConfigPath: () => validFixture,
+            resolveConfigPath: fixtureResolver,
         });
 
         expect(error).toBeUndefined();
+        expect(out).toContain('profile: work');
         expect(out).toContain('corp.example');
         expect(out).toContain('WORK_PASSWORD');
         expect(out).not.toContain('free.fr');
     });
 
-    it('exits non-zero on an unknown profile (message names it; no config on stdout)', async () => {
-        const { out, err, error } = await runConfig(['show', '--profile', 'nope'], {
-            resolveConfigPath: () => validFixture,
-        });
+    it('exits non-zero when the requested profile FILE is missing (per-file model)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-cli-show-missing-'));
+        try {
+            // --config pins an explicit missing path; show can't read it → exit 1, nothing on stdout.
+            const { out, err, error } = await runConfig(['show', '--config', join(dir, 'absent.yaml')]);
 
-        expect(error).toMatchObject({ exitCode: 1 });
-        expect(err).toContain('nope');
-        expect(out).toBe('');
+            expect(error).toMatchObject({ exitCode: 1 });
+            expect(err).toContain('could not be read');
+            expect(out).toBe('');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     it('exits non-zero when the config file cannot be loaded', async () => {
@@ -186,16 +205,9 @@ describe('leakage-lint coverage (#7 over config output)', () => {
         const path = join(dir, 'config.yaml');
         writeFileSync(
             path,
-            [
-                'profiles:',
-                '  default:',
-                '    sources:',
-                '      shop.example:',
-                '        auth:',
-                '          kind: api-token',
-                `          secret: ${stripeShaped}`,
-                '',
-            ].join('\n'),
+            ['sources:', '  shop.example:', '    auth:', '      kind: api-token', `      secret: ${stripeShaped}`, ''].join(
+                '\n',
+            ),
         );
         return { dir, path };
     }
@@ -234,14 +246,12 @@ describe('leakage-lint coverage (#7 over config output)', () => {
             writeFileSync(
                 path,
                 [
-                    'profiles:',
-                    '  default:',
-                    '    sources:',
-                    '      shop.example:',
-                    '        auth:',
-                    '          kind: api-token',
-                    '          secret:',
-                    `            ref: ${stripeShaped}`,
+                    'sources:',
+                    '  shop.example:',
+                    '    auth:',
+                    '      kind: api-token',
+                    '      secret:',
+                    `        ref: ${stripeShaped}`,
                     '',
                 ].join('\n'),
             );

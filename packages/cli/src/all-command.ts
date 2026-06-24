@@ -8,6 +8,7 @@ import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError } from './operation-runner.js';
 import { DEFAULT_CONCURRENCY, defaultCollectionDeps, runCollectAll, type CollectionDeps } from './operations.js';
+import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 import { traceAdapter } from './verbose-trace.js';
 import { parseWindow } from './window.js';
 
@@ -26,7 +27,6 @@ export interface AllCommandEnv extends CollectionDeps {
 interface AllOptions {
     readonly since?: string;
     readonly until?: string;
-    readonly profile?: string;
     readonly out?: string;
     readonly json?: boolean;
     readonly concurrency?: string;
@@ -70,14 +70,13 @@ export function createAllCommand(overrides: Partial<AllCommandEnv> = {}): Comman
         .description('Collect receipts from every configured source (continue-on-error, capped concurrency).')
         .option('--since <date>', 'start of the collection window (ISO date, YYYY-MM-DD)')
         .option('--until <date>', 'end of the collection window (ISO date, YYYY-MM-DD)')
-        .option('-p, --profile <name>', 'config profile supplying credentials', DEFAULT_PROFILE)
         .option('-o, --out <dir>', 'directory to write receipts into', '.')
         .option('--concurrency <n>', `max sources collected at once (default ${DEFAULT_CONCURRENCY})`)
         .option('--json', 'emit the structured batch report as JSON')
         .option('--verbose', 'stream secret-fenced stage diagnostics to stderr')
         .option('--debug', 'alias for --verbose')
         .option('--accept-consent', 'record the one-time consent acknowledgment non-interactively (for CI / piped use)')
-        .action(async (options: AllOptions) => {
+        .action(async (options: AllOptions, command: Command) => {
             // Consent gate FIRST — ONCE, before the fan-out touches any service with credentials (#32).
             try {
                 await env.consent.ensure({ acceptFlag: options.acceptConsent === true });
@@ -94,12 +93,15 @@ export function createAllCommand(overrides: Partial<AllCommandEnv> = {}): Comman
 
             const window = parseWindow(env.io, options.since, options.until, 'getreceipt.all');
             const concurrency = parseConcurrency(env.io, options.concurrency);
-            const profile = resolveActiveProfile(options.profile);
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            // The label is the profile NAME (for the report); the FILE it selects is in `selection`.
+            const profile = resolveActiveProfile(resolveGlobalOptions(command).profile);
             const verbose = options.verbose === true || options.debug === true;
             const outDir = options.out ?? '.';
 
             const params = {
                 profile,
+                selection,
                 concurrency,
                 outDir,
                 ...(window === undefined ? {} : { window }),

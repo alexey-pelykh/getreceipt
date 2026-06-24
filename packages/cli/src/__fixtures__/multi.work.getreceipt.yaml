@@ -1,0 +1,8 @@
+# The "work" profile as a SEPARATE file (per-file model) — gives the --profile / --config selector
+# something to switch to in the all / sources / status command tests.
+sources:
+  shop.example:
+    auth:
+      kind: password
+      username: bob@shop.example
+      secret: hunter2-work-only

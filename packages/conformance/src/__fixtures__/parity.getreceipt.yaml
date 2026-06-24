@@ -1,15 +1,13 @@
-# Config exercised by the CLI↔MCP parity gate. `shop.example` matches the fake adapter
-# (canonical domain); `ghost.example` is configured but unregistered, so a batch run yields a
-# mixed report (one ok, one per-source error) — proving parity holds on the non-trivial shape too.
-profiles:
-  default:
-    sources:
-      shop.example:
-        auth:
-          kind: password
-          username: alice@shop.example
-          secret: hunter2-not-real
-      ghost.example:
-        auth:
-          kind: api-token
-          secret: token-not-real
+# Flat config exercised by the CLI↔MCP parity gate (the "default" profile). `shop.example` matches
+# the fake adapter (canonical domain); `ghost.example` is configured but unregistered, so a batch run
+# yields a mixed report (one ok, one per-source error) — proving parity holds on the non-trivial shape too.
+sources:
+  shop.example:
+    auth:
+      kind: password
+      username: alice@shop.example
+      secret: hunter2-not-real
+  ghost.example:
+    auth:
+      kind: api-token
+      secret: token-not-real

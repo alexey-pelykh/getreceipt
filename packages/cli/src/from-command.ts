@@ -9,6 +9,7 @@ import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError } from './operation-runner.js';
 import { defaultCollectionDeps, runCollect, type CollectionDeps, type CollectParams } from './operations.js';
+import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 import { traceAdapter } from './verbose-trace.js';
 import { parseWindow } from './window.js';
 
@@ -36,7 +37,6 @@ export interface FromCommandEnv {
 interface FromOptions {
     readonly since?: string;
     readonly until?: string;
-    readonly profile?: string;
     readonly out?: string;
     readonly json?: boolean;
     readonly verbose?: boolean;
@@ -69,13 +69,12 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
         .argument('<domain>', 'source domain to collect from (canonical or alias)')
         .option('--since <date>', 'start of the collection window (ISO date, YYYY-MM-DD)')
         .option('--until <date>', 'end of the collection window (ISO date, YYYY-MM-DD)')
-        .option('-p, --profile <name>', 'config profile supplying credentials', DEFAULT_PROFILE)
         .option('-o, --out <dir>', 'directory to write receipts into', '.')
         .option('--json', 'emit the structured operation result as JSON')
         .option('--verbose', 'stream secret-fenced stage diagnostics to stderr')
         .option('--debug', 'alias for --verbose')
         .option('--accept-consent', 'record the one-time consent acknowledgment non-interactively (for CI / piped use)')
-        .action(async (domain: string, options: FromOptions) => {
+        .action(async (domain: string, options: FromOptions, command: Command) => {
             // Consent gate FIRST — before any service is touched with the user's credentials (#32).
             try {
                 await env.consent.ensure({ acceptFlag: options.acceptConsent === true });
@@ -87,13 +86,16 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
             }
 
             const window = parseWindow(env.io, options.since, options.until, 'getreceipt.from');
-            const profile = options.profile ?? DEFAULT_PROFILE;
+            const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
+            // The label is the profile NAME (for the report); the FILE it selects is in `selection`.
+            const profile = resolveGlobalOptions(command).profile ?? DEFAULT_PROFILE;
             const verbose = options.verbose === true || options.debug === true;
             const outDir = options.out ?? '.';
 
             const params: CollectParams = {
                 source: domain,
                 profile,
+                selection,
                 outDir,
                 ...(window === undefined ? {} : { window }),
             };

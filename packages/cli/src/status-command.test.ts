@@ -10,8 +10,24 @@ import { describe, expect, it } from 'vitest';
 import { createStatusCommand } from './status-command.js';
 import type { StatusCommandEnv } from './status-command.js';
 import type { StatusReport } from './status-render.js';
+import { addGlobalConfigOptions } from './resolve-options.js';
 
 const configFixture = fileURLToPath(new URL('./__fixtures__/multi.getreceipt.yaml', import.meta.url));
+const workFixture = fileURLToPath(new URL('./__fixtures__/multi.work.getreceipt.yaml', import.meta.url));
+
+/** Selection-aware resolver: `--config` path wins; `--profile work` → the work fixture; unknown profile → a missing path; else the default. */
+function fixtureResolver(selection?: { path?: string; profile?: string }): string {
+    if (selection?.path !== undefined && selection.path !== '') {
+        return selection.path;
+    }
+    if (selection?.profile === 'work') {
+        return workFixture;
+    }
+    if (selection?.profile !== undefined) {
+        return `/nonexistent/${selection.profile}.getreceipt.yaml`;
+    }
+    return configFixture;
+}
 
 /** Fixed clock so the {@link ReauthDetector} verdict is deterministic. */
 const NOW = new Date('2024-06-01T00:00:00.000Z');
@@ -54,13 +70,15 @@ async function runStatus(args: string[], overrides: Partial<StatusCommandEnv> = 
     const err: string[] = [];
     const env: Partial<StatusCommandEnv> = {
         io: { writeOut: (t) => out.push(t), writeErr: (t) => err.push(t) },
-        resolveConfigPath: () => configFixture,
+        resolveConfigPath: fixtureResolver,
         resolver: resolverWithShop(),
         sessionStore: new KeyringSessionStore(new InMemoryKeyring()),
         now: () => NOW,
         ...overrides,
     };
     const cmd = createStatusCommand(env);
+    // Standalone command (not via createProgram), so add the global --config/--profile it inherits there.
+    addGlobalConfigOptions(cmd);
     cmd.exitOverride();
 
     let error: unknown;
@@ -183,10 +201,18 @@ describe('status — usage errors', () => {
         expect(err).toContain('boom: unreadable');
     });
 
-    it('exits 1 when the requested profile is not defined', async () => {
-        const config: ConfigParseResult = { config: { profiles: { default: { sources: {} } } }, warnings: [] };
-        const { err, error } = await runStatus(['--profile', 'absent'], { loadConfig: () => config });
+    it('exits 1 when the requested profile file does not exist (per-file model)', async () => {
+        // --profile absent → ~/.getreceipt/absent.yaml; here a deliberately-missing path → a config read error.
+        const { err, error } = await runStatus(['--profile', 'absent']);
         expect(error).toMatchObject({ exitCode: 1 });
-        expect(err).toContain('profile "absent" is not defined');
+        expect(err).toContain('config file could not be read');
+    });
+
+    it('reports an empty source list (exit 0) for a file that configures no sources', async () => {
+        // A readable file with no sources is not an error — there is simply nothing to report.
+        const empty: ConfigParseResult = { config: { sources: {} }, warnings: [] };
+        const { out, error } = await runStatus(['--json'], { loadConfig: () => empty });
+        expect(error).toBeUndefined();
+        expect((JSON.parse(out) as StatusReport).sources).toEqual([]);
     });
 });

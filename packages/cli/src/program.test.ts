@@ -133,7 +133,7 @@ function workingFromEnv(collected: CollectResult | (() => Promise<CollectResult>
     const registry = new SourceAdapterRegistry();
     registry.register(adapter);
     const config: ConfigParseResult = {
-        config: { profiles: { default: { sources: { 'shop.example': { kind: 'password', secret: 'inline' } } } } },
+        config: { sources: { 'shop.example': { kind: 'password', secret: 'inline' } } },
         warnings: [],
     };
     return {

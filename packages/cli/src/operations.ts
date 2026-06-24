@@ -6,10 +6,17 @@ import {
     ReauthDetector,
     SessionStoreError,
     createSessionStore,
-    defaultConfigPath,
     loadConfig as authLoadConfig,
+    resolveConfigFilePath,
 } from '@getreceipt/auth';
-import type { ConfigParseResult, CredentialValue, Secret, SessionStore, StoredSession } from '@getreceipt/auth';
+import type {
+    ConfigParseResult,
+    ConfigSelection,
+    CredentialValue,
+    Secret,
+    SessionStore,
+    StoredSession,
+} from '@getreceipt/auth';
 import { FilesystemReceiptWriter, Semaphore, collect as coreCollect, listSources } from '@getreceipt/core';
 import type {
     CollectRequest,
@@ -67,7 +74,10 @@ export interface CollectionDeps extends ResolveSourceDeps {
 export interface CollectParams {
     /** Canonical or alias domain of the source to collect from. */
     readonly source: string;
+    /** The profile NAME — used only as the report/display label (`default` when no `--profile`); the file it selects comes from {@link selection}. */
     readonly profile: string;
+    /** Which config file to load (`--config`/`--profile`/env/home default). Omit for the home default. */
+    readonly selection?: ConfigSelection;
     /** Explicit collection window; omit to let the adapter's default window apply. */
     readonly window?: OperationWindow;
     readonly outDir: string;
@@ -85,7 +95,7 @@ export function runCollect(params: CollectParams, deps: CollectionDeps): Promise
         params.window === undefined
             ? { source: params.source, profile: params.profile }
             : { source: params.source, profile: params.profile, window: params.window };
-    return runOperation(spec, toRunnerDeps(deps, params.outDir));
+    return runOperation(spec, params.selection, toRunnerDeps(deps, params.outDir));
 }
 
 /** Bind the directory-taking {@link CollectionDeps} into the writer-bound {@link OperationRunnerDeps} {@link runOperation} expects. */
@@ -102,9 +112,12 @@ function toRunnerDeps(deps: CollectionDeps, outDir: string): OperationRunnerDeps
     };
 }
 
-/** Inputs for one batch collection run over every source configured under {@link CollectAllParams.profile}. */
+/** Inputs for one batch collection run over every source configured in the selected config file. */
 export interface CollectAllParams {
+    /** The profile NAME — used only as the report/display label (`default` when no `--profile`); the file it selects comes from {@link selection}. */
     readonly profile: string;
+    /** Which config file to load (`--config`/`--profile`/env/home default). Omit for the home default. */
+    readonly selection?: ConfigSelection;
     /** Explicit collection window applied to every source; omit to let each source's default apply. */
     readonly window?: OperationWindow;
     readonly concurrency: number;
@@ -120,18 +133,14 @@ export interface CollectAllParams {
  * report, never thrown — one source can't strand the rest.
  */
 export async function runCollectAll(params: CollectAllParams, deps: CollectionDeps): Promise<BatchReport> {
-    // Pre-flight the config ONCE so a missing file / undefined profile is a single error,
+    // Pre-flight the config ONCE so a missing/unreadable file is a single error,
     // not the same error repeated per source.
-    const path = deps.resolveConfigPath();
+    const path = deps.resolveConfigPath(params.selection);
     let parsed: ConfigParseResult;
     try {
         parsed = deps.loadConfig(path);
     } catch (error) {
         throw new OperationError('config', `${path}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    const configured = parsed.config.profiles[params.profile];
-    if (configured === undefined) {
-        throw new OperationError('not-configured', `profile "${params.profile}" is not defined in ${path}`);
     }
 
     const runnerDeps = toRunnerDeps(deps, params.outDir);
@@ -140,8 +149,8 @@ export async function runCollectAll(params: CollectAllParams, deps: CollectionDe
     // Promise.all preserves positional (config-key) order regardless of completion order,
     // so the report's source order is deterministic — load-bearing for CLI↔MCP parity.
     const sources = await Promise.all(
-        Object.keys(configured.sources).map((source) =>
-            semaphore.run(() => runOneSource(source, params.profile, params.window, runnerDeps)),
+        Object.keys(parsed.config.sources).map((source) =>
+            semaphore.run(() => runOneSource(source, params.profile, params.selection, params.window, runnerDeps)),
         ),
     );
 
@@ -163,12 +172,13 @@ export async function runCollectAll(params: CollectAllParams, deps: CollectionDe
 async function runOneSource(
     source: string,
     profile: string,
+    selection: ConfigSelection | undefined,
     window: OperationWindow | undefined,
     deps: OperationRunnerDeps,
 ): Promise<BatchSourceResult> {
     const spec: OperationSpec = window === undefined ? { source, profile } : { source, profile, window };
     try {
-        const result = await runOperation(spec, deps);
+        const result = await runOperation(spec, selection, deps);
         return { source, ok: true, result };
     } catch (error) {
         if (error instanceof OperationError) {
@@ -184,12 +194,15 @@ async function runOneSource(
 
 /** Inputs for a sources listing. */
 export interface ListSourcesParams {
+    /** The profile NAME — used only as the report/display label (`default` when no `--profile`); the file it selects comes from {@link selection}. */
     readonly profile: string;
+    /** Which config file to load (`--config`/`--profile`/env/home default). Omit for the home default. */
+    readonly selection?: ConfigSelection;
 }
 
 /** Collaborators for {@link runListSources}: the adapter registry + the config seam used for configured-state. */
 export interface ListSourcesDeps {
-    readonly resolveConfigPath: () => string;
+    readonly resolveConfigPath: (selection?: ConfigSelection) => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** The registry whose adapters are listed. */
     readonly registry: SourceAdapterRegistry;
@@ -206,7 +219,7 @@ export interface ListSourcesDeps {
  * `not-configured` and a note is routed to {@link ListSourcesDeps.onWarn}. Never throws.
  */
 export function runListSources(params: ListSourcesParams, deps: ListSourcesDeps): SourcesReport {
-    const configuredKeys = loadConfiguredKeys(deps, params.profile);
+    const configuredKeys = loadConfiguredKeys(deps, params.selection);
     const sources: SourceView[] = listSources(deps.registry, deps.verification).map((listing) => ({
         ...listing,
         configured: isConfigured(listing.canonicalDomain, listing.aliasDomains, configuredKeys),
@@ -215,12 +228,12 @@ export function runListSources(params: ListSourcesParams, deps: ListSourcesDeps)
 }
 
 /**
- * The normalized (lowercased) source keys configured under `profile` — the set membership the
- * `configured` flag is computed against. A config that cannot be read, or a profile that is not
- * defined, yields an empty set plus a non-fatal note via {@link ListSourcesDeps.onWarn}.
+ * The normalized (lowercased) source keys configured in the selected file — the set membership the
+ * `configured` flag is computed against. A config that cannot be read yields an empty set plus a
+ * non-fatal note via {@link ListSourcesDeps.onWarn}.
  */
-function loadConfiguredKeys(deps: ListSourcesDeps, profile: string): ReadonlySet<string> {
-    const path = deps.resolveConfigPath();
+function loadConfiguredKeys(deps: ListSourcesDeps, selection: ConfigSelection | undefined): ReadonlySet<string> {
+    const path = deps.resolveConfigPath(selection);
     let parsed: ConfigParseResult;
     try {
         parsed = deps.loadConfig(path);
@@ -230,12 +243,7 @@ function loadConfiguredKeys(deps: ListSourcesDeps, profile: string): ReadonlySet
         );
         return new Set();
     }
-    const configured = parsed.config.profiles[profile];
-    if (configured === undefined) {
-        deps.onWarn?.(`⚠ profile "${profile}" is not defined in ${path}; sources shown as not-configured\n`);
-        return new Set();
-    }
-    return new Set(Object.keys(configured.sources).map((key) => key.toLowerCase()));
+    return new Set(Object.keys(parsed.config.sources).map((key) => key.toLowerCase()));
 }
 
 /** Whether a source is configured: its canonical domain or any alias appears among the configured keys (case-insensitive). */
@@ -252,12 +260,15 @@ function isConfigured(
 
 /** Inputs for an auth-status report. */
 export interface AuthStatusParams {
+    /** The profile NAME — used only as the report/display label (`default` when no `--profile`); the file it selects comes from {@link selection}. */
     readonly profile: string;
+    /** Which config file to load (`--config`/`--profile`/env/home default). Omit for the home default. */
+    readonly selection?: ConfigSelection;
 }
 
 /** Collaborators for {@link runAuthStatus}: the resolver + config seam + the session store the disposition is read from. */
 export interface AuthStatusDeps {
-    readonly resolveConfigPath: () => string;
+    readonly resolveConfigPath: (selection?: ConfigSelection) => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Maps a configured source key (canonical or alias) to its adapter. */
     readonly resolver: SourceResolver;
@@ -276,23 +287,19 @@ export interface AuthStatusDeps {
  * or a profile that is not defined, throws {@link OperationError} (a pre-flight failure).
  */
 export async function runAuthStatus(params: AuthStatusParams, deps: AuthStatusDeps): Promise<StatusReport> {
-    const path = deps.resolveConfigPath();
+    const path = deps.resolveConfigPath(params.selection);
     let parsed: ConfigParseResult;
     try {
         parsed = deps.loadConfig(path);
     } catch (error) {
         throw new OperationError('config', `${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const configured = parsed.config.profiles[params.profile];
-    if (configured === undefined) {
-        throw new OperationError('not-configured', `profile "${params.profile}" is not defined in ${path}`);
-    }
 
     const detector = new ReauthDetector(
         deps.clockSkewMs === undefined ? { now: deps.now } : { now: deps.now, clockSkewMs: deps.clockSkewMs },
     );
     const sources: SourceSessionView[] = [];
-    for (const [requested, auth] of Object.entries(configured.sources)) {
+    for (const [requested, auth] of Object.entries(parsed.config.sources)) {
         const adapter = deps.resolver.tryResolve(requested);
         const source = adapter?.descriptor.canonicalDomain ?? requested;
         const assessed = await assessSession(deps.sessionStore, detector, source);
@@ -370,7 +377,7 @@ function resolveDefaultSessionStore(): SessionStore {
 export function defaultCollectionDeps(): CollectionDeps {
     const credentialResolver = new CredentialResolver();
     return {
-        resolveConfigPath: defaultConfigPath,
+        resolveConfigPath: resolveConfigFilePath,
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
         resolveCredential: (value: CredentialValue): Promise<Secret> => credentialResolver.resolve(value),
@@ -383,7 +390,7 @@ export function defaultCollectionDeps(): CollectionDeps {
 /** Production wiring for {@link runListSources}: the bundled-adapter registry + the real config loader. */
 export function defaultListSourcesDeps(): ListSourcesDeps {
     return {
-        resolveConfigPath: defaultConfigPath,
+        resolveConfigPath: resolveConfigFilePath,
         loadConfig: authLoadConfig,
         registry: createDefaultRegistry(),
     };
@@ -392,7 +399,7 @@ export function defaultListSourcesDeps(): ListSourcesDeps {
 /** Production wiring for {@link runAuthStatus}: the bundled-adapter resolver, the real config loader, and the default session store. */
 export function defaultAuthStatusDeps(): AuthStatusDeps {
     return {
-        resolveConfigPath: defaultConfigPath,
+        resolveConfigPath: resolveConfigFilePath,
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
         sessionStore: resolveDefaultSessionStore(),

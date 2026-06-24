@@ -10,7 +10,8 @@ import {
     runListSources,
     validateWindow,
 } from '@getreceipt/cli';
-import type { ConsentGate } from '@getreceipt/cli';
+import type { ConsentGate, McpLaunchSelection } from '@getreceipt/cli';
+import type { ConfigSelection } from '@getreceipt/auth';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -51,6 +52,24 @@ function structuredResult(report: object): CallToolResult {
 /** An error result: `isError` so the SDK skips output-schema validation and the client can self-correct. */
 function errorResult(message: string): CallToolResult {
     return { content: [{ type: 'text', text: message }], isError: true };
+}
+
+/**
+ * Resolve a tool call's effective config file + report label from the per-call `profile` arg and the
+ * launch default. A per-call `profile` OVERRIDES the launch default entirely — selecting
+ * `~/.getreceipt/<profile>.yaml` even if the server was launched with `--config` — mirroring how the
+ * CLI's `--profile` selects a file. Absent → the launch selection (which may itself be a `--config`
+ * path, a `--profile`, or the home default). The label is the per-call profile, else the launch
+ * profile, else `default`.
+ */
+function resolveCallSelection(
+    profileArg: string | undefined,
+    launch: McpLaunchSelection | undefined,
+): { readonly selection: ConfigSelection; readonly profile: string } {
+    if (profileArg !== undefined && profileArg !== '') {
+        return { selection: { profile: profileArg }, profile: profileArg };
+    }
+    return { selection: launch?.selection ?? {}, profile: resolveActiveProfile(launch?.profile) };
 }
 
 /**
@@ -105,11 +124,13 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
             if (!window.ok) {
                 return errorResult(window.message);
             }
+            const { selection, profile } = resolveCallSelection(args.profile, deps.launch);
             try {
                 const result = await runCollect(
                     {
                         source: args.source,
-                        profile: resolveActiveProfile(args.profile),
+                        profile,
+                        selection,
                         outDir: args.out ?? '.',
                         ...(window.window === undefined ? {} : { window: window.window }),
                     },
@@ -145,10 +166,12 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
             if (!window.ok) {
                 return errorResult(window.message);
             }
+            const { selection, profile } = resolveCallSelection(args.profile, deps.launch);
             try {
                 const report = await runCollectAll(
                     {
-                        profile: resolveActiveProfile(args.profile),
+                        profile,
+                        selection,
                         concurrency: args.concurrency ?? DEFAULT_CONCURRENCY,
                         outDir: args.out ?? '.',
                         ...(window.window === undefined ? {} : { window: window.window }),
@@ -176,7 +199,10 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
             outputSchema: listSourcesOutputSchema,
             annotations: { readOnlyHint: true, openWorldHint: false },
         },
-        (args) => structuredResult(runListSources({ profile: resolveActiveProfile(args.profile) }, deps.listSources)),
+        (args) => {
+            const { selection, profile } = resolveCallSelection(args.profile, deps.launch);
+            return structuredResult(runListSources({ profile, selection }, deps.listSources));
+        },
     );
 
     server.registerTool(
@@ -191,8 +217,9 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
             annotations: { readOnlyHint: true, openWorldHint: false },
         },
         async (args) => {
+            const { selection, profile } = resolveCallSelection(args.profile, deps.launch);
             try {
-                const report = await runAuthStatus({ profile: resolveActiveProfile(args.profile) }, deps.authStatus);
+                const report = await runAuthStatus({ profile, selection }, deps.authStatus);
                 return structuredResult(report);
             } catch (error) {
                 if (error instanceof OperationError) {

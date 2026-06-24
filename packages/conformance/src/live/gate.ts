@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { loadConfig as authLoadConfig } from '@getreceipt/auth';
+import { loadConfig as authLoadConfig, resolveConfigFilePath } from '@getreceipt/auth';
 import type { CredentialValue } from '@getreceipt/auth';
 
 /**
@@ -46,11 +46,8 @@ export const SECRET_ENV = 'GETRECEIPT_E2E_SECRET';
  * that, it falls back to `~/.getreceipt.yaml` (the product default).
  */
 export const CONFIG_ENV = 'GETRECEIPT_E2E_CONFIG';
-/** Which profile in the config to verify. Defaults to `default`. */
+/** Which profile to verify — selects `~/.getreceipt/<profile>.yaml`. Unset → the home-default file (`~/.getreceipt.yaml`). */
 export const PROFILE_ENV = 'GETRECEIPT_E2E_PROFILE';
-
-/** The profile selected when {@link PROFILE_ENV} is unset. */
-const DEFAULT_PROFILE = 'default';
 
 /** A fully specified live run: which source, and the credentials to authenticate it (username and secret each carried as a reference-or-literal, never a resolved value). */
 export interface LivePlan {
@@ -119,8 +116,11 @@ function overridePlan(env: GateEnv): LivePlan | undefined {
 }
 
 /**
- * Build the live plans from the configured profile's sources. Each source with BOTH a username
- * and a secret yields a plan; a source missing either is skipped with a noted reason (not a hard
+ * Build the live plans from the selected config file's sources. The file is chosen by the product's
+ * own precedence ({@link resolveConfigFilePath}): an explicit {@link CONFIG_ENV} path wins, else the
+ * {@link PROFILE_ENV} profile selects `~/.getreceipt/<profile>.yaml`, else the home default. Each
+ * file is one flat profile, so sources are read directly from its `sources`. A source with BOTH a
+ * username and a secret yields a plan; one missing either is skipped with a noted reason (not a hard
  * error — a half-configured source shouldn't sink the whole sweep). Returns the plans plus any
  * per-source skip notes, all secret-free.
  */
@@ -129,27 +129,24 @@ function plansFromConfig(
     deps: LiveGateDeps,
 ): { readonly plans: readonly LivePlan[]; readonly notes: readonly string[] } | { readonly error: string } {
     const configPath = nonEmpty(env[CONFIG_ENV]);
-    const profileName = nonEmpty(env[PROFILE_ENV]) ?? DEFAULT_PROFILE;
+    const profileName = nonEmpty(env[PROFILE_ENV]);
+    // Mirror the product's file-selection precedence: explicit path > profile-derived path > home default.
+    const resolvedPath = resolveConfigFilePath({
+        ...(configPath === undefined ? {} : { path: configPath }),
+        ...(profileName === undefined ? {} : { profile: profileName }),
+    });
 
     let config;
     try {
-        // `loadConfig()` with no path resolves the product default (`~/.getreceipt.yaml`); an explicit
-        // path wins. It throws a secret-free `ConfigError` on a missing/unreadable/malformed file.
-        config = configPath === undefined ? deps.loadConfig() : deps.loadConfig(configPath);
+        // Throws a secret-free `ConfigError` on a missing/unreadable/malformed file.
+        config = deps.loadConfig(resolvedPath);
     } catch (error) {
         return { error: `could not load config: ${error instanceof Error ? error.message : String(error)}` };
     }
 
-    const profile = config.config.profiles[profileName];
-    if (profile === undefined) {
-        const available = Object.keys(config.config.profiles);
-        const where = available.length === 0 ? 'config has no profiles' : `available profiles: ${available.join(', ')}`;
-        return { error: `profile "${profileName}" not found in config (${where})` };
-    }
-
     const plans: LivePlan[] = [];
     const notes: string[] = [];
-    for (const [source, auth] of Object.entries(profile.sources)) {
+    for (const [source, auth] of Object.entries(config.config.sources)) {
         // Both are CredentialValues now (a `{ ref }` or literal), resolved at call-time — so usability is
         // just "configured at all", not a non-empty-string check; the harness dereferences each.
         if (auth.username === undefined || auth.secret === undefined) {

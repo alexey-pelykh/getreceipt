@@ -1,26 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { Secret } from '@getreceipt/auth';
-import type { CredentialValue, GetReceiptConfig, Profile, SecurityWarning } from '@getreceipt/auth';
+import type { CredentialValue, DomainAuthConfig, GetReceiptConfig, SecurityWarning } from '@getreceipt/auth';
 import { stringify as stringifyYaml } from 'yaml';
 
-/** The profile reported when `--profile` is not supplied. */
+/** The profile label reported when `--profile` is not supplied (the home-default file `~/.getreceipt.yaml`). */
 export const DEFAULT_PROFILE = 'default';
 
-/** Resolve the active profile from an optional `--profile` value. */
+/** Resolve the active profile LABEL from an optional `--profile` value (display only — file selection is separate). */
 export function resolveActiveProfile(profile: string | undefined): string {
     return profile ?? DEFAULT_PROFILE;
-}
-
-/** Thrown by {@link renderConfigShow} when the requested profile is absent. Carries only profile NAMES — never secret material. */
-export class ProfileNotFoundError extends Error {
-    override readonly name = 'ProfileNotFoundError';
-
-    constructor(
-        readonly profile: string,
-        readonly available: readonly string[],
-    ) {
-        super(`profile "${profile}" not found; available: ${available.length > 0 ? available.join(', ') : '(none)'}`);
-    }
 }
 
 /**
@@ -51,9 +39,11 @@ interface RedactedAuthView {
     secret?: { readonly ref: string } | string;
 }
 
-function redactProfile(profile: Profile): Record<string, { auth: RedactedAuthView }> {
-    const sources: Record<string, { auth: RedactedAuthView }> = {};
-    for (const [domain, auth] of Object.entries(profile.sources)) {
+function redactSources(
+    sources: Readonly<Record<string, DomainAuthConfig>>,
+): Record<string, { auth: RedactedAuthView }> {
+    const out: Record<string, { auth: RedactedAuthView }> = {};
+    for (const [domain, auth] of Object.entries(sources)) {
         const view: RedactedAuthView = { kind: auth.kind };
         if (auth.username !== undefined) {
             view.username = renderUsername(auth.username);
@@ -61,23 +51,19 @@ function redactProfile(profile: Profile): Record<string, { auth: RedactedAuthVie
         if (auth.secret !== undefined) {
             view.secret = redactSecret(auth.secret);
         }
-        sources[domain] = { auth: view };
+        out[domain] = { auth: view };
     }
-    return sources;
+    return out;
 }
 
 /**
- * Render a single profile as YAML with every secret redacted: inline literals masked
- * via the {@link Secret} fence, references shown UNRESOLVED (never dereferenced —
- * resolving would egress the secret). Throws {@link ProfileNotFoundError} for an
- * unknown profile. Pure (no I/O).
+ * Render the resolved (flat) config as YAML with every secret redacted: inline literals masked
+ * via the {@link Secret} fence, references shown UNRESOLVED (never dereferenced — resolving would
+ * egress the secret). The file IS one profile, so there is no profile to "not find"; `profileName`
+ * is the display label only. Pure (no I/O).
  */
 export function renderConfigShow(config: GetReceiptConfig, profileName: string): string {
-    const profile = config.profiles[profileName];
-    if (profile === undefined) {
-        throw new ProfileNotFoundError(profileName, Object.keys(config.profiles));
-    }
-    return stringifyYaml({ profile: profileName, sources: redactProfile(profile) });
+    return stringifyYaml({ profile: profileName, sources: redactSources(config.sources) });
 }
 
 /** One non-fatal security concern surfaced by validation (e.g. an inline credential). */

@@ -343,6 +343,76 @@ describe('auth_status tool (↔ CLI `status`)', () => {
     });
 });
 
+describe('per-call profile vs launch default (file selection)', () => {
+    const workFixture = fileURLToPath(new URL('./__fixtures__/mcp.work.getreceipt.yaml', import.meta.url));
+
+    /** A selection-aware resolver that records every selection it receives and maps profiles to fixtures. */
+    function recordingResolver(): {
+        resolve: (selection?: { path?: string; profile?: string }) => string;
+        seen: Array<{ path?: string; profile?: string } | undefined>;
+    } {
+        const seen: Array<{ path?: string; profile?: string } | undefined> = [];
+        return {
+            seen,
+            resolve: (selection) => {
+                seen.push(selection);
+                if (selection?.path !== undefined && selection.path !== '') return selection.path;
+                return selection?.profile === 'work' ? workFixture : configFixture;
+            },
+        };
+    }
+
+    it("uses the launch --profile default file when a tool call omits `profile`", async () => {
+        const rec = recordingResolver();
+        const client = await connect({
+            ...toolDeps({ listSources: { resolveConfigPath: rec.resolve } }),
+            launch: { selection: { profile: 'work' }, profile: 'work' },
+        });
+
+        const report = (await call(client, 'list_sources', {})).structuredContent as {
+            profile: string;
+            sources: { canonicalDomain: string }[];
+        };
+
+        // The launch profile selected the work file (only shop.example) and labels the report 'work'.
+        expect(report.profile).toBe('work');
+        expect(report.sources.map((s) => s.canonicalDomain).sort()).toEqual(['shop.example']);
+        expect(rec.seen).toContainEqual({ profile: 'work' });
+    });
+
+    it("a per-call `profile` OVERRIDES the launch default, selecting that profile's file", async () => {
+        const rec = recordingResolver();
+        // Launched with NO profile (home default), but the call asks for `work`.
+        const client = await connect({
+            ...toolDeps({ listSources: { resolveConfigPath: rec.resolve } }),
+            launch: {},
+        });
+
+        const report = (await call(client, 'list_sources', { profile: 'work' })).structuredContent as {
+            profile: string;
+            sources: { canonicalDomain: string }[];
+        };
+
+        expect(report.profile).toBe('work');
+        expect(report.sources.map((s) => s.canonicalDomain).sort()).toEqual(['shop.example']);
+        // The effective selection passed to the resolver was the per-call profile, not the launch default.
+        expect(rec.seen).toContainEqual({ profile: 'work' });
+    });
+
+    it('defaults to the home file (label "default") when neither launch nor call sets a profile', async () => {
+        const rec = recordingResolver();
+        const client = await connect({
+            ...toolDeps({ listSources: { resolveConfigPath: rec.resolve } }),
+            launch: {},
+        });
+
+        const report = (await call(client, 'list_sources', {})).structuredContent as { profile: string };
+        expect(report.profile).toBe('default');
+        // Empty selection → the resolver falls through to the home-default file.
+        expect(rec.seen).toContainEqual({});
+    });
+});
+
 describe('disclosures (#32 — unofficial / own-accounts-only posture)', () => {
     it('every tool description carries the per-tool disclaimer', async () => {
         const client = await connect();

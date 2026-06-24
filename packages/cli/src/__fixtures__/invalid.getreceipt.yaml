@@ -1,8 +1,6 @@
-# Structurally invalid: `kind: magic` is not a recognized auth kind, so
-# ConfigLoader (#6) throws a path-named ConfigError — exercised by `validate`.
-profiles:
-  default:
-    sources:
-      free.fr:
-        auth:
-          kind: magic
+# Structurally invalid: `kind: magic` is not a recognized auth kind, so ConfigLoader (#6)
+# throws a path-named ConfigError — exercised by `validate`. Flat per-file profile.
+sources:
+  free.fr:
+    auth:
+      kind: magic

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { asCredentialContext, ConfigError } from '@getreceipt/auth';
-import type { ConfigParseResult, CredentialValue, ResolvedCredentials, Secret } from '@getreceipt/auth';
+import type { ConfigParseResult, ConfigSelection, CredentialValue, ResolvedCredentials, Secret } from '@getreceipt/auth';
 import { toOperationResult, UnknownSourceError } from '@getreceipt/core';
 import type {
     CollectRequest,
@@ -44,7 +44,8 @@ export class OperationError extends Error {
 export interface ResolveSourceDeps {
     /** Resolves a domain (canonical or alias) to its adapter. */
     readonly resolver: SourceResolver;
-    readonly resolveConfigPath: () => string;
+    /** Resolve WHICH config file to load from a {@link ConfigSelection} (`--config`/`--profile`/env/home default). */
+    readonly resolveConfigPath: (selection?: ConfigSelection) => string;
     readonly loadConfig: (path: string) => ConfigParseResult;
     /** Resolves a configured credential reference to its fenced secret value. */
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
@@ -66,15 +67,19 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
 }
 
 /**
- * Run one {@link OperationSpec} end-to-end — the shared execution path both the CLI and
- * (later) MCP build on: resolve the adapter, load config, find the source's auth under the
- * requested profile, resolve its credentials, then drive `collect()` and map the structured
- * {@link OperationResult}. Pre-flight problems throw {@link OperationError}; anything that
- * actually ran returns a result (never throws for a source-level condition — `collect()`'s
- * contract).
+ * Run one source end-to-end — the shared execution path the CLI `from`/`all` verbs and the MCP
+ * `collect`/`collect_all` tools build on: resolve the adapter, resolve + load the selected config
+ * file (per {@link selection}), find the source's auth in its flat `sources`, resolve its
+ * credentials, then drive `collect()` and map the structured {@link OperationResult}. Pre-flight
+ * problems throw {@link OperationError}; anything that actually ran returns a result (never throws
+ * for a source-level condition — `collect()`'s contract).
  */
-export async function runOperation(spec: OperationSpec, deps: OperationRunnerDeps): Promise<OperationResult> {
-    const { adapter, credentials } = await resolveSourceContext(spec, deps);
+export async function runOperation(
+    spec: OperationSpec,
+    selection: ConfigSelection | undefined,
+    deps: OperationRunnerDeps,
+): Promise<OperationResult> {
+    const { adapter, credentials } = await resolveSourceContext({ source: spec.source, ...(selection ? { selection } : {}) }, deps);
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     const request = buildRequest(spec.window, runAdapter, credentials, deps);
     return toOperationResult(await deps.collect(request));
@@ -83,18 +88,19 @@ export async function runOperation(spec: OperationSpec, deps: OperationRunnerDep
 /**
  * Resolve a source to its adapter and a ready-to-use {@link CredentialContext} — the shared
  * front-half of every credentialed operation: the `from`/`all` collection path AND the `login`
- * ceremony (#17). Resolves the adapter, loads + validates config, finds the source's auth under
- * the requested profile, and resolves its credentials. Throws {@link OperationError} for any
- * pre-flight failure; carries no secret material.
+ * ceremony (#17). Resolves the adapter, resolves + loads + validates the selected config file
+ * (per the {@link ConfigSelection}), finds the source's auth in the file's flat `sources`, and
+ * resolves its credentials. Throws {@link OperationError} for any pre-flight failure; carries no
+ * secret material.
  */
 export async function resolveSourceContext(
-    spec: { readonly source: string; readonly profile: string },
+    spec: { readonly source: string; readonly selection?: ConfigSelection },
     deps: ResolveSourceDeps,
 ): Promise<{ readonly adapter: SourceAdapter; readonly credentials: CredentialContext }> {
     const adapter = resolveAdapter(deps.resolver, spec.source);
-    const path = deps.resolveConfigPath();
+    const path = deps.resolveConfigPath(spec.selection);
     const parsed = loadConfigOrThrow(deps.loadConfig, path);
-    const sourceConfig = findSourceConfig(parsed, spec, adapter, path);
+    const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
     return { adapter, credentials };
 }
@@ -122,18 +128,12 @@ function loadConfigOrThrow(loadConfig: (path: string) => ConfigParseResult, path
     }
 }
 
-function findSourceConfig(parsed: ConfigParseResult, spec: OperationSpec, adapter: SourceAdapter, path: string) {
-    const profile = parsed.config.profiles[spec.profile];
-    if (profile === undefined) {
-        throw new OperationError('not-configured', `profile "${spec.profile}" is not defined in ${path}`);
-    }
+function findSourceConfig(parsed: ConfigParseResult, source: string, adapter: SourceAdapter, path: string) {
+    // The loaded file IS one flat profile; the source lives directly under its `sources`.
     // Fall back to the canonical domain when an alias was requested.
-    const sourceConfig = profile.sources[spec.source] ?? profile.sources[adapter.descriptor.canonicalDomain];
+    const sourceConfig = parsed.config.sources[source] ?? parsed.config.sources[adapter.descriptor.canonicalDomain];
     if (sourceConfig === undefined) {
-        throw new OperationError(
-            'not-configured',
-            `source "${spec.source}" is not configured under profile "${spec.profile}"`,
-        );
+        throw new OperationError('not-configured', `source "${source}" is not configured in ${path}`);
     }
     return sourceConfig;
 }

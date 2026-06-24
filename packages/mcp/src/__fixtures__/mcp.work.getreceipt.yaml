@@ -1,0 +1,9 @@
+# The "work" profile as a SEPARATE file (per-file model) — exercises a tool's per-call `profile`
+# overriding the launch default, and the launch `--profile` default. Only shop.example, with a
+# distinct username so the loaded FILE is identifiable.
+sources:
+  shop.example:
+    auth:
+      kind: password
+      username: bob@shop.example
+      secret: hunter2-work-only

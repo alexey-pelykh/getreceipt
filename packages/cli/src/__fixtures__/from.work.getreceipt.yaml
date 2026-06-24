@@ -1,0 +1,8 @@
+# The "work" profile as a SEPARATE file (per-file model) — gives the `from` --profile / --config
+# selector something to switch to.
+sources:
+  shop.example:
+    auth:
+      kind: password
+      username: bob@shop.example
+      secret: hunter2-work-only

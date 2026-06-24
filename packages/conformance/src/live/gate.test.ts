@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { ConfigError } from '@getreceipt/auth';
 import type { ConfigParseResult, GetReceiptConfig } from '@getreceipt/auth';
 import { describe, expect, it } from 'vitest';
@@ -16,12 +19,12 @@ import {
 } from './gate.js';
 
 /**
- * Self-test of the gating / skip / source-discovery logic (#19 AC2 + the dogfood refactor). This is
- * the genuinely-executing proof that the harness is off by default, skips cleanly when nothing is
- * configured, and turns the configured PRODUCT config into the right plan list — driven over
- * synthetic environments and a FAKE `loadConfig`, so it runs in CI with no opt-in, no file on disk,
- * and no credentials. (The live test that actually contacts a service is gated ON this decision and
- * stays skipped here.)
+ * Self-test of the gating / skip / source-discovery logic (#19 AC2 + the per-file dogfood refactor).
+ * This is the genuinely-executing proof that the harness is off by default, skips cleanly when nothing
+ * is configured, and turns the configured PRODUCT config (one flat profile per file) into the right
+ * plan list — driven over synthetic environments and a FAKE `loadConfig`, so it runs in CI with no
+ * opt-in, no file on disk, and no credentials. (The live test that actually contacts a service is
+ * gated ON this decision and stays skipped here.)
  */
 
 /** A `loadConfig` double: returns the given config (or throws the given error). Satisfies the injected `deps.loadConfig` seam. */
@@ -41,20 +44,16 @@ function fakeLoadConfig(
     }) as LiveGateDeps['loadConfig'];
 }
 
-/** A config with one fully-credentialed source under `default`, used as the happy-path baseline. */
-function configWith(profiles: GetReceiptConfig['profiles']): GetReceiptConfig {
-    return { profiles };
+/** A flat config (one profile per file) with the given sources — used as the happy-path baseline. */
+function configWith(sources: GetReceiptConfig['sources']): GetReceiptConfig {
+    return { sources };
 }
 
 const ONE_SOURCE = configWith({
-    default: {
-        sources: {
-            'grandfrais.com': {
-                kind: 'password',
-                username: 'shopper@example.com',
-                secret: { ref: 'op://Private/gf/pw' },
-            },
-        },
+    'grandfrais.com': {
+        kind: 'password',
+        username: 'shopper@example.com',
+        secret: { ref: 'op://Private/gf/pw' },
     },
 });
 
@@ -187,16 +186,12 @@ describe('resolveLiveGate — single-source env override (the #81 fast-path)', (
 
 describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
     const TWO_SOURCES = configWith({
-        default: {
-            sources: {
-                'grandfrais.com': {
-                    kind: 'password',
-                    username: 'a@example.com',
-                    secret: { ref: 'op://Private/gf/pw' },
-                },
-                'monoprix.fr': { kind: 'password', username: 'b@example.com', secret: { ref: 'op://Private/mp/pw' } },
-            },
+        'grandfrais.com': {
+            kind: 'password',
+            username: 'a@example.com',
+            secret: { ref: 'op://Private/gf/pw' },
         },
+        'monoprix.fr': { kind: 'password', username: 'b@example.com', secret: { ref: 'op://Private/mp/pw' } },
     });
 
     it('maps every configured source (with creds) to a plan', () => {
@@ -210,7 +205,7 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
         }
     });
 
-    it('passes the GETRECEIPT_E2E_CONFIG path through to loadConfig', () => {
+    it('passes an explicit GETRECEIPT_E2E_CONFIG path straight through to loadConfig (tier 1)', () => {
         const spy: { calledWith?: string | undefined; called?: boolean } = {};
         resolveLiveGate(
             { [OPT_IN_ENV]: '1', [CONFIG_ENV]: '/tmp/custom.getreceipt.yaml' },
@@ -219,42 +214,32 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
         expect(spy.calledWith).toBe('/tmp/custom.getreceipt.yaml');
     });
 
-    it('calls loadConfig with no path (product default ~/.getreceipt.yaml) when GETRECEIPT_E2E_CONFIG is unset', () => {
+    it('loads the home-default file (~/.getreceipt.yaml) when neither config path nor profile is set', () => {
         const spy: { calledWith?: string | undefined; called?: boolean } = {};
         resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(TWO_SOURCES, spy) });
         expect(spy.called).toBe(true);
-        expect(spy.calledWith).toBeUndefined();
+        // Per-file model: with nothing set, the gate resolves the product home default and loads THAT path.
+        expect(spy.calledWith).toBe(join(homedir(), '.getreceipt.yaml'));
     });
 
-    it('selects the profile named by GETRECEIPT_E2E_PROFILE', () => {
-        const multiProfile = configWith({
-            default: {
-                sources: { 'grandfrais.com': { kind: 'password', username: 'a@x', secret: { ref: 'op://a' } } },
-            },
-            staging: { sources: { 'monoprix.fr': { kind: 'password', username: 'b@x', secret: { ref: 'op://b' } } } },
-        });
-        const decision = resolveLiveGate(
+    it('selects the profile FILE named by GETRECEIPT_E2E_PROFILE (~/.getreceipt/<profile>.yaml)', () => {
+        const spy: { calledWith?: string | undefined; called?: boolean } = {};
+        resolveLiveGate(
             { [OPT_IN_ENV]: '1', [PROFILE_ENV]: 'staging' },
-            { loadConfig: fakeLoadConfig(multiProfile) },
+            { loadConfig: fakeLoadConfig(configWith({ 'monoprix.fr': { kind: 'password', username: 'b@x', secret: { ref: 'op://b' } } }), spy) },
         );
-        expect(decision.run).toBe(true);
-        if (decision.run) {
-            expect(decision.plans.map((p) => p.source)).toEqual(['monoprix.fr']);
-        }
+        // The profile selects a per-file path; the gate loads exactly that file.
+        expect(spy.calledWith).toBe(join(homedir(), '.getreceipt', 'staging.yaml'));
     });
 
     it('skips a source missing its secret, keeping the fully-configured ones (not a hard error)', () => {
         const mixed = configWith({
-            default: {
-                sources: {
-                    'grandfrais.com': {
-                        kind: 'password',
-                        username: 'a@example.com',
-                        secret: { ref: 'op://Private/gf/pw' },
-                    },
-                    'monoprix.fr': { kind: 'password', username: 'b@example.com' }, // no secret
-                },
+            'grandfrais.com': {
+                kind: 'password',
+                username: 'a@example.com',
+                secret: { ref: 'op://Private/gf/pw' },
             },
+            'monoprix.fr': { kind: 'password', username: 'b@example.com' }, // no secret
         });
         const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(mixed) });
         expect(decision.run).toBe(true);
@@ -265,15 +250,11 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
 
     it('skips a source missing its username too', () => {
         const mixed = configWith({
-            default: {
-                sources: {
-                    'grandfrais.com': { kind: 'password', secret: { ref: 'op://Private/gf/pw' } }, // no username
-                    'monoprix.fr': {
-                        kind: 'password',
-                        username: 'b@example.com',
-                        secret: { ref: 'op://Private/mp/pw' },
-                    },
-                },
+            'grandfrais.com': { kind: 'password', secret: { ref: 'op://Private/gf/pw' } }, // no username
+            'monoprix.fr': {
+                kind: 'password',
+                username: 'b@example.com',
+                secret: { ref: 'op://Private/mp/pw' },
             },
         });
         const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(mixed) });
@@ -285,7 +266,7 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
 
     it('carries an inline-literal config secret through unchanged (the resolver still handles it)', () => {
         const inline = configWith({
-            default: { sources: { 'grandfrais.com': { kind: 'password', username: 'a@x', secret: 'literal-pw' } } },
+            'grandfrais.com': { kind: 'password', username: 'a@x', secret: 'literal-pw' },
         });
         const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(inline) });
         expect(decision.run).toBe(true);
@@ -296,14 +277,10 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
 
     it('maps a config username reference straight into the plan (resolved at call-time, not here)', () => {
         const refUsername = configWith({
-            default: {
-                sources: {
-                    'grandfrais.com': {
-                        kind: 'password',
-                        username: { ref: 'op://Private/gf/username' },
-                        secret: { ref: 'op://Private/gf/pw' },
-                    },
-                },
+            'grandfrais.com': {
+                kind: 'password',
+                username: { ref: 'op://Private/gf/username' },
+                secret: { ref: 'op://Private/gf/pw' },
             },
         });
         const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(refUsername) });
@@ -329,22 +306,21 @@ describe('resolveLiveGate — clean skip (never a failure) when config yields no
         }
     });
 
-    it('skips citing the missing profile (and lists what IS available)', () => {
+    it('skips (could-not-load) when the named profile FILE does not exist', () => {
+        // A missing profile is now a missing FILE, surfaced as a secret-free load failure.
         const decision = resolveLiveGate(
             { [OPT_IN_ENV]: '1', [PROFILE_ENV]: 'nope' },
-            { loadConfig: fakeLoadConfig(ONE_SOURCE) },
+            { loadConfig: fakeLoadConfig(new ConfigError('config file could not be read', join(homedir(), '.getreceipt', 'nope.yaml'))) },
         );
         expect(decision.run).toBe(false);
         if (!decision.run) {
-            expect(decision.reason).toContain('nope');
-            expect(decision.reason).toContain('default'); // the available profile
+            expect(decision.reason).toContain('could not load config');
+            expect(decision.reason).toContain('nope.yaml');
         }
     });
 
-    it('skips when the selected profile has no usable source (all missing credentials)', () => {
-        const allBare = configWith({
-            default: { sources: { 'grandfrais.com': { kind: 'password' }, 'monoprix.fr': { kind: 'password' } } },
-        });
+    it('skips when the selected file has no usable source (all missing credentials)', () => {
+        const allBare = configWith({ 'grandfrais.com': { kind: 'password' }, 'monoprix.fr': { kind: 'password' } });
         const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(allBare) });
         expect(decision.run).toBe(false);
         if (!decision.run) {
@@ -353,8 +329,8 @@ describe('resolveLiveGate — clean skip (never a failure) when config yields no
         }
     });
 
-    it('skips when the profile has no sources at all', () => {
-        const empty = configWith({ default: { sources: {} } });
+    it('skips when the file has no sources at all', () => {
+        const empty = configWith({});
         const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(empty) });
         expect(decision.run).toBe(false);
         if (!decision.run) {

@@ -1,0 +1,9 @@
+# The "work" profile as a SEPARATE file (per-file model) — gives the --profile / --config
+# selector something to switch to in the config-command tests.
+sources:
+  corp.example:
+    auth:
+      kind: password
+      username: bob@corp.example
+      secret:
+        ref: WORK_PASSWORD
