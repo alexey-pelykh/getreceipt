@@ -128,7 +128,7 @@ supplied as a **reference**, so the value itself never lives in the config file:
 The **[configuration guide](docs/configuration.md)** covers the full schema, every credential form,
 where receipts land, and how sources are resolved.
 
-> The four bundled sources (`grandfrais.com`, `monoprix.fr`, `free.fr` — Free residential/Freebox, `pro.free.fr` — Free Pro) are currently
+> The five bundled sources (`grandfrais.com`, `monoprix.fr`, `free.fr` — Free residential/Freebox, `pro.free.fr` — Free Pro, `particuliers.alpiq.fr`) are currently
 > **`unverified`** — their reverse-engineered flows have not been machine-confirmed against the live
 > services, so results are best-effort. `getreceipt sources` shows each source's state.
 

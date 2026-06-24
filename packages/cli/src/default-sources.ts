@@ -2,6 +2,7 @@
 import { freeFrAdapter } from '@getreceipt/adapter-free-fr';
 import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais-com';
 import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix-fr';
+import { particuliersAlpiqFrAdapter } from '@getreceipt/adapter-particuliers-alpiq-fr';
 import { proFreeFrAdapter } from '@getreceipt/adapter-pro-free-fr';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type { SourceAdapter } from '@getreceipt/core';
@@ -26,7 +27,7 @@ export function buildBundledAdapters(): readonly SourceAdapter[] {
     const monoprix = new MonoprixAdapter({
         transport: createImpersonatingTransport({ impersonateHosts: [new URL(ENDPOINTS.apiOrigin).host] }),
     });
-    return [grandfraisAdapter, monoprix, freeFrAdapter, proFreeFrAdapter];
+    return [grandfraisAdapter, monoprix, freeFrAdapter, proFreeFrAdapter, particuliersAlpiqFrAdapter];
 }
 
 /**
