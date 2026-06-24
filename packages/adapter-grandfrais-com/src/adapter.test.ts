@@ -10,6 +10,7 @@ import {
     collect,
     FilesystemReceiptWriter,
     ReauthRequiredError,
+    resolveAuthChallenges,
     SourceAdapterRegistry,
     SourceResolver,
     TrustBoundaryError,
@@ -124,8 +125,10 @@ function pdfBytes(tag: string): Uint8Array {
     return new TextEncoder().encode(`%PDF-1.4\n% grandfrais ${tag}\n%%EOF\n`);
 }
 
-function authenticate(): Promise<AuthHandle> {
-    return grandfraisAdapter.authenticate(creds());
+async function authenticate(): Promise<AuthHandle> {
+    // A SourceAdapter-typed authenticate() returns AuthResult; resolve down to the session handle.
+    // grandfrais never emits a challenge, so resolution is a pass-through (#133).
+    return resolveAuthChallenges(await grandfraisAdapter.authenticate(creds()));
 }
 
 function noopWriter(): ReceiptWriter {
@@ -181,7 +184,7 @@ describe('GrandfraisAdapter — AC2: authenticate', () => {
             }),
         );
 
-        const auth = await grandfraisAdapter.authenticate(creds());
+        const auth = await authenticate();
         await grandfraisAdapter.list(auth, WIDE);
 
         // The password is on the wire (the legitimate transport) but the session is authorized by the token.
@@ -212,7 +215,7 @@ describe('GrandfraisAdapter — AC2: authenticate', () => {
     it('projects the authenticated session into a persistable StoredSession (#17 login ceremony)', async () => {
         server.use(loginOk());
 
-        const auth = await grandfraisAdapter.authenticate(creds());
+        const auth = await authenticate();
 
         expect(isSessionPersistable(grandfraisAdapter)).toBe(true);
         if (isSessionPersistable(grandfraisAdapter)) {

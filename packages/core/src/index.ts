@@ -8,8 +8,10 @@ export { CONSENT_ACKNOWLEDGMENT, CONSENT_VERSION, PERSONAL_USE_NOTICE, UNOFFICIA
 export type {
     ArtifactHandle,
     ArtifactMode,
+    AuthChallengeRequired,
     AuthHandle,
     AuthKind,
+    AuthResult,
     CredentialContext,
     DateFilter,
     DateFilterBasis,
@@ -23,7 +25,10 @@ export type {
     SourceDescriptor,
     TransportTier,
 } from './source-adapter.js';
+export { isAuthChallengeRequired } from './source-adapter.js';
 export type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeType } from './challenge.js';
+export { MAX_AUTH_CHALLENGE_ROUNDS, resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';
+export type { UnresolvedChallengeReason } from './auth-challenge.js';
 export { SourceAdapterRegistry } from './registry.js';
 export { SourceResolver } from './resolver.js';
 export { DuplicateSourceError, ReauthRequiredError, UnknownSourceError } from './errors.js';

@@ -10,6 +10,7 @@ import {
     collect,
     FilesystemReceiptWriter,
     ReauthRequiredError,
+    resolveAuthChallenges,
     SourceAdapterRegistry,
     SourceResolver,
     TrustBoundaryError,
@@ -165,8 +166,10 @@ function pdfBytes(tag: string): Uint8Array {
     return new TextEncoder().encode(`%PDF-1.4\n% free ${tag}\n%%EOF\n`);
 }
 
-function authenticate(): Promise<AuthHandle> {
-    return freeFrAdapter.authenticate(creds());
+async function authenticate(): Promise<AuthHandle> {
+    // A SourceAdapter-typed authenticate() returns AuthResult; resolve down to the session handle.
+    // free.fr never emits a challenge, so resolution is a pass-through (#133).
+    return resolveAuthChallenges(await freeFrAdapter.authenticate(creds()));
 }
 
 function noopWriter(): ReceiptWriter {
@@ -218,7 +221,7 @@ describe('FreeFrAdapter — AC2: authenticate (three-step dance)', () => {
             listingOk([], (request) => (listRequest = request)),
         );
 
-        const auth = await freeFrAdapter.authenticate(creds());
+        const auth = await authenticate();
         await freeFrAdapter.list(auth, WIDE);
 
         // The credentials (and the reverse-engineered `link` field) are on the wire — the legitimate transport.
@@ -267,7 +270,7 @@ describe('FreeFrAdapter — AC2: authenticate (three-step dance)', () => {
     it('projects the multi-part session into a single persistable StoredSession token (#17 login ceremony)', async () => {
         server.use(...authOk());
 
-        const auth = await freeFrAdapter.authenticate(creds());
+        const auth = await authenticate();
 
         expect(isSessionPersistable(freeFrAdapter)).toBe(true);
         if (isSessionPersistable(freeFrAdapter)) {

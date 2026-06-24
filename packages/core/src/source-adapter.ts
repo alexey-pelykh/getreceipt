@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import type { AuthChallenge, ChallengeResolution } from './challenge.js';
 
 /**
  * The source-adapter contract: what every receipt source DECLARES about itself
@@ -153,14 +154,57 @@ export interface ReceiptRef {
 }
 
 /**
+ * The challenge branch of an {@link AuthResult}: instead of an established session,
+ * {@link SourceAdapter.authenticate} reports that the source demands a second factor or a
+ * human-in-the-loop step. It carries the {@link AuthChallenge} to resolve plus a {@link resume}
+ * continuation that submits the resolution and carries on. The continuation travels WITH the
+ * return value — the adapter captures its partial mid-authentication state in the closure — so a
+ * source gains 2FA WITHOUT a new method on the contract and WITHOUT throwing. `resume` yields a
+ * further {@link AuthResult}, so multi-step flows (challenge → challenge → session) chain. (#133)
+ */
+export interface AuthChallengeRequired {
+    readonly challenge: AuthChallenge;
+    /** Submit a resolution and continue: resolves to a session, or to a further challenge. */
+    readonly resume: (resolution: ChallengeResolution) => Promise<AuthResult>;
+}
+
+/**
+ * The widened outcome of {@link SourceAdapter.authenticate}: EITHER an established session
+ * ({@link AuthHandle}) OR a demand for an interactive challenge ({@link AuthChallengeRequired}).
+ *
+ * The union IS the backward-compatibility guarantee (#133): an adapter that only ever returns an
+ * {@link AuthHandle} keeps that narrower return type and is unchanged — `Promise<AuthHandle>` is
+ * assignable to `Promise<AuthResult>` by return-type covariance — so the challenge path costs
+ * existing adapters nothing (no signature edit, no behavior change). Discriminate with
+ * {@link isAuthChallengeRequired}. The challenge is a RETURN value, never a thrown exception.
+ */
+export type AuthResult = AuthHandle | AuthChallengeRequired;
+
+/**
+ * Whether an {@link AuthResult} is a challenge rather than an established session. Keys off the
+ * {@link AuthChallengeRequired.resume} continuation: an {@link AuthHandle} is opaque, adapter-minted
+ * state that never carries one, so the test is unambiguous even though the handle's runtime shape
+ * is unknown.
+ */
+export function isAuthChallengeRequired(result: AuthResult): result is AuthChallengeRequired {
+    return typeof (result as AuthChallengeRequired).resume === 'function';
+}
+
+/**
  * The IMPLEMENTED half of an adapter: three async stages the `collect()` pipeline
  * drives in order — authenticate → list → fetch.
  */
 export interface SourceAdapter {
     /** The source's declared capabilities. Read by the registry, resolver, pipeline, and auth orchestrator. */
     readonly descriptor: SourceDescriptor;
-    /** Establish a session from resolved credentials. */
-    authenticate(credentials: CredentialContext): Promise<AuthHandle>;
+    /**
+     * Establish a session from resolved credentials — or return an {@link AuthChallengeRequired} when
+     * the source demands a second factor / human step. Returning a bare {@link AuthHandle} (the common
+     * case) needs no change: it is an {@link AuthResult} by covariance, so existing adapters are
+     * unaffected. The orchestrator (`collect()`) resolves any challenge via the injected
+     * {@link ChallengeResolver} and resumes. (#133)
+     */
+    authenticate(credentials: CredentialContext): Promise<AuthResult>;
     /** List references to receipts that fall within `range` (on the declared date basis). */
     list(auth: AuthHandle, range: DateRange): Promise<readonly ReceiptRef[]>;
     /** Fetch the artifact for a single reference. */
