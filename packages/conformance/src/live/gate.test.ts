@@ -226,7 +226,12 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
         const spy: { calledWith?: string | undefined; called?: boolean } = {};
         resolveLiveGate(
             { [OPT_IN_ENV]: '1', [PROFILE_ENV]: 'staging' },
-            { loadConfig: fakeLoadConfig(configWith({ 'monoprix.fr': { kind: 'password', username: 'b@x', secret: { ref: 'op://b' } } }), spy) },
+            {
+                loadConfig: fakeLoadConfig(
+                    configWith({ 'monoprix.fr': { kind: 'password', username: 'b@x', secret: { ref: 'op://b' } } }),
+                    spy,
+                ),
+            },
         );
         // The profile selects a per-file path; the gate loads exactly that file.
         expect(spy.calledWith).toBe(join(homedir(), '.getreceipt', 'staging.yaml'));
@@ -310,7 +315,11 @@ describe('resolveLiveGate — clean skip (never a failure) when config yields no
         // A missing profile is now a missing FILE, surfaced as a secret-free load failure.
         const decision = resolveLiveGate(
             { [OPT_IN_ENV]: '1', [PROFILE_ENV]: 'nope' },
-            { loadConfig: fakeLoadConfig(new ConfigError('config file could not be read', join(homedir(), '.getreceipt', 'nope.yaml'))) },
+            {
+                loadConfig: fakeLoadConfig(
+                    new ConfigError('config file could not be read', join(homedir(), '.getreceipt', 'nope.yaml')),
+                ),
+            },
         );
         expect(decision.run).toBe(false);
         if (!decision.run) {

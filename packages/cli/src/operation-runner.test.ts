@@ -100,7 +100,11 @@ describe('runOperation — happy path', () => {
 
     it('omits the window (adapter default applies) when the spec carries none', async () => {
         const capture = capturingCollect();
-        await runOperation({ source: 'shop.example', profile: 'default' }, undefined, deps({ collect: capture.collect }));
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ collect: capture.collect }),
+        );
         expect(capture.request()?.window).toBeUndefined();
     });
 

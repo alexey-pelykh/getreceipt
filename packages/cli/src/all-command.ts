@@ -2,7 +2,7 @@
 import { Command, CommanderError } from 'commander';
 
 import { batchExitCode, renderAllJson, renderAllText, type BatchReport } from './all-render.js';
-import { DEFAULT_PROFILE, resolveActiveProfile } from './config-render.js';
+import { resolveActiveProfile } from './config-render.js';
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';

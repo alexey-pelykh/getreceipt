@@ -2,7 +2,6 @@
 import type { ConfigSelection } from '@getreceipt/auth';
 import { Command, CommanderError } from 'commander';
 
-import { resolveActiveProfile } from './config-render.js';
 import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';

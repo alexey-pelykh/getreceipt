@@ -2,7 +2,12 @@
 import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
-import { addGlobalConfigOptions, buildConfigSelection, resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
+import {
+    addGlobalConfigOptions,
+    buildConfigSelection,
+    resolveConfigSelection,
+    resolveGlobalOptions,
+} from './resolve-options.js';
 
 /** A parent program + child subcommand, both carrying the global options, parsed from argv. */
 function parsed(argv: string[]): Command {

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { asCredentialContext, ConfigError } from '@getreceipt/auth';
-import type { ConfigParseResult, ConfigSelection, CredentialValue, ResolvedCredentials, Secret } from '@getreceipt/auth';
+import type {
+    ConfigParseResult,
+    ConfigSelection,
+    CredentialValue,
+    ResolvedCredentials,
+    Secret,
+} from '@getreceipt/auth';
 import { toOperationResult, UnknownSourceError } from '@getreceipt/core';
 import type {
     CollectRequest,
@@ -79,7 +85,10 @@ export async function runOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<OperationResult> {
-    const { adapter, credentials } = await resolveSourceContext({ source: spec.source, ...(selection ? { selection } : {}) }, deps);
+    const { adapter, credentials } = await resolveSourceContext(
+        { source: spec.source, ...(selection ? { selection } : {}) },
+        deps,
+    );
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     const request = buildRequest(spec.window, runAdapter, credentials, deps);
     return toOperationResult(await deps.collect(request));

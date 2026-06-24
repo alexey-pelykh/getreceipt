@@ -158,7 +158,10 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
                 throw exitFailure('getreceipt.config.load-failed');
             }
 
-            const rendered = renderConfigShow(parsed.config, resolveActiveProfile(resolveGlobalOptions(command).profile));
+            const rendered = renderConfigShow(
+                parsed.config,
+                resolveActiveProfile(resolveGlobalOptions(command).profile),
+            );
 
             // Defense in depth: `show` is a secret-egress surface. Literals are masked and refs are
             // pointers by contract — but a reference mis-set to a literal secret would print verbatim.

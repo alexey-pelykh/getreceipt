@@ -79,7 +79,10 @@ describe('renderConfigShow', () => {
 
     it('labels the output with the active profile name (display only — the file IS the profile)', () => {
         // The file IS one profile, so the name is a header label, not a key lookup; any label renders.
-        const output = renderConfigShow(configWith({ 'corp.example': { kind: 'password', secret: { ref: 'WORK_PW' } } }), 'work');
+        const output = renderConfigShow(
+            configWith({ 'corp.example': { kind: 'password', secret: { ref: 'WORK_PW' } } }),
+            'work',
+        );
         expect(output).toContain('profile: work');
         expect(output).toContain('corp.example');
         expect(output).toContain('WORK_PW');

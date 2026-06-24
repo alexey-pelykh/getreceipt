@@ -205,9 +205,14 @@ describe('leakage-lint coverage (#7 over config output)', () => {
         const path = join(dir, 'config.yaml');
         writeFileSync(
             path,
-            ['sources:', '  shop.example:', '    auth:', '      kind: api-token', `      secret: ${stripeShaped}`, ''].join(
-                '\n',
-            ),
+            [
+                'sources:',
+                '  shop.example:',
+                '    auth:',
+                '      kind: api-token',
+                `      secret: ${stripeShaped}`,
+                '',
+            ].join('\n'),
         );
         return { dir, path };
     }

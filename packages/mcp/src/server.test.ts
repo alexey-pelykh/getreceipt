@@ -362,7 +362,7 @@ describe('per-call profile vs launch default (file selection)', () => {
         };
     }
 
-    it("uses the launch --profile default file when a tool call omits `profile`", async () => {
+    it('uses the launch --profile default file when a tool call omits `profile`', async () => {
         const rec = recordingResolver();
         const client = await connect({
             ...toolDeps({ listSources: { resolveConfigPath: rec.resolve } }),
