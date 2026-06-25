@@ -37,7 +37,7 @@ describe('listSources', () => {
         registry.register(
             fakeAdapter('free.fr', {
                 aliasDomains: ['adsl.free.fr'],
-                authKind: 'oauth2',
+                authKind: 'password',
                 transportTier: 'headless-browser',
                 artifactMode: 'rendered',
             }),
@@ -47,7 +47,7 @@ describe('listSources', () => {
             {
                 canonicalDomain: 'free.fr',
                 aliasDomains: ['adsl.free.fr'],
-                authKind: 'oauth2',
+                authKind: 'password',
                 transportTier: 'headless-browser',
                 artifactMode: 'rendered',
                 verificationState: 'unverified',

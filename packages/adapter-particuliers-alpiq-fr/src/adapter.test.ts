@@ -67,7 +67,7 @@ const WIDE: DateRange = { from: new Date('2020-01-01T00:00:00.000Z'), to: new Da
 const ISSUED = Date.parse('2026-06-15T00:00:00.000Z'); // epoch millis — the OpenCell invoiceDate wire form
 
 function creds(): CredentialContext {
-    return asCredentialContext({ kind: 'oauth2', username: USERNAME, secret: new Secret(PASSWORD) });
+    return asCredentialContext({ kind: 'password', username: USERNAME, secret: new Secret(PASSWORD) });
 }
 
 /** A default adapter: the platform `fetch` transport, so MSW intercepts every request (no live network). */
@@ -211,12 +211,12 @@ describe('ParticuliersAlpiqFrAdapter — AC1: registration + resolution', () => 
         expect(resolver.tryResolve('alpiq.fr')).toBeUndefined();
     });
 
-    it('declares an oauth2 / http-api / pdf-download descriptor with an inclusive issued-date window, no aliases, no pagination, and no impersonation', () => {
+    it('declares a password / http-api / pdf-download descriptor with an inclusive issued-date window, no aliases, no pagination, and no impersonation', () => {
         const descriptor = particuliersAlpiqFrAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
             canonicalDomain: 'particuliers.alpiq.fr',
-            authKind: 'oauth2',
+            authKind: 'password',
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             pagination: 'none',
@@ -336,7 +336,7 @@ describe('ParticuliersAlpiqFrAdapter — AC2: authenticate (Keycloak code-flow �
 
     it('rejects missing credential material with a typed error before any request leaves', async () => {
         // No handlers registered; onUnhandledRequest:'error' would throw if a request were attempted.
-        const incomplete = asCredentialContext({ kind: 'oauth2', username: USERNAME });
+        const incomplete = asCredentialContext({ kind: 'password', username: USERNAME });
 
         const error: unknown = await adapter()
             .authenticate(incomplete)

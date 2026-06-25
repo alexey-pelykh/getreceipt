@@ -55,7 +55,7 @@ const ISSUED = '2026-06-01T10:00:00.000Z';
 // The `get-receipts` receipt shape is the schema-derived `ReceiptDto` from wire.ts — not re-declared here.
 
 function creds(): CredentialContext {
-    return asCredentialContext({ kind: 'oauth2', username: USERNAME, secret: new Secret(PASSWORD) });
+    return asCredentialContext({ kind: 'password', username: USERNAME, secret: new Secret(PASSWORD) });
 }
 
 /** A default adapter: the platform `fetch` transport, so MSW intercepts every request (no live network). */
@@ -133,12 +133,12 @@ describe('MonoprixAdapter — AC1: registration + resolution', () => {
         expect(resolver.tryResolve('courses.monoprix.fr')).toBeUndefined();
     });
 
-    it('declares an oauth2 / http-api / pdf-download descriptor with an inclusive issued-date window, no aliases, and no pagination', () => {
+    it('declares a password / http-api / pdf-download descriptor with an inclusive issued-date window, no aliases, and no pagination', () => {
         const descriptor = monoprixAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
             canonicalDomain: 'monoprix.fr',
-            authKind: 'oauth2',
+            authKind: 'password',
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             pagination: 'none',
@@ -254,7 +254,7 @@ describe('MonoprixAdapter — AC2: authenticate (headless OIDC password flow)', 
 
     it('rejects missing credential material with a typed error before any request leaves', async () => {
         // No handlers are registered; onUnhandledRequest:'error' would throw if a request were attempted.
-        const incomplete = asCredentialContext({ kind: 'oauth2', username: USERNAME });
+        const incomplete = asCredentialContext({ kind: 'password', username: USERNAME });
 
         const error: unknown = await adapter()
             .authenticate(incomplete)

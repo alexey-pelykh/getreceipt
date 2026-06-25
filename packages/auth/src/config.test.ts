@@ -58,7 +58,7 @@ describe('parseConfig', () => {
     it('rejects a single-item `ref` for a non-password kind (it reads a LOGIN item)', () => {
         let caught: unknown;
         try {
-            parseConfig({ sources: { 'shop.example': { auth: { kind: 'oauth2', ref: 'op://Vault/Item' } } } });
+            parseConfig({ sources: { 'shop.example': { auth: { kind: 'api-token', ref: 'op://Vault/Item' } } } });
         } catch (error) {
             caught = error;
         }

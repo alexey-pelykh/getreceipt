@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { parseConfig, scanForSecrets } from '@getreceipt/auth';
+import { AUTH_KINDS, parseConfig, scanForSecrets } from '@getreceipt/auth';
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 
@@ -62,6 +62,17 @@ describe('renderStarterConfig', () => {
 
     it('contains no secret-shaped value (#7 lint over the template)', () => {
         expect(scanForSecrets([{ path: 'starter', content: renderStarterConfig('default') }])).toEqual([]);
+    });
+
+    it('derives the auth-kind vocab comment from AUTH_KINDS, so it cannot advertise a dropped kind [#149]', () => {
+        const text = renderStarterConfig('default');
+
+        // The `# one of: …` comment is interpolated from the single AUTH_KINDS source, so it tracks the
+        // enum automatically. Pin the wiring (derived list) AND the concrete vocabulary, and assert the
+        // dropped `oauth2` is absent anywhere in the scaffold.
+        expect(text).toContain(`# one of: ${AUTH_KINDS.join(', ')}`);
+        expect(text).toContain('# one of: none, password, api-token, passkey');
+        expect(text).not.toContain('oauth2');
     });
 });
 

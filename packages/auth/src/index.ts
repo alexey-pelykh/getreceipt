@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 export {
+    AUTH_KINDS,
     CONFIG_DIR,
     CONFIG_FILE_ENV,
     defaultConfigPath,

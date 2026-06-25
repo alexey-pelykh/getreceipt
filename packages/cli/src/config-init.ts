@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { AUTH_KINDS } from '@getreceipt/auth';
 
 /**
  * Render the starter config file: a commented, FLAT template (top-level `sources:`, keyed by
@@ -24,7 +25,7 @@ export function renderStarterConfig(profile: string): string {
 sources: # the sources this profile collects from, keyed by domain
   example.com: # a source domain (canonical, or a known alias of one)
     auth:
-      kind: password # one of: none, password, oauth2, api-token, passkey
+      kind: password # one of: ${AUTH_KINDS.join(', ')}
       username: you@example.com # optional; omit for kinds that need none
       # Recommended — reference a secret kept OUTSIDE this file, so no secret value is ever
       # written to disk: a 1Password item (op://…) or an encrypted file (encrypted-file:<path>).

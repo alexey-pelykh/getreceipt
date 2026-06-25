@@ -141,7 +141,7 @@ export const listSourcesInputShape = {
 const sourceViewSchema = z.object({
     canonicalDomain: z.string(),
     aliasDomains: z.array(z.string()),
-    authKind: z.enum(['none', 'password', 'oauth2', 'api-token', 'passkey']),
+    authKind: z.enum(['none', 'password', 'api-token', 'passkey']),
     transportTier: z.enum(['http-api', 'html-scrape', 'headless-browser']),
     artifactMode: z.enum(['pdf-download', 'html-capture', 'rendered']),
     verificationState: z.enum(['unverified', 'e2e-verified', 'stale']),
@@ -165,7 +165,7 @@ export const authStatusInputShape = {
 const sourceSessionViewSchema = z.object({
     source: z.string(),
     requested: z.string(),
-    authKind: z.enum(['none', 'password', 'oauth2', 'api-token', 'passkey']),
+    authKind: z.enum(['none', 'password', 'api-token', 'passkey']),
     registered: z.boolean(),
     session: z.enum(['none', 'valid', 'expired', 'locked', 'unknown']),
     expiresAt: z.string().optional(),

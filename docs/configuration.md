@@ -77,7 +77,7 @@ sources: # the sources this profile can collect from
 
 - **`sources`** — a mapping of domain → source config (required; may be empty). There is **no**
   `profiles:` map — see [Migrating](#migrating-from-the-profiles-map) if you used one.
-- **`<domain>.auth.kind`** — one of `none`, `password`, `oauth2`, `api-token`, `passkey`.
+- **`<domain>.auth.kind`** — one of `none`, `password`, `api-token`, `passkey`.
 - **`<domain>.auth.username`** — optional string.
 - **`<domain>.auth.secret`** — optional credential (see [Credentials](#credentials)).
 - **`<domain>.auth.ref`** — optional **single-item** 1Password reference that resolves BOTH username
@@ -123,7 +123,7 @@ file that still has a top-level `profiles:` key fails fast with a message pointi
 
 ## Auth kinds
 
-`kind` declares how a source authenticates: `none`, `password`, `oauth2`, `api-token`, or `passkey`.
+`kind` declares how a source authenticates: `none`, `password`, `api-token`, or `passkey`.
 Each source's adapter declares the kind it needs; `getreceipt sources` lists it per source.
 
 ## Credentials

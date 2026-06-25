@@ -35,8 +35,8 @@ export type AuthHandle = Opaque<'getreceipt:AuthHandle'>;
 /** Handle to a fetched receipt artifact (e.g. a downloaded document), returned by {@link SourceAdapter.fetch}. */
 export type ArtifactHandle = Opaque<'getreceipt:ArtifactHandle'>;
 
-/** How a source authenticates. */
-export type AuthKind = 'none' | 'password' | 'oauth2' | 'api-token' | 'passkey';
+/** How a source authenticates, by the credential the user supplies — not the wire protocol. (`oauth2` dropped in #149: an OIDC source is `password` from the user's side; the code-flow is an adapter detail.) */
+export type AuthKind = 'none' | 'password' | 'api-token' | 'passkey';
 
 /** How a source is reached. */
 export type TransportTier = 'http-api' | 'html-scrape' | 'headless-browser';
