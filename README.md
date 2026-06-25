@@ -132,7 +132,9 @@ where receipts land, and how sources are resolved.
 
 > The five bundled sources (`grandfrais.com`, `monoprix.fr`, `free.fr` — Free residential/Freebox, `pro.free.fr` — Free Pro, `particuliers.alpiq.fr`) are currently
 > **`unverified`** — their reverse-engineered flows have not been machine-confirmed against the live
-> services, so results are best-effort. `getreceipt sources` shows each source's state.
+> services, so results are best-effort. `getreceipt sources` shows each source's state. A successful
+> `collect` does **not** mark a source verified — see **[docs/verification.md](docs/verification.md)**
+> for what the states mean, where verification comes from, and why.
 
 ## Personal use & non-goals
 

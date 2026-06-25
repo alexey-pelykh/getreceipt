@@ -26,9 +26,11 @@ export interface SourceListing {
  * canonical domain, returning `undefined` when unknown (→ {@link listSources} defaults it to
  * `unverified`).
  *
- * This is the seam the future 0.3.0 live-E2E harness plugs into; today no lookup is supplied, so
- * every source surfaces as `unverified`. A function (not a Map) keeps `listSources` decoupled from
- * how state is computed — disk probe, cache, or harness.
+ * This is the seam the live conformance oracle's verdict is surfaced through. Its only authorized
+ * producer is that fenced oracle — never a user's `collect` (#144). Today no production lookup is
+ * wired (persisting the oracle's verdict to a committed ledger and reading it back is the sequenced
+ * follow-up), so every source surfaces as `unverified`. A function (not a Map) keeps `listSources`
+ * decoupled from how state is computed — committed ledger, disk probe, or cache.
  */
 export type VerificationLookup = (canonicalDomain: string) => SourceVerification | undefined;
 
