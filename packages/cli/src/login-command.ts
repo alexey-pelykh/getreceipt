@@ -107,8 +107,15 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
 
             let adapter: SourceAdapter;
             let credentials: CredentialContext;
+            // An `mfa.type: totp` source yields an in-process resolver here, so login resolves the
+            // second factor unattended too (#137); an explicit `env.challengeResolver` override is the
+            // fallback for non-config-derived challenges.
+            let challengeResolver: ChallengeResolver | undefined;
             try {
-                ({ adapter, credentials } = await resolveSourceContext({ source: domain, selection }, env));
+                ({ adapter, credentials, challengeResolver } = await resolveSourceContext(
+                    { source: domain, selection },
+                    env,
+                ));
             } catch (error) {
                 if (error instanceof OperationError) {
                     env.io.writeErr(`✗ ${error.message}\n`);
@@ -129,7 +136,7 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
                 // authenticated handle projects into the persistable session — the token stays fenced.
                 const handle = await resolveAuthChallenges(
                     await adapter.authenticate(credentials),
-                    env.challengeResolver,
+                    challengeResolver ?? env.challengeResolver,
                 );
                 session = adapter.toStoredSession(handle);
             } catch (error) {
