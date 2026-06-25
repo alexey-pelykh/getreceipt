@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError, fromCredentialContext, Secret } from '@getreceipt/auth';
 import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
+import { isWithinDateFilter, ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -201,14 +201,11 @@ async function doLogin(transport: Transport, login: string, password: Secret, ja
  * {@link ReceiptRef.id} and the download key `fetch` addresses.
  */
 function expandToRefs(invoices: readonly InvoiceDto[], range: DateRange): ReceiptRef[] {
-    const fromMs = range.from.getTime();
-    const toMs = range.to.getTime();
     const byId = new Map<string, ReceiptRef>();
     for (const invoice of invoices) {
         const issuedAt = new Date(invoice.billing_date);
-        const issuedMs = issuedAt.getTime();
-        if (issuedMs < fromMs || issuedMs > toMs) {
-            continue; // inclusive on both bounds, per the declared DateFilter
+        if (!isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
+            continue; // honor the source's declared bound inclusivity (DateFilter), not a hardcoded both-ends
         }
         if (!byId.has(invoice.ref)) {
             byId.set(invoice.ref, { id: invoice.ref, issuedAt, metadata: invoiceMetadata(invoice) });

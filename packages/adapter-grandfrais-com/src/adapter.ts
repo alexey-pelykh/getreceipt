@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError, fromCredentialContext, PasswordAuthDriver } from '@getreceipt/auth';
 import type { Secret, SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
+import { isWithinDateFilter, ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -154,8 +154,6 @@ async function fetchPage(token: Secret, range: DateRange, paginationToken: strin
  * call), and mint a ref for every AVAILABLE PDF variant — preserving listing order.
  */
 async function expandToRefs(token: Secret, receipts: readonly ReceiptDto[], range: DateRange): Promise<ReceiptRef[]> {
-    const fromMs = range.from.getTime();
-    const toMs = range.to.getTime();
     const byId = new Map<string, ReceiptRef>();
     const seenReceipts = new Set<string>();
     for (const receipt of receipts) {
@@ -164,9 +162,8 @@ async function expandToRefs(token: Secret, receipts: readonly ReceiptDto[], rang
         }
         seenReceipts.add(receipt.receiptId);
         const issuedAt = new Date(receipt.checkOutDate);
-        const issuedMs = issuedAt.getTime();
-        if (issuedMs < fromMs || issuedMs > toMs) {
-            continue; // inclusive on both bounds, per the declared DateFilter — no detail fetch off-window
+        if (!isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
+            continue; // honor the source's declared bound inclusivity (DateFilter); skip the detail fetch off-window
         }
         const detail = await fetchDetail(token, receipt.receiptId);
         for (const variant of availableVariants(detail)) {

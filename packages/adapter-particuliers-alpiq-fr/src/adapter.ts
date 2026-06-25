@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer';
 
 import { AuthenticationError, fromCredentialContext, Secret } from '@getreceipt/auth';
 import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
+import { isWithinDateFilter, ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -429,14 +429,11 @@ async function mintAntiReplayToken(transport: Transport, segments: OpenCellSegme
  * the OpenCell download, and de-duplicating by that id while preserving listing order.
  */
 function expandToRefs(invoices: readonly InvoiceDto[], range: DateRange): ReceiptRef[] {
-    const fromMs = range.from.getTime();
-    const toMs = range.to.getTime();
     const byId = new Map<string, ReceiptRef>();
     for (const invoice of invoices) {
         const issuedAt = new Date(invoice.invoiceDate);
-        const issuedMs = issuedAt.getTime();
-        if (issuedMs < fromMs || issuedMs > toMs) {
-            continue; // inclusive on both bounds, per the declared DateFilter
+        if (!isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
+            continue; // honor the source's declared bound inclusivity (DateFilter), not a hardcoded both-ends
         }
         const id = `${invoice.invoiceNumber}${REF_ID_DELIMITER}${invoice.invoiceType.code}`;
         if (!byId.has(id)) {
