@@ -236,11 +236,15 @@ unattended** — no prompt, no human — from the resolved seed, so `from`, `all
 tools sail past the second factor on their own.
 
 An `sms`, `email`, or `push` source delivers its code or approval **out-of-band**, so it cannot be
-answered unattended. Running **`login <domain>`** prompts you for the code (or, for `push`, asks you to
-approve on your device) and completes the sign-in — sending the "remember this device" election only
-when you set **`trustDevice`**. An unattended **`collect`** (`from`, `all`, the MCP `collect` tools)
-never prompts: an out-of-band challenge there surfaces as **`reauth-required`**, pointing you back at
-`login` to refresh the session interactively.
+answered fully unattended. Running **`login <domain>`** prompts you for the code (or, for `push`, asks
+you to approve on your device) and completes the sign-in — sending the "remember this device" election
+only when you set **`trustDevice`**. The CLI **`from`** / **`all`** verbs never prompt: an out-of-band
+challenge there surfaces as **`reauth-required`**, pointing you back at `login` to refresh the session
+interactively. The MCP **`collect`** / **`collect_all`** tools go one step further when their client
+supports the MCP **elicitation** capability — the code or approval is requested _through the client_
+mid-collection and the call completes, no new tool involved; when the client lacks elicitation, or you
+decline or it times out, they fall back to the same **`reauth-required`** outcome (never a hang, never
+silent).
 
 > **Security — storing a TOTP `seed` collapses both factors onto one anchor.** TOTP is a _second_
 > factor precisely because the seed normally lives only on a separate device. Storing it so GetReceipt
