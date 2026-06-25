@@ -29,7 +29,27 @@ const receiptSummarySchema = z.object({
     metadata: z.array(receiptMetadatumSchema).optional(),
 });
 
-const operationWindowSchema = z.object({ from: z.string(), to: z.string() });
+// The two collection tools echo `window` in DIFFERENT shapes — by design, not drift (#145). `collect`
+// (single source) reports the RESOLVED instants; `collect_all` (batch) reports the REQUESTED calendar
+// dates, because N differently-zoned sources have no single instant pair (see cli `runCollectAll`). Both
+// stay structurally `{ from, to }: string` (so the drift guard holds); only the descriptions distinguish
+// them — which is exactly the advertised output contract a client reads to know which to expect.
+
+/** Single-source (`collect`) window: the effective, zone-resolved instants (`to` end-of-day for an explicit `until`, else `now`; #127). */
+const collectWindowSchema = z.object({
+    from: z.string().describe('start of the resolved window, an ISO-8601 instant (e.g. "2026-05-31T22:00:00.000Z")'),
+    to: z
+        .string()
+        .describe(
+            'end of the resolved window, an ISO-8601 instant: end-of-day for an explicit `until` (e.g. "2026-06-24T21:59:59.999Z", #127), else `now` for an open-ended or default window',
+        ),
+});
+
+/** Batch (`collect_all`) window: the requested calendar dates; an open-ended `until` echoes today. */
+const batchWindowSchema = z.object({
+    from: z.string().describe('start of the requested window, a YYYY-MM-DD calendar date (e.g. "2024-01-01")'),
+    to: z.string().describe('end of the requested window, a YYYY-MM-DD calendar date; today when `until` is omitted'),
+});
 
 /** Mirrors `ChallengeType`. */
 const challengeTypeSchema = z.enum(['otp-totp', 'otp-sms', 'otp-email', 'push', 'captcha', 'webauthn']);
@@ -71,7 +91,7 @@ export const collectInputShape = {
 export const collectOutputSchema = z.object({
     source: z.string(),
     outcome: z.enum(['succeeded', 'partial', 'failed', 'reauth-required']),
-    window: operationWindowSchema,
+    window: collectWindowSchema,
     written: z.array(receiptSummarySchema),
     skipped: z.array(receiptSummarySchema),
     reason: z.string().optional(),
@@ -107,7 +127,7 @@ export const collectAllOutputSchema = z.object({
     profile: z.string(),
     outcome: z.enum(['succeeded', 'partial', 'failed']),
     concurrency: z.number(),
-    window: operationWindowSchema.optional(),
+    window: batchWindowSchema.optional(),
     sources: z.array(batchSourceResultSchema),
 });
 
