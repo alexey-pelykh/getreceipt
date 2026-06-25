@@ -200,9 +200,16 @@ warning and `config show` masks it. Prefer one of the `ref` forms above.
 
 ## Two-factor authentication (MFA)
 
-A source that asks for a second factor after the password declares it under an optional `mfa` block.
-It is **orthogonal** to the credential choice above — add it alongside either `username`/`secret` or a
-single-item `ref`, and sources without it are unaffected.
+Some sources ask for a second factor after the password. Declare it under an optional `mfa` block on
+the source's `auth`. It is **orthogonal** to the credential choice above — add it alongside either
+`username`/`secret` or a single-item `ref` — and it is **opt-in**: a source has no second factor until
+you write one, and sources without an `mfa` block are unaffected.
+
+### Config shapes
+
+`type` selects the factor; the rest of the block follows from it. There are two shapes.
+
+**`totp`** — a time-based one-time code (RFC 6238) computed **locally** from a stored **`seed`**:
 
 ```yaml
 auth:
@@ -211,40 +218,109 @@ auth:
   secret:
     ref: op://Personal/example.com/password
   mfa:
-    type: totp # one of: totp, sms, email, push
-    seed: # totp only — the shared secret, as a credential reference
+    type: totp # compute the code locally from the seed
+    seed: # REQUIRED for totp — the shared secret, as a credential reference
       ref: op://Personal/example.com/totp
     trustDevice: true # optional — opt into a "remember this device" offer
 ```
 
+**`sms` | `email` | `push`** — the code or approval is delivered **out-of-band** (a text, an email, a
+push to your phone), so the block carries **no `seed`** (there is nothing to store locally). The three
+are identical apart from `type`:
+
+```yaml
+auth:
+  kind: password
+  username: you@example.com
+  secret:
+    ref: op://Personal/example.com/password
+  mfa:
+    type: sms # or: email, push — delivered out-of-band, no seed
+    trustDevice: true # optional — opt into a "remember this device" offer
+```
+
+Field reference:
+
 - **`type`** — `totp`, `sms`, `email`, or `push`.
-  - **`totp`** computes the one-time code locally from a **`seed`** (the shared secret you were given
-    when enrolling). The `seed` is a **credential reference** resolved through the **same path** as any
-    other secret — `op://…`, `encrypted-file:…`, or an inline literal (see [Credentials](#credentials))
-    — so an inline-literal seed reports the same `inline-credential` warning and is masked by
-    `config show`. A `totp` block **requires** a `seed`.
-  - **`sms`**, **`email`**, and **`push`** receive the code or approval out-of-band, so they take **no
-    `seed`** — providing one is a validation error.
-- **`trustDevice`** — optional boolean. When the source offers to remember the device, set this to opt
-  in and reduce future prompts.
+- **`seed`** — the TOTP shared secret (the value you were given when enrolling). **Required for
+  `totp`, and rejected on every other type.** It is a **credential reference** resolved through the
+  **same path** as any other secret — `op://…`, `encrypted-file:…`, or an inline literal (see
+  [Credentials](#credentials)) — so an inline-literal seed reports the same `inline-credential`
+  warning and is masked by `config show`.
+- **`trustDevice`** — optional boolean. When the source offers to remember this device, set it to opt
+  in; getreceipt then sends that election during an **interactive** sign-in (see below) to reduce
+  future prompts. It is never sent unless the source actually offers the option.
 
-`config validate` checks the block (unknown type, a `seed` on a non-`totp` type, a `totp` without a
-seed, or a non-boolean `trustDevice` all fail) without ever echoing the seed.
+`config validate` checks the block — an unknown `type`, a `seed` on a non-`totp` type, a `totp` with
+no `seed`, or a non-boolean `trustDevice` all fail — without ever echoing the seed.
 
-When a `totp` source is collected (or logged in to), the one-time code is computed **locally and fully
-unattended** — no prompt, no human — from the resolved seed, so `from`, `all`, and the MCP `collect`
-tools sail past the second factor on their own.
+### How the second factor is resolved
 
-An `sms`, `email`, or `push` source delivers its code or approval **out-of-band**, so it cannot be
-answered fully unattended. Running **`login <domain>`** prompts you for the code (or, for `push`, asks
-you to approve on your device) and completes the sign-in — sending the "remember this device" election
-only when you set **`trustDevice`**. The CLI **`from`** / **`all`** verbs never prompt: an out-of-band
-challenge there surfaces as **`reauth-required`**, pointing you back at `login` to refresh the session
-interactively. The MCP **`collect`** / **`collect_all`** tools go one step further when their client
-supports the MCP **elicitation** capability — the code or approval is requested _through the client_
-mid-collection and the call completes, no new tool involved; when the client lacks elicitation, or you
-decline or it times out, they fall back to the same **`reauth-required`** outcome (never a hang, never
-silent).
+The `type` decides whether a run can clear the factor **on its own** or needs **a human in the loop**:
+
+| Factor                   | Resolved                                                       | What it costs at run time                                         |
+| ------------------------ | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `totp`                   | **Unattended** — the code is computed locally from the seed.   | Nothing. `from`, `all`, and the MCP `collect` tools sail past it. |
+| `sms` / `email` / `push` | **Human-in-the-loop** — the code/approval arrives out-of-band. | A person must supply it through an interactive sign-in (below).   |
+
+So a `totp` source needs **no special handling**: when it is collected (or logged in to) the one-time
+code is computed **locally and fully unattended** — no prompt, no human — so `from`, `all`, and the
+MCP `collect` tools clear the second factor by themselves.
+
+### The interactive `login` ceremony
+
+`getreceipt login <domain>` runs the source's real sign-in once and stores the resulting session for
+later runs to reuse. It is how you clear an **out-of-band** factor: when the source raises the
+challenge mid-sign-in, `login` prompts you for the delivered **code** (or, for `push`, asks you to
+**approve on your device** and press Enter), submits it, and — only when you set `trustDevice` _and_
+the source offered it — sends the "remember this device" election. On success the session is stored;
+the token never reaches the output. (A `totp` source logs in the same way but **without a prompt** —
+the code is computed for you.)
+
+`login` needs a real terminal. A piped or non-interactive `login` that hits an out-of-band challenge
+**fails cleanly** with a message telling you to re-run it in a terminal — it never hangs on a read
+that cannot return.
+
+### The three resolution modes
+
+An out-of-band challenge is handled in exactly one of three ways, decided by **where the run happens**:
+
+1. **CLI prompt** — `login` only (the ceremony above). This is the _one_ place the CLI will ever ask
+   you for a code.
+2. **MCP elicitation** — `collect` / `collect_all`, when the connected MCP client declares the
+   **elicitation** capability. The code or approval is requested **through the client** mid-collection
+   and the call completes, with no new tool involved. The wait is bounded (5 minutes); decline,
+   cancel, or time out and it degrades to mode 3.
+3. **`reauth-required` fallback** — everywhere else. The unattended CLI verbs `from` / `all`, and any
+   MCP run whose client cannot elicit, **never prompt**. An out-of-band challenge there surfaces as the
+   structured **`reauth-required`** outcome: the text output reads `re-authentication required` and
+   points you back to running `getreceipt login <source>` (`from` exits `5`); under `--json` the
+   result's `outcome` is `"reauth-required"`. It is **never a hang and never silent** — always an
+   actionable signal back to mode 1.
+
+### Unattended runs: the honest limit
+
+Out-of-band 2FA (`sms` / `email` / `push`) **cannot be answered by an unattended run** — `from`,
+`all`, and an elicitation-less `collect` have no way to receive a texted code or tap a push approval.
+What lets a _later_ unattended run go through is **not** getreceipt answering the challenge; it is the
+source **not raising one** — because a still-valid stored session is reused, or because a
+**device-trust** you established at an earlier interactive `login` (with `trustDevice`) is still
+honored. That trust lives at the **source**, on the source's clock: getreceipt only relays your
+election during sign-in — it does not manage or refresh it. The moment the session lapses or the source
+re-challenges, the unattended run degrades to `reauth-required` and you must `login` again. (Resolving
+a device-trust challenge unattended — without a fresh interactive sign-in — is **not** a v1 capability.)
+
+The durable pattern for an out-of-band source is therefore: **`login` interactively once, then let
+scheduled `from` / `all` runs ride the session / device-trust**, re-running `login` whenever a run
+reports `reauth-required`.
+
+### Recovery and backup codes are not supported (v1)
+
+There is **no `recovery` or `backup` factor type**, by design. Backup codes are a **finite, single-use
+list**; a tool that spent one automatically on every unattended run would silently drain the list and
+then **lock you out** — burning the very codes meant to be your last-resort recovery. v1 will not
+auto-consume a finite resource, so backup/recovery codes are an explicit **non-goal**. Use a `totp`
+seed for unattended runs, or `login` interactively for an out-of-band factor.
 
 > **Security — storing a TOTP `seed` collapses both factors onto one anchor.** TOTP is a _second_
 > factor precisely because the seed normally lives only on a separate device. Storing it so GetReceipt
