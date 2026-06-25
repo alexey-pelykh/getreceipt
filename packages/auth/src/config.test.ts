@@ -448,6 +448,156 @@ describe('parseConfig — mfa', () => {
     });
 });
 
+describe('parseConfig — #151 shape-discriminated union + derived kind', () => {
+    // --- Bare-ref sugar: a bare string source value IS a single-item login reference. ---
+    it('desugars a bare reference string to a single-item login (kind derives to password)', () => {
+        const { config, warnings } = parseConfig({ sources: { 'pro.free.fr': 'op://Personal/pro.free.fr' } });
+
+        expect(warnings).toEqual([]);
+        const source = config.sources['pro.free.fr'];
+        expect(source?.kind).toBe('password');
+        expect(source?.ref).toBe('op://Personal/pro.free.fr');
+        expect(source?.username).toBeUndefined();
+        expect(source?.secret).toBeUndefined();
+    });
+
+    it('rejects an empty bare reference string, naming the source path', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { 'pro.free.fr': '' } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.pro.free.fr');
+    });
+
+    // --- `kind` is DERIVED from the shape when omitted. ---
+    it('derives `password` from a single-item `ref` when `kind` is omitted', () => {
+        const { config } = parseConfig({ sources: { x: { auth: { ref: 'op://V/i' } } } });
+        expect(config.sources['x']?.kind).toBe('password');
+        expect(config.sources['x']?.ref).toBe('op://V/i');
+    });
+
+    it('derives `password` from per-field `username`/`secret` when `kind` is omitted', () => {
+        const { config } = parseConfig({ sources: { x: { auth: { username: 'alice', secret: { ref: 'PW' } } } } });
+        expect(config.sources['x']?.kind).toBe('password');
+        expect(config.sources['x']?.username).toBe('alice');
+    });
+
+    it('derives `none` from an empty `auth` block when `kind` is omitted', () => {
+        const { config } = parseConfig({ sources: { x: { auth: {} } } });
+        expect(config.sources['x']?.kind).toBe('none');
+    });
+
+    // --- The single-opaque-secret shape is ambiguous: config derives the password default (#169). ---
+    it('derives the `password` default for a single opaque `secret` (the adapter disambiguates)', () => {
+        const { config, warnings } = parseConfig({ sources: { x: { auth: { secret: { ref: 'TOKEN' } } } } });
+        expect(warnings).toEqual([]);
+        expect(config.sources['x']?.kind).toBe('password');
+        expect(config.sources['x']?.secret).toEqual({ ref: 'TOKEN' });
+    });
+
+    it('keeps an explicit `kind: api-token` for the single opaque-secret shape (rc-window, validated)', () => {
+        const { config } = parseConfig({ sources: { x: { auth: { kind: 'api-token', secret: { ref: 'TOKEN' } } } } });
+        expect(config.sources['x']?.kind).toBe('api-token');
+        expect(config.sources['x']?.secret).toEqual({ ref: 'TOKEN' });
+    });
+
+    // --- An explicit `kind:` is VALIDATED against the shape, never trusted as the source of truth. ---
+    it('rejects `kind: none` carrying a credential (shape disagrees)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'none', secret: { ref: 'PW' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('none');
+    });
+
+    it('rejects `kind: api-token` carrying a `username` (a token has no username)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'api-token', username: 'alice', secret: { ref: 'T' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('username');
+    });
+
+    it('rejects `kind: api-token` with no `secret` (the token is missing)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'api-token' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.secret');
+    });
+
+    it('parses `kind: passkey` with no credential (the placeholder arm)', () => {
+        const { config, warnings } = parseConfig({ sources: { x: { auth: { kind: 'passkey' } } } });
+        expect(warnings).toEqual([]);
+        expect(config.sources['x']?.kind).toBe('passkey');
+    });
+
+    it('rejects `kind: passkey` carrying a credential', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'passkey', ref: 'op://V/i' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('passkey');
+    });
+
+    // --- References stay explicit: NO `op://` scheme auto-detection (the string IS the reference). ---
+    it('parses a non-op:// reference (a bare env-var name) as a single-item login — no scheme branching', () => {
+        const { config, warnings } = parseConfig({ sources: { x: 'FREE_FR_LOGIN_REF' } });
+        expect(warnings).toEqual([]);
+        expect(config.sources['x']?.kind).toBe('password');
+        expect(config.sources['x']?.ref).toBe('FREE_FR_LOGIN_REF');
+    });
+
+    it('parses an `encrypted-file:` reference under `ref` — no scheme branching', () => {
+        const { config } = parseConfig({ sources: { x: { auth: { ref: 'encrypted-file:/path/to/login' } } } });
+        expect(config.sources['x']?.ref).toBe('encrypted-file:/path/to/login');
+        expect(config.sources['x']?.kind).toBe('password');
+    });
+
+    // --- Backward compatibility: the existing explicit-kind forms validate unchanged (additive). ---
+    it('still parses the existing explicit `kind: password` per-field form unchanged', () => {
+        const { config } = parseConfig({
+            sources: { 'free.fr': { auth: { kind: 'password', username: 'alice', secret: { ref: 'PW' } } } },
+        });
+        expect(config.sources['free.fr']?.kind).toBe('password');
+        expect(config.sources['free.fr']?.secret).toEqual({ ref: 'PW' });
+    });
+
+    it('still parses the existing explicit `kind: api-token` + inline secret form (with its warning)', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.fr': { auth: { kind: 'api-token', secret: 'inline-token' } } },
+        });
+        expect(config.sources['amazon.fr']?.kind).toBe('api-token');
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]?.path).toBe('sources.amazon.fr.auth.secret');
+    });
+
+    // --- parseConfig is PURE: no registry / adapter import (the collision is the adapter's, #169). ---
+    it('parseConfig imports no adapter or source registry (it parses shape, never resolves it)', () => {
+        const source = readFileSync(fileURLToPath(new URL('./config.ts', import.meta.url)), 'utf8');
+        expect(source).not.toMatch(/from '@getreceipt\/(cli|adapter-)/);
+        expect(source).not.toMatch(/SourceAdapterRegistry|SourceResolver|BUNDLED_ADAPTERS/);
+    });
+});
+
 describe('resolveConfigFilePath', () => {
     const HOME = '/home/tester';
 
@@ -517,6 +667,22 @@ describe('loadConfig', () => {
         expect(warnings).toHaveLength(1);
         expect(warnings[0]?.path).toBe('sources.amazon.fr.auth.secret');
         expect(warnings[0]?.message).not.toContain('inline-token-value');
+    });
+
+    // #151 + #130: a bare-ref-sugar source and a ref-shorthand + mfa source parse together in one file.
+    it('loads a bare-ref source alongside a ref-shorthand + mfa source', () => {
+        const fixturePath = fileURLToPath(new URL('./__fixtures__/bare-ref-mfa.getreceipt.yaml', import.meta.url));
+
+        const { config, warnings } = loadConfig(fixturePath);
+
+        expect(warnings).toEqual([]);
+        // Bare-ref sugar → single-item login, kind derived to password.
+        expect(config.sources['pro.free.fr']?.kind).toBe('password');
+        expect(config.sources['pro.free.fr']?.ref).toBe('op://Personal/pro.free.fr');
+        // `ref` shorthand (kind derived) carrying an orthogonal mfa block — both parse together.
+        expect(config.sources['free.fr']?.kind).toBe('password');
+        expect(config.sources['free.fr']?.ref).toBe('op://Personal/free.fr');
+        expect(config.sources['free.fr']?.mfa).toEqual({ type: 'totp', seed: { ref: 'op://Personal/free.fr/totp' } });
     });
 
     it('throws a ConfigError for a missing file', () => {

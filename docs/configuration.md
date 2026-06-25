@@ -77,14 +77,19 @@ sources: # the sources this profile can collect from
 
 - **`sources`** — a mapping of domain → source config (required; may be empty). There is **no**
   `profiles:` map — see [Migrating](#migrating-from-the-profiles-map) if you used one.
-- **`<domain>.auth.kind`** — one of `none`, `password`, `api-token`, `passkey`.
-- **`<domain>.auth.username`** — optional string.
+- **`<domain>.auth.kind`** — **optional and derived** from the credential shape (see
+  [Auth kinds](#auth-kinds)); one of `none`, `password`, `api-token`, `passkey`. If you write it, it
+  is **validated against** the shape (it can't contradict it), never trusted as the source of truth.
+- **`<domain>.auth.username`** — optional string or credential reference.
 - **`<domain>.auth.secret`** — optional credential (see [Credentials](#credentials)).
 - **`<domain>.auth.ref`** — optional **single-item** 1Password reference that resolves BOTH username
   and secret from one LOGIN item (see [Credentials](#credentials)). Mutually exclusive with
-  `username`/`secret`; valid only for `kind: password`.
+  `username`/`secret`; it is the password LOGIN-item form (so it derives `kind: password`).
 - **`<domain>.auth.mfa`** — optional **second factor** (see [Two-factor authentication](#two-factor-authentication-mfa)).
   Orthogonal to the credential choice above — it may accompany either `username`/`secret` or `ref`.
+
+For the common case — one password source backed by one 1Password login item — the whole block is a
+single line: the domain maps directly to the reference string ([bare-ref sugar](#bare-reference-sugar)).
 
 Validate the file at any time — non-zero exit when it is invalid, `--json` for a machine-readable
 verdict:
@@ -123,8 +128,44 @@ file that still has a top-level `profiles:` key fails fast with a message pointi
 
 ## Auth kinds
 
-`kind` declares how a source authenticates: `none`, `password`, `api-token`, or `passkey`.
-Each source's adapter declares the kind it needs; `getreceipt sources` lists it per source.
+A source's auth `kind` is one of `none`, `password`, `api-token`, or `passkey`. Each source's adapter
+declares the kind it needs; `getreceipt sources` lists it per source.
+
+You don't write `kind` — it is **derived from the shape** of the auth block, so the configured shape
+and the kind can never drift apart:
+
+| You wrote                                                        | Derived `kind`                       |
+| ---------------------------------------------------------------- | ------------------------------------ |
+| a single-item `ref` (or [bare-ref sugar](#bare-reference-sugar)) | `password`                           |
+| `username` and/or `secret`                                       | `password`                           |
+| a single `secret` and nothing else                               | `password` (the default — see below) |
+| an empty `auth: {}`                                              | `none`                               |
+
+A single opaque secret is **ambiguous** — it could be a password or an API token (identical YAML). The
+config derives the `password` default and the source's **adapter** disambiguates and validates it,
+failing closed if the shape isn't one it accepts. `api-token` and `passkey` have no credential field
+that distinguishes them on their own, so to pin one, write `kind:` explicitly.
+
+Writing `kind:` is still accepted, but it is **validated against** the derived shape rather than
+trusted: a `kind:` that contradicts the shape (e.g. `kind: none` with a `secret`, or `kind: api-token`
+with a `username`) is rejected. References are never scheme-sniffed — a `ref`/`secret` string is taken
+as a reference whatever its backend (`op://`, `encrypted-file:`, or a bare env-var name), so the
+**field** it sits in, not its text, decides how it resolves.
+
+### Bare-reference sugar
+
+When a source is one password backed by one 1Password login item, map the domain straight to the
+reference string instead of spelling out the block:
+
+```yaml
+sources:
+  pro.free.fr: op://Personal/pro.free.fr # ≡ auth: { ref: op://Personal/pro.free.fr } → kind: password
+```
+
+This is exactly the [single-item `ref`](#1password--op-recommended) form (it resolves both username and
+secret from the login item), just written on one line. It is the single-item login form **only** — a
+per-field credential still needs the `auth:` block with `username`/`secret`. To add a second factor,
+use the block form (`auth: { ref: …, mfa: … }`); the one-line sugar carries no `mfa`.
 
 ## Credentials
 
