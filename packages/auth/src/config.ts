@@ -55,22 +55,69 @@ export interface MfaConfig {
     readonly trustDevice?: boolean;
 }
 
-/** Per-domain authentication configuration. */
-export interface DomainAuthConfig {
-    readonly kind: AuthKind;
-    /** Login identifier: a {@link SecretRef} resolved at call-time, or an inline literal. Unlike a secret, an inline username does NOT warn — a username/email is not a secret. */
+/** No credential — the source authenticates without one. */
+export interface NoneAuthShape {
+    readonly kind: 'none';
+    readonly ref?: never;
+    readonly username?: never;
+    readonly secret?: never;
+}
+
+/** Single-item login: ONE reference to a 1Password LOGIN item resolving BOTH username and secret — the item-level alternative to per-field credentials. */
+export interface PasswordSingleRefAuthShape {
+    readonly kind: 'password';
+    readonly ref: string;
+    readonly username?: never;
+    readonly secret?: never;
+}
+
+/** Per-field password: username and/or secret as separate {@link CredentialValue}s. */
+export interface PasswordPerFieldAuthShape {
+    readonly kind: 'password';
+    readonly ref?: never;
     readonly username?: CredentialValue;
     readonly secret?: CredentialValue;
-    /**
-     * Single-item form: ONE `op://[account/]vault/item` reference to a 1Password LOGIN item that
-     * resolves BOTH username and secret (via `op item get` + USERNAME/PASSWORD purpose matching).
-     * The item-level alternative to per-field {@link username}/{@link secret}; mutually exclusive
-     * with them, and valid only for `kind: password`. The value is the reference string itself.
-     */
-    readonly ref?: string;
-    /** Optional second factor, orthogonal to the credential choice above (see {@link MfaConfig}). */
-    readonly mfa?: MfaConfig;
 }
+
+/**
+ * Single opaque secret (an API token). Shares its YAML shape (`secret:` alone) with a secret-only
+ * {@link PasswordPerFieldAuthShape} — the collision is by design: {@link parseConfig} derives the
+ * password default and the adapter disambiguates fail-closed (#169).
+ */
+export interface ApiTokenAuthShape {
+    readonly kind: 'api-token';
+    readonly ref?: never;
+    readonly username?: never;
+    readonly secret: CredentialValue;
+}
+
+/** Passkey — no stored credential. A placeholder arm; the credential flow is the #150 spike. */
+export interface PasskeyAuthShape {
+    readonly kind: 'passkey';
+    readonly ref?: never;
+    readonly username?: never;
+    readonly secret?: never;
+}
+
+/**
+ * The credential SHAPE of a source — a discriminated union with one arm per shape. The `kind`
+ * discriminant is DERIVED from the parsed shape, never trusted from user input (see {@link parseConfig}).
+ * Each arm declares every cross-arm field (as `never` where it does not apply), so a skewed literal
+ * (e.g. `ref` + `username`) is assignable to NO arm and fails to compile, while a consumer reads any
+ * field off the union without first narrowing.
+ */
+export type AuthShape =
+    | NoneAuthShape
+    | PasswordSingleRefAuthShape
+    | PasswordPerFieldAuthShape
+    | ApiTokenAuthShape
+    | PasskeyAuthShape;
+
+/**
+ * Per-domain authentication configuration: a credential {@link AuthShape} plus an orthogonal optional
+ * {@link MfaConfig}. `mfa` is an intersection sibling — it may accompany ANY shape — not a union arm.
+ */
+export type DomainAuthConfig = AuthShape & { readonly mfa?: MfaConfig };
 
 /**
  * One profile: per-domain auth config keyed by domain. In the per-file model each config file IS
@@ -194,8 +241,14 @@ export function parseConfig(raw: unknown): ConfigParseResult {
 }
 
 function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]): DomainAuthConfig {
+    // Bare-ref sugar: a bare string source value desugars to the single-item `ref` shape (kind:
+    // password). A lone string carries ONE reference, and is taken AS the reference whatever its
+    // backend (op://, encrypted-file:, an env-var name) — no scheme sniffing decides ref-vs-literal.
+    if (typeof raw === 'string') {
+        return { kind: 'password', ref: parseItemRef(raw, path) };
+    }
     if (!isRecord(raw)) {
-        throw new ConfigError('expected a source mapping', path);
+        throw new ConfigError('expected a source mapping or a bare reference string', path);
     }
     const authPath = `${path}.auth`;
     if (!isRecord(raw.auth)) {
@@ -203,57 +256,137 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     }
     const auth = raw.auth;
 
-    if (!isAuthKind(auth.kind)) {
-        throw new ConfigError(`unknown auth kind; expected one of ${AUTH_KINDS.join(', ')}`, `${authPath}.kind`);
+    // `kind` is OPTIONAL — derived from the shape below. When present it is accepted for the rc
+    // window but VALIDATED against the shape (never trusted as the source of truth, #149/#151).
+    let declaredKind: AuthKind | undefined;
+    if (auth.kind !== undefined) {
+        if (!isAuthKind(auth.kind)) {
+            throw new ConfigError(`unknown auth kind; expected one of ${AUTH_KINDS.join(', ')}`, `${authPath}.kind`);
+        }
+        declaredKind = auth.kind;
     }
+
+    const flags: ShapeFlags = {
+        hasRef: auth.ref !== undefined,
+        hasUsername: auth.username !== undefined,
+        hasSecret: auth.secret !== undefined,
+    };
 
     // `ref` (single-item) and `username`/`secret` (per-field) are two ways to say the same thing —
     // accepting both on one source is ambiguous, so reject it rather than silently pick a precedence.
     // (A bare `op://vault/item` and a field-level `op://vault/item/field` can be shape-identical at
     // three segments, so the FIELD — not the ref's shape — is what selects the resolution path.)
-    const hasPerField = auth.username !== undefined || auth.secret !== undefined;
-    if (auth.ref !== undefined && hasPerField) {
+    if (flags.hasRef && (flags.hasUsername || flags.hasSecret)) {
         throw new ConfigError(
             'use either `ref` (a single-item reference resolving both username and secret) or `username`/`secret` (per-field), not both',
             authPath,
         );
     }
 
-    const result: {
-        kind: AuthKind;
-        username?: CredentialValue;
-        secret?: CredentialValue;
-        ref?: string;
-        mfa?: MfaConfig;
-    } = {
-        kind: auth.kind,
-    };
+    const kind = resolveAuthKind(declaredKind, flags, authPath);
 
-    // `mfa` is orthogonal to the credential choice below — parse it BEFORE the single-item `ref`
-    // early-return so it survives both that path and the per-field path.
-    if (auth.mfa !== undefined) {
-        result.mfa = parseMfa(auth.mfa, `${authPath}.mfa`, warnings);
+    // `mfa` is orthogonal to the credential choice — parse it once, then attach to whichever arm.
+    const mfa = auth.mfa !== undefined ? parseMfa(auth.mfa, `${authPath}.mfa`, warnings) : undefined;
+
+    return buildAuthShape(kind, auth, flags, mfa, authPath, warnings);
+}
+
+/** Which credential fields a source's `auth` block carries — the input to kind derivation and arm selection. */
+interface ShapeFlags {
+    readonly hasRef: boolean;
+    readonly hasUsername: boolean;
+    readonly hasSecret: boolean;
+}
+
+/**
+ * Resolve the source's {@link AuthKind} from its shape. The shape is authoritative: any credential
+ * field derives `password`, an empty block derives `none`. The genuinely-ambiguous single opaque
+ * secret (`secret:` alone — could be password-single-ref or api-token) takes the `password` default
+ * here and leaves the collision for the adapter to resolve fail-closed (#169). An explicit `kind:`
+ * is honored only as a VALIDATION constraint — it must agree with the shape (it can pick `api-token`
+ * / `passkey`, which have no distinguishing credential field of their own), never override it.
+ */
+function resolveAuthKind(declared: AuthKind | undefined, flags: ShapeFlags, authPath: string): AuthKind {
+    const hasCredential = flags.hasRef || flags.hasUsername || flags.hasSecret;
+    if (declared === undefined) {
+        return hasCredential ? 'password' : 'none';
     }
+    switch (declared) {
+        case 'none':
+            if (hasCredential) {
+                throw new ConfigError('`kind: none` takes no credential (no `ref`, `username`, or `secret`)', authPath);
+            }
+            return 'none';
+        case 'passkey':
+            if (hasCredential) {
+                throw new ConfigError(
+                    '`kind: passkey` takes no stored credential (no `ref`, `username`, or `secret`)',
+                    authPath,
+                );
+            }
+            return 'passkey';
+        case 'api-token':
+            // A single opaque secret only — never the LOGIN-item `ref` form, never a username.
+            if (flags.hasRef) {
+                throw new ConfigError('single-item `ref` is only valid for `kind: password`', `${authPath}.ref`);
+            }
+            if (flags.hasUsername) {
+                throw new ConfigError('`kind: api-token` is a single opaque secret and takes no `username`', authPath);
+            }
+            if (!flags.hasSecret) {
+                throw new ConfigError('`kind: api-token` requires a `secret` (the token)', `${authPath}.secret`);
+            }
+            return 'api-token';
+        case 'password':
+            // Permissive default — the single-item `ref`, per-field, bare-secret, and credential-less
+            // (mfa-only) forms are all valid password sources; nothing to reject.
+            return 'password';
+        default:
+            return assertNever(declared);
+    }
+}
 
-    if (auth.ref !== undefined) {
-        // The single-item form reads a LOGIN item's USERNAME + PASSWORD fields, so it only makes
-        // sense for a password source. (The op:// scheme + item-level shape are checked at resolve.)
-        if (auth.kind !== 'password') {
-            throw new ConfigError('single-item `ref` is only valid for `kind: password`', `${authPath}.ref`);
+/**
+ * Build the {@link DomainAuthConfig} arm for the resolved {@link AuthKind}, parsing each present
+ * credential field and attaching the orthogonal {@link MfaConfig}. The `switch` is exhaustive over
+ * {@link AuthKind}: a future-added kind makes the {@link assertNever} default a compile error.
+ */
+function buildAuthShape(
+    kind: AuthKind,
+    auth: Record<string, unknown>,
+    flags: ShapeFlags,
+    mfa: MfaConfig | undefined,
+    authPath: string,
+    warnings: SecurityWarning[],
+): DomainAuthConfig {
+    const withMfa = mfa !== undefined ? { mfa } : {};
+    switch (kind) {
+        case 'none':
+            return { kind, ...withMfa };
+        case 'passkey':
+            return { kind, ...withMfa };
+        case 'api-token':
+            return { kind, secret: parseCredential(auth.secret, `${authPath}.secret`, warnings), ...withMfa };
+        case 'password': {
+            if (flags.hasRef) {
+                return { kind, ref: parseItemRef(auth.ref, `${authPath}.ref`), ...withMfa };
+            }
+            const perField: PasswordPerFieldAuthShape & { readonly mfa?: MfaConfig } = {
+                kind,
+                ...(flags.hasUsername ? { username: parseUsername(auth.username, `${authPath}.username`) } : {}),
+                ...(flags.hasSecret ? { secret: parseCredential(auth.secret, `${authPath}.secret`, warnings) } : {}),
+                ...withMfa,
+            };
+            return perField;
         }
-        result.ref = parseItemRef(auth.ref, `${authPath}.ref`);
-        return result;
+        default:
+            return assertNever(kind);
     }
+}
 
-    if (auth.username !== undefined) {
-        result.username = parseUsername(auth.username, `${authPath}.username`);
-    }
-
-    if (auth.secret !== undefined) {
-        result.secret = parseCredential(auth.secret, `${authPath}.secret`, warnings);
-    }
-
-    return result;
+/** Exhaustiveness guard for the {@link AuthShape} arms: an unreachable branch TS flags if {@link AuthKind} grows a member. */
+function assertNever(value: never): never {
+    throw new Error(`unhandled auth kind: ${String(value)}`);
 }
 
 /**

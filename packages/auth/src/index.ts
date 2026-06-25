@@ -10,6 +10,8 @@ export {
     resolveConfigFilePath,
 } from './config.js';
 export type {
+    ApiTokenAuthShape,
+    AuthShape,
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
@@ -17,6 +19,10 @@ export type {
     GetReceiptConfig,
     MfaConfig,
     MfaType,
+    NoneAuthShape,
+    PasskeyAuthShape,
+    PasswordPerFieldAuthShape,
+    PasswordSingleRefAuthShape,
     Profile,
     SecretRef,
     SecurityWarning,

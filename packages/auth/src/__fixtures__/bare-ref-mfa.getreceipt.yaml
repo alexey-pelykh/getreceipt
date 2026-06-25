@@ -1,0 +1,13 @@
+# #151 — bare-ref sugar coexisting with the mfa block (#130).
+# Proves the one-line single-item login and an orthogonal `mfa:` both parse in one file.
+sources:
+  # Bare-ref sugar: the source value IS a single-item login reference (kind derives to password).
+  pro.free.fr: op://Personal/pro.free.fr
+  # `ref` shorthand (kind derived) carrying an orthogonal mfa block.
+  free.fr:
+    auth:
+      ref: op://Personal/free.fr
+      mfa:
+        type: totp
+        seed:
+          ref: op://Personal/free.fr/totp
