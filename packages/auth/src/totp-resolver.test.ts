@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MfaConfig } from './config.js';
 import { TotpError } from './errors.js';
 import { Secret } from './secret.js';
-import { createMfaChallengeResolver, TotpChallengeResolver } from './totp-resolver.js';
+import { createMfaChallengeResolver, mfaSurfaceResolvers, TotpChallengeResolver } from './totp-resolver.js';
 
 // RFC 6238 reference seed (canonical Base32) and a clock pinned to T=59s → code 287082 (Appendix B).
 const RFC_SEED_BASE32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
@@ -169,5 +169,25 @@ describe('createMfaChallengeResolver — wiring the in-process surface from mfa 
         await expect(resolver!.resolve({ type: 'captcha', prompt: 'Solve the captcha' })).rejects.toBeInstanceOf(
             UnresolvedChallengeError,
         );
+    });
+});
+
+describe('mfaSurfaceResolvers — the per-surface building block a composition root assembles (#138)', () => {
+    const resolveCredential = () => Promise.resolve(new Secret(RFC_SEED_BASE32));
+
+    it('yields the in-process surface for a totp source — a fresh, mutable map a caller can add to', () => {
+        const mfa: MfaConfig = { type: 'totp', seed: { ref: 'op://Personal/example/totp' } };
+        const surfaces = mfaSurfaceResolvers(mfa, { resolveCredential });
+
+        expect(Object.keys(surfaces)).toEqual(['in-process']);
+        // The map is the caller's to extend (the `login` ceremony adds `out-of-band`) before wrapping it.
+        expect(Object.isFrozen(surfaces)).toBe(false);
+    });
+
+    it('yields an empty map for no mfa and for out-of-band types (nothing is config-derivable there)', () => {
+        expect(mfaSurfaceResolvers(undefined, { resolveCredential })).toEqual({});
+        for (const type of ['sms', 'email', 'push'] as const) {
+            expect(mfaSurfaceResolvers({ type }, { resolveCredential })).toEqual({});
+        }
     });
 });

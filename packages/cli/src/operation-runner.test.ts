@@ -513,3 +513,81 @@ describe('runOperation — unattended TOTP (mfa.type: totp) through real collect
         expect(seen.resolution).toBeUndefined();
     });
 });
+
+describe('runOperation — out-of-band challenge stays reauth-required on the unattended collect path (AC2, #138)', () => {
+    // An `mfa.type: sms` source: the code is delivered out-of-band, so the config yields NO in-process
+    // resolver — and the collect path never wires the interactive prompt (that lives in `login`).
+    const smsConfig: ConfigParseResult = {
+        config: {
+            sources: {
+                'shop.example': {
+                    kind: 'password',
+                    username: 'alice@shop.example',
+                    secret: 'pw',
+                    mfa: { type: 'sms' },
+                },
+            },
+        },
+        warnings: [],
+    };
+
+    /** A source that demands an out-of-band factor; `resumed` flips only if something tried to answer it. */
+    function outOfBandChallengingAdapter(
+        seen: { resumed: boolean },
+        type: 'otp-sms' | 'push' = 'otp-sms',
+    ): SourceAdapter {
+        return {
+            ...adapter(),
+            authenticate: (): Promise<AuthResult> =>
+                Promise.resolve({
+                    challenge: { type, prompt: 'Enter the code we sent you' },
+                    resume: () => {
+                        seen.resumed = true;
+                        return Promise.resolve({} as unknown as AuthHandle);
+                    },
+                }),
+            list: async () => [],
+        };
+    }
+
+    it('yields reauth-required and NEVER prompts (resume is never reached) for an SMS challenge', async () => {
+        const seen = { resumed: false };
+        const result = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ loadConfig: () => smsConfig, resolver: resolverWith(outOfBandChallengingAdapter(seen)), collect }),
+        );
+
+        expect(result.outcome).toBe('reauth-required');
+        // No out-of-band resolver is wired on the collect path, so the challenge is never answered.
+        expect(seen.resumed).toBe(false);
+    });
+
+    it('does the same for a push challenge — an unattended run never blocks on a device approval', async () => {
+        const seen = { resumed: false };
+        const result = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                loadConfig: () => smsConfig,
+                resolver: resolverWith(outOfBandChallengingAdapter(seen, 'push')),
+                collect,
+            }),
+        );
+
+        expect(result.outcome).toBe('reauth-required');
+        expect(seen.resumed).toBe(false);
+    });
+
+    it('wires NO challenge resolver into the collect request for an out-of-band mfa source', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ loadConfig: () => smsConfig, collect: capture.collect }),
+        );
+        // sms/email/push are not config-resolvable in-process, and the collect path never adds the
+        // out-of-band interactive prompt — so the request carries no resolver (login is where it lives).
+        expect(capture.request()?.challengeResolver).toBeUndefined();
+    });
+});

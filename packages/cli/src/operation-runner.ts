@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { asCredentialContext, ConfigError, createMfaChallengeResolver } from '@getreceipt/auth';
+import { asCredentialContext, ConfigError, mfaSurfaceResolvers } from '@getreceipt/auth';
 import type {
     ConfigParseResult,
     ConfigSelection,
@@ -8,7 +8,14 @@ import type {
     ResolvedCredentials,
     Secret,
 } from '@getreceipt/auth';
-import { hostTimeZone, toOperationResult, UnknownSourceError, zonedDayEnd, zonedDayStart } from '@getreceipt/core';
+import {
+    hostTimeZone,
+    RoutingChallengeResolver,
+    toOperationResult,
+    UnknownSourceError,
+    zonedDayEnd,
+    zonedDayStart,
+} from '@getreceipt/core';
 import type {
     ChallengeResolver,
     CollectRequest,
@@ -59,6 +66,14 @@ export interface ResolveSourceDeps {
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
     /** Resolves a single-item login reference (`op://[account/]vault/item`) to both username and secret. */
     readonly resolveLogin: (ref: string) => Promise<LoginSecrets>;
+    /**
+     * LOGIN-ONLY: builds the `out-of-band` interactive-prompt {@link ChallengeResolver} (#138), given
+     * the source's configured trust-this-device election. The collect path (and MCP) OMIT this, so an
+     * out-of-band challenge there finds no resolver on that surface and surfaces as the structured
+     * `reauth-required` (#134) — never an inline prompt during an unattended run. This single omission
+     * IS the login-vs-collect boundary for the human-in-the-loop resolver.
+     */
+    readonly buildOutOfBandResolver?: (trustDevice: boolean) => ChallengeResolver;
 }
 
 /**
@@ -121,13 +136,18 @@ export async function resolveSourceContext(
     const parsed = loadConfigOrThrow(deps.loadConfig, path);
     const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
-    // An `mfa.type: totp` source resolves its second factor unattended — the code is computed locally
-    // from the configured seed (#137). Built per-source (the seed is per-source) and lazily (no seed
-    // `op read` unless a challenge actually fires). A non-totp / no-mfa source gets no resolver, so an
-    // issued challenge surfaces as the structured reauth-required (#134) instead of hanging.
-    const challengeResolver = createMfaChallengeResolver(sourceConfig.mfa, {
-        resolveCredential: deps.resolveCredential,
-    });
+    // Per-surface resolvers the config yields on its own — today only `in-process` (TOTP), computed
+    // locally from the seed (#137) and safe to share by collect AND login (unattended either way). Built
+    // per-source (the seed is per-source) and lazily (no seed `op read` unless a challenge fires).
+    const surfaces = mfaSurfaceResolvers(sourceConfig.mfa, { resolveCredential: deps.resolveCredential });
+    // The `out-of-band` surface (an interactive prompt) is added ONLY when the caller supplies the
+    // builder — i.e. the `login` ceremony, where a human is present (#138). The collect path leaves it
+    // off, so an out-of-band challenge there has no resolver on that surface and surfaces as
+    // reauth-required (#134) rather than prompting inline during an unattended run.
+    if (deps.buildOutOfBandResolver !== undefined) {
+        surfaces['out-of-band'] = deps.buildOutOfBandResolver(sourceConfig.mfa?.trustDevice ?? false);
+    }
+    const challengeResolver = Object.keys(surfaces).length === 0 ? undefined : new RoutingChallengeResolver(surfaces);
     return { adapter, credentials, ...(challengeResolver === undefined ? {} : { challengeResolver }) };
 }
 
