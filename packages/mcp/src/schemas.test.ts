@@ -85,6 +85,23 @@ describe('MCP output schemas mirror the canonical domain types', () => {
         expect(collectOutputSchema.parse(result)).toEqual(result);
     });
 
+    it('collectOutputSchema carries per-source challenge outcomes through MCP structured content (#142 AC3)', () => {
+        const result: OperationResult = {
+            source: 'example.com',
+            outcome: 'reauth-required',
+            window: { from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z' },
+            written: [],
+            skipped: [],
+            reason: 'an interactive otp-sms challenge could not be completed on this surface',
+            challenges: [
+                { outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' },
+                { outcome: 'degraded', reason: 'no-resolver', type: 'otp-sms' },
+            ],
+        };
+        // The SDK validates structured content against this schema; the outcomes must survive verbatim.
+        expect(collectOutputSchema.parse(result)).toEqual(result);
+    });
+
     it('collectAllOutputSchema accepts a canonical BatchReport (mixed ok/error sources)', () => {
         const report: BatchReport = {
             profile: 'default',

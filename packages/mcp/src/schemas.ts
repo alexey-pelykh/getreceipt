@@ -31,6 +31,28 @@ const receiptSummarySchema = z.object({
 
 const operationWindowSchema = z.object({ from: z.string(), to: z.string() });
 
+/** Mirrors `ChallengeType`. */
+const challengeTypeSchema = z.enum(['otp-totp', 'otp-sms', 'otp-email', 'push', 'captcha', 'webauthn']);
+
+/**
+ * One interactive-challenge outcome (#142) — mirrors `ChallengeOutcome`. EVERY field is a closed enum:
+ * there is no place to carry the code, seed, session, or device-trust artifact. The compile-time drift
+ * guard (schemas.test.ts) breaks the build if a future field widens to a free-form string, so the
+ * redaction fence is enforced statically on the structured (MCP / `--json`) sink, not by discipline.
+ */
+const challengeOutcomeSchema = z.union([
+    z.object({
+        outcome: z.literal('resolved'),
+        type: challengeTypeSchema,
+        mode: z.enum(['totp-computed', 'human-entered']),
+    }),
+    z.object({
+        outcome: z.literal('degraded'),
+        reason: z.enum(['no-resolver', 'exhausted']),
+        type: challengeTypeSchema.optional(),
+    }),
+]);
+
 // ── collect (↔ CLI `from`) ────────────────────────────────────────────────────────────────────
 
 export const collectInputShape = {
@@ -53,6 +75,7 @@ export const collectOutputSchema = z.object({
     written: z.array(receiptSummarySchema),
     skipped: z.array(receiptSummarySchema),
     reason: z.string().optional(),
+    challenges: z.array(challengeOutcomeSchema).optional(),
 });
 
 // ── collect_all (↔ CLI `all`) ─────────────────────────────────────────────────────────────────

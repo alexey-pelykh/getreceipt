@@ -3,12 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { http, HttpResponse, server } from '@getreceipt/testing';
 
-import { collect, ReauthRequiredError, SourceAdapterRegistry, SourceResolver } from './index.js';
+import { collect, formatChallengeEvent, ReauthRequiredError, SourceAdapterRegistry, SourceResolver } from './index.js';
 import type {
     ArtifactHandle,
     AuthChallenge,
     AuthHandle,
     AuthResult,
+    ChallengeLifecycleEvent,
     ChallengeResolution,
     ChallengeResolver,
     CollectFailed,
@@ -466,6 +467,123 @@ describe('collect — unresolvable challenge surfaces reauth-required (#134)', (
         const reason = (result as CollectReauthRequired).reason ?? '';
         expect(reason).toContain('otp-sms'); // the safe, closed-enum type is named
         expect(reason).not.toContain('SECRET'); // neither the prompt nor the descriptor leaks through
+    });
+});
+
+// --- challenge lifecycle observability (#142) ------------------------------
+describe('collect — challenge lifecycle observability (#142)', () => {
+    it('records a resolved challenge as a terminal outcome on the result [AC3]', async () => {
+        const { resolver } = recordingResolver();
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-totp') });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            challengeResolver: resolver,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(result.challenges).toEqual([{ outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' }]);
+    });
+
+    it('records a degraded challenge outcome even when the run surfaces reauth-required [AC3]', async () => {
+        // No resolver → the otp-sms challenge degrades; the outcome must still reach the report.
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-sms') });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('reauth-required');
+        expect(result.challenges).toEqual([{ outcome: 'degraded', reason: 'no-resolver', type: 'otp-sms' }]);
+    });
+
+    it('keeps a resolved outcome on the report even when the run later fails — resolved means answered, not succeeded [AC3]', async () => {
+        // The resolver answers the challenge, but resuming the session then throws (a downstream failure).
+        // The challenge WAS resolved, so its outcome must survive onto the `failed` result, not vanish.
+        const { resolver } = recordingResolver();
+        const probe = makeAdapter({
+            authenticate: async () => ({
+                challenge: { type: 'otp-totp', prompt: 'Enter the code' },
+                resume: async () => {
+                    throw new Error('session broke after the challenge was answered');
+                },
+            }),
+        });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            challengeResolver: resolver,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('failed');
+        expect(result.challenges).toEqual([{ outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' }]);
+    });
+
+    it('streams the live lifecycle to an injected observer [AC1]', async () => {
+        const { resolver } = recordingResolver();
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-totp') });
+        const writer = makeWriter({ log: probe.log });
+        const events: ChallengeLifecycleEvent[] = [];
+
+        await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            challengeResolver: resolver,
+            challengeObserver: (event) => events.push(event),
+            now: NOW,
+        });
+
+        expect(events).toEqual([
+            { phase: 'emitted', source: 'free.fr', type: 'otp-totp' },
+            { phase: 'resolved', source: 'free.fr', type: 'otp-totp', mode: 'totp-computed' },
+        ]);
+    });
+
+    it('omits `challenges` entirely when no challenge occurred (the common case)', async () => {
+        const probe = makeAdapter({ refs: [ref('inv-1')] }); // bare AuthHandle, no challenge
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(result.challenges).toBeUndefined();
+    });
+
+    it('NEVER leaks the resolved code or trust election into the report or any log line [AC2]', async () => {
+        // The resolver answers with a real OTP code + a trust election; neither is credential-format-shaped
+        // (the regex fence cannot catch them), so this proves the stronger by-construction guarantee:
+        // the event/outcome types simply have no field to carry them.
+        const { resolver } = recordingResolver({ response: '123456', trustThisDevice: true });
+        const probe = makeAdapter({ refs: [ref('inv-1')], authenticate: challengingAuth('otp-totp') });
+        const writer = makeWriter({ log: probe.log });
+        const lines: string[] = [];
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            challengeResolver: resolver,
+            challengeObserver: (event) => lines.push(formatChallengeEvent(event)),
+            now: NOW,
+        });
+
+        const reportJson = JSON.stringify(result);
+        expect(reportJson).not.toContain('123456');
+        expect(reportJson).not.toContain('trustThisDevice');
+        for (const line of lines) {
+            expect(line).not.toContain('123456');
+            expect(line).not.toContain('trustThisDevice');
+        }
+        // The outcome IS present (enums only) — redaction must not have dropped the observability itself.
+        expect(result.challenges).toEqual([{ outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' }]);
     });
 });
 

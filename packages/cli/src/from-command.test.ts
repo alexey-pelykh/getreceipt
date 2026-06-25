@@ -606,4 +606,34 @@ describe('from --verbose/--debug — secret-fenced diagnostics (AC #5)', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+
+    it('--verbose streams the challenge lifecycle to stderr — and never the prompt (#142 AC1)', async () => {
+        // A source that demands a 2FA step, with NO challenge resolver wired into the collect path: the
+        // challenge is emitted then degrades (no-resolver). That lifecycle is what --verbose must surface,
+        // proving the observer is actually installed and fed through the real pipeline (not just unit-tested).
+        const challenger: SourceAdapter = {
+            ...fakeAdapter(),
+            authenticate: async () => ({
+                challenge: { type: 'otp-sms', prompt: 'Enter the SMS code' },
+                resume: async () => ({}) as unknown as AuthHandle,
+            }),
+        };
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-challenge-verbose-'));
+        try {
+            const { err } = await runFrom(['shop.example', '--out', dir, '--verbose'], {
+                resolver: resolverWith(challenger),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            // The adapter trace reports the stage honestly (#133 follow-up) — never a false "ok"...
+            expect(err).toContain('authenticate: challenge issued (otp-sms)');
+            expect(err).not.toContain('authenticate: ok');
+            // ...and the observer streams the emitted → degraded lifecycle, built only from closed enums.
+            expect(err).toContain('challenge emitted source=shop.example type=otp-sms');
+            expect(err).toContain('challenge degraded source=shop.example reason=no-resolver type=otp-sms');
+            // The human-facing prompt is NOT a closed enum — it must never reach a diagnostic line (AC2).
+            expect(err).not.toContain('Enter the SMS code');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { scanForSecrets } from '@getreceipt/auth';
-import type { SourceAdapter } from '@getreceipt/core';
+import { formatChallengeEvent, isAuthChallengeRequired } from '@getreceipt/core';
+import type { ChallengeObserver, SourceAdapter } from '@getreceipt/core';
 
 const PREFIX = '[getreceipt]';
 const SUPPRESSED = `${PREFIX} <diagnostic line suppressed: secret-shaped value>`;
@@ -29,9 +30,16 @@ export function traceAdapter(adapter: SourceAdapter, emit: (line: string) => voi
         descriptor: adapter.descriptor,
         async authenticate(credentials) {
             log(`authenticate: start (${domain}, kind=${adapter.descriptor.authKind})`);
-            const handle = await adapter.authenticate(credentials);
-            log('authenticate: ok');
-            return handle;
+            const result = await adapter.authenticate(credentials);
+            // authenticate() may return an interactive challenge rather than a session (#133) — "ok" would
+            // be a lie there. Report the stage honestly; the challenge lifecycle itself is traced via the
+            // observer (#142). The challenge type is a redaction-safe closed enum.
+            log(
+                isAuthChallengeRequired(result)
+                    ? `authenticate: challenge issued (${result.challenge.type})`
+                    : 'authenticate: ok',
+            );
+            return result;
         },
         async list(auth, range) {
             log(`list: window ${range.from.toISOString()} .. ${range.to.toISOString()}`);
@@ -46,4 +54,15 @@ export function traceAdapter(adapter: SourceAdapter, emit: (line: string) => voi
             return artifact;
         },
     };
+}
+
+/**
+ * A {@link ChallengeObserver} that streams each challenge-lifecycle line (emitted / resolved / degraded)
+ * to `emit` — the `--verbose` challenge trace (#142), the lifecycle sibling of {@link traceAdapter}'s
+ * stage trace. Each line is built only from the event's redaction-safe fields ({@link formatChallengeEvent}:
+ * source + type + mode/reason) and routed through the same {@link fence} backstop; the resolved code never
+ * reaches it by construction. Newline-terminated, like the adapter trace.
+ */
+export function traceChallengeObserver(emit: (line: string) => void): ChallengeObserver {
+    return (event) => emit(`${fence(`${PREFIX} ${formatChallengeEvent(event)}`)}\n`);
 }
