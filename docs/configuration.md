@@ -365,7 +365,7 @@ Each source carries a **verification state**:
 
 - **`unverified`** — the flow has never been machine-confirmed against the live service; results are
   best-effort. This is the bootstrap state every adapter starts in.
-- **`e2e-verified`** — confirmed current against the live service by the end-to-end harness, which
+- **`e2e-verified`** — confirmed current against the live service by the live conformance oracle, which
   records _when_ (the last-verified date, shipped alongside the state).
 - **`stale`** — was verified once, but that verification is now out of date.
 
@@ -378,6 +378,11 @@ so staleness is a visible advisory, never a block on collection or on release.
 
 The five bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), and **`particuliers.alpiq.fr`** — are currently `unverified`.
 
+Verification is produced **only** by the project's live conformance oracle, **not** by your own
+collections: a successful `collect` does not mark a source verified. For what each state means, where
+verification comes from, and why a successful collect does not count, see
+**[Verification & trust state](verification.md)**.
+
 Adding a new source means adding a new adapter and registering it with the CLI: it is a code change,
 not a configuration option. The reverse-engineering notes for any specific service are maintained
 privately by the maintainer and are out of scope here.
@@ -386,4 +391,5 @@ privately by the maintainer and are out of scope here.
 
 - [Project README](../README.md) — install, quickstart, and the command reference.
 - [`@getreceipt/cli`](../packages/cli) — per-verb detail and exit codes.
+- [Verification & trust state](verification.md) — what the states mean and why a successful collect does not mark a source verified.
 - [Legitimacy & posture](legitimacy.md) — the project's posture and its in/out-of-scope line.
