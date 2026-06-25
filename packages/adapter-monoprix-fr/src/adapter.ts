@@ -41,7 +41,7 @@ const DESCRIPTOR: SourceDescriptor = {
     // No aliases: www./client./sso. are flow subdomains of the one canonical source (not alternative
     // names for it), and courses.monoprix.fr is a different product, not a receipt source.
     aliasDomains: [],
-    authKind: 'oauth2',
+    authKind: 'password',
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

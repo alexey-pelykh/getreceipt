@@ -52,8 +52,8 @@ const DESCRIPTOR: SourceDescriptor = {
     // The residential portal is its own source: bare alpiq.fr is the corporate site, and a future
     // pro./entreprises. business portal (different auth) would be a separate source — neither is an alias.
     aliasDomains: [],
-    // Keycloak OIDC Authorization-Code flow, driven headless → BFF cookie session (the monoprix OIDC kind).
-    authKind: 'oauth2',
+    // Keycloak OIDC Authorization-Code flow, driven headless → BFF cookie session (the monoprix OIDC flow).
+    authKind: 'password',
     transportTier: 'http-api',
     // PDF arrives base64 in a JSON envelope (`pdfContent`); the base64 is unwrapped inside fetch() — still pdf-download.
     artifactMode: 'pdf-download',

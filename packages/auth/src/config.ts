@@ -9,8 +9,8 @@ import type { AuthKind } from '@getreceipt/core';
 
 import { ConfigError } from './errors.js';
 
-/** The auth kinds the config accepts — mirrors core's {@link AuthKind} vocabulary. */
-const AUTH_KINDS: readonly AuthKind[] = ['none', 'password', 'oauth2', 'api-token', 'passkey'];
+/** The auth kinds the config accepts — mirrors core's {@link AuthKind} vocabulary. Exported as the single source for the `config init` scaffold's enum-vocab comment, so it cannot drift (#149). */
+export const AUTH_KINDS: readonly AuthKind[] = ['none', 'password', 'api-token', 'passkey'];
 
 /** The MFA types the config accepts (the config-facing vocabulary; the auth flow maps these to core's challenge types). */
 const MFA_TYPES: readonly MfaType[] = ['totp', 'sms', 'email', 'push'];
