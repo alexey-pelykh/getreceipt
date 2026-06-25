@@ -26,7 +26,12 @@ export interface BatchReport {
     readonly outcome: BatchOutcome;
     /** The concurrency cap applied to the run (heavier sources are never fanned out beyond this). */
     readonly concurrency: number;
-    /** The explicit window applied to every source, when `--since`/`--until` were given; omitted when each source used its own default. */
+    /**
+     * The requested window echoed as `YYYY-MM-DD` calendar dates (NOT instants — each source resolves the
+     * day in its own zone, so no single instant pair fits the batch, #145), when `--since`/`--until` were
+     * given; omitted when each source used its own default. Contrast {@link OperationResult.window}, which a
+     * single-source run reports as resolved ISO-8601 instants.
+     */
     readonly window?: { readonly from: string; readonly to: string };
     readonly sources: readonly BatchSourceResult[];
 }

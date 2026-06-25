@@ -161,3 +161,39 @@ describe('MCP output schemas mirror the canonical domain types', () => {
         expect(authStatusOutputSchema.parse(report)).toEqual(report);
     });
 });
+
+describe('the two tools advertise their distinct `window` echo shape (#145)', () => {
+    // `collect` echoes RESOLVED ISO-8601 instants; `collect_all` echoes REQUESTED YYYY-MM-DD calendar dates
+    // (no single instant pair fits N differently-zoned sources). The shapes are structurally identical, so the
+    // compile-time drift guard above stays green and the ONLY thing distinguishing them in the advertised
+    // output contract is these field descriptions — pin them so a future edit can't silently drop the intent.
+    const collectWindow = collectOutputSchema.shape.window;
+    const batchWindow = collectAllOutputSchema.shape.window.unwrap();
+
+    it('describes the single-source window as resolved ISO-8601 instants (end-of-day only for an explicit `until`, #127)', () => {
+        expect(collectWindow.shape.from.description).toMatch(/ISO-8601 instant/);
+        expect(collectWindow.shape.to.description).toMatch(/ISO-8601 instant/);
+        // `to` is end-of-day ONLY for an explicit `until`; an open-ended / default run echoes `now`
+        // (operation-runner.ts: `until === undefined ? now : zonedDayEnd(...)`). Pin BOTH halves so the
+        // description can't regress to telling a client "end-of-day" for what is really a mid-day `now`.
+        expect(collectWindow.shape.to.description).toMatch(/end-of-day/);
+        expect(collectWindow.shape.to.description).toMatch(/\bnow\b/);
+    });
+
+    it('describes the batch window as requested YYYY-MM-DD calendar dates', () => {
+        expect(batchWindow.shape.from.description).toMatch(/YYYY-MM-DD calendar date/);
+        expect(batchWindow.shape.to.description).toMatch(/YYYY-MM-DD calendar date/);
+    });
+
+    it('keeps both window shapes permissive `{ from, to }: string` — the description, not validation, carries the intent', () => {
+        const instants = { from: '2026-05-31T22:00:00.000Z', to: '2026-06-24T21:59:59.999Z' };
+        const dates = { from: '2024-01-01', to: '2024-01-31' };
+        expect(collectWindow.parse(instants)).toEqual(instants);
+        expect(batchWindow.parse(dates)).toEqual(dates);
+        // Neither field is regex-narrowed: the batch `from` flows from un-narrowed user input, so a strict
+        // format would over-reject. Each schema therefore accepts the other's shape — guards that nobody
+        // accidentally tightens one side into rejecting valid input while "disambiguating".
+        expect(collectWindow.parse(dates)).toEqual(dates);
+        expect(batchWindow.parse(instants)).toEqual(instants);
+    });
+});
