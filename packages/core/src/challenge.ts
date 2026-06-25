@@ -7,7 +7,7 @@
  * never imports a resolver — concrete resolvers (local TOTP compute, CLI prompt, MCP
  * elicitation, browser ceremony) are injected at the composition root, the same
  * dependency-inversion the {@link SourceAdapter} contract uses. The seam lives here,
- * not in `@getreceipt/auth`, so every layer that touches it — the auth orchestrator,
+ * not in `@getreceipt/auth`, so every layer that touches it — the collect pipeline,
  * adapters, the CLI and MCP resolvers, the browser ceremony port — can name it
  * without depending on one another (all already depend on core; core depends on none).
  */

@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { AuthKind } from '@getreceipt/core';
-
-import type { AuthDriver } from './auth-orchestrator.js';
 import { AuthenticationError } from './errors.js';
 import { Secret } from './secret.js';
 
@@ -35,8 +32,8 @@ export interface AuthSession {
 
 /**
  * The `password` auth driver: exchanges an email + password for a session token
- * over HTTP, behind the auth-driver-by-kind seam ({@link AuthDriver}) — so it slots
- * into the {@link AuthOrchestrator} without changing it.
+ * over HTTP. An adapter that logs in with a password instantiates it directly —
+ * each adapter owns its own auth flow.
  *
  * Transport is the platform `fetch`, so tests drive it against a mocked server
  * (MSW) with no network. The password is revealed (via {@link Secret.expose}) at
@@ -44,9 +41,7 @@ export interface AuthSession {
  * immediately re-fenced in a {@link Secret}. Every failure is an
  * {@link AuthenticationError} that carries no credential material.
  */
-export class PasswordAuthDriver implements AuthDriver {
-    readonly kind: AuthKind = 'password';
-
+export class PasswordAuthDriver {
     /**
      * Authenticate against the configured endpoint, returning a fenced session
      * token.

@@ -17,15 +17,6 @@ export class ConfigError extends Error {
     }
 }
 
-/** Thrown when no auth driver is registered for a source's declared auth kind. */
-export class UnsupportedAuthKindError extends Error {
-    override readonly name = 'UnsupportedAuthKindError';
-
-    constructor(readonly kind: string) {
-        super(`No auth driver is registered for auth kind "${kind}".`);
-    }
-}
-
 /**
  * Why a {@link CredentialResolutionError} happened. Lets a caller branch on the
  * cause without parsing the message:

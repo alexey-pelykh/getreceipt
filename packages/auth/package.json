@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "@getreceipt auth subsystem — config loading/validation and auth-driver orchestration.",
+  "description": "@getreceipt auth subsystem — config loading/validation, credential resolution, and session management.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
