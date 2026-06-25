@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import {
     AuthenticationError,
+    decodeBase32,
+    generateTotp,
     InMemoryKeyring,
     KeyringSessionStore,
     ReauthDetector,
@@ -10,7 +12,14 @@ import {
 } from '@getreceipt/auth';
 import type { ConfigParseResult, SessionPersistableAdapter, SessionStore, StoredSession } from '@getreceipt/auth';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
-import type { ArtifactHandle, AuthHandle, ReceiptRef, SourceAdapter } from '@getreceipt/core';
+import type {
+    ArtifactHandle,
+    AuthHandle,
+    AuthResult,
+    ChallengeResolution,
+    ReceiptRef,
+    SourceAdapter,
+} from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
 
 import { ConsentRequiredError } from './consent-gate.js';
@@ -246,5 +255,70 @@ describe('login — gates + failure paths', () => {
         expect(err).not.toContain(secretToken);
         expect(err).not.toContain('resolved-pw-LEAK-SENTINEL');
         expect(scanForSecrets([{ path: 'login-err', content: err }])).toEqual([]);
+    });
+});
+
+describe('login — unattended TOTP second factor (#137)', () => {
+    const SEED_BASE32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+
+    /** A config that adds an `mfa.type: totp` block (seed via reference) to the shop source. */
+    const TOTP_CONFIG: ConfigParseResult = {
+        config: {
+            sources: {
+                'shop.example': {
+                    kind: 'password',
+                    username: 'shopper',
+                    secret: { ref: 'PW' },
+                    mfa: { type: 'totp', seed: { ref: 'SEED' } },
+                },
+            },
+        },
+        warnings: [],
+    };
+
+    function acceptsCurrentTotp(code: string): boolean {
+        const key = decodeBase32(SEED_BASE32);
+        const nowMs = Date.now();
+        return [-1, 0, 1].some((step) => generateTotp(key, nowMs + step * 30_000) === code);
+    }
+
+    /** A persistable source that demands an otp-totp factor, then validates the resolved code like a server. */
+    function totpChallengingAdapter(seen: { resolution?: ChallengeResolution }): SourceAdapter {
+        const persistable = fakeAdapter() as SourceAdapter & SessionPersistableAdapter;
+        return {
+            ...persistable,
+            authenticate: (): Promise<AuthResult> =>
+                Promise.resolve({
+                    challenge: { type: 'otp-totp', prompt: 'Enter your 6-digit code' },
+                    resume: (resolution) => {
+                        seen.resolution = resolution;
+                        if (!acceptsCurrentTotp(resolution.response)) {
+                            return Promise.reject(new AuthenticationError('bad code', 'invalid-credentials'));
+                        }
+                        return Promise.resolve({ token: new Secret(TOKEN) } as unknown as AuthHandle);
+                    },
+                }),
+        };
+    }
+
+    it('resolves the challenge with a locally computed code and persists the session — no prompt', async () => {
+        const seen: { resolution?: ChallengeResolution } = {};
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+
+        const { out, error } = await runLogin(['shop.example'], {
+            loadConfig: () => TOTP_CONFIG,
+            resolver: resolverWith(totpChallengingAdapter(seen)),
+            // The seed ref resolves to the Base32 seed; the password ref resolves to anything (unused).
+            resolveCredential: (value) =>
+                Promise.resolve(new Secret(typeof value === 'object' && value.ref === 'SEED' ? SEED_BASE32 : 'pw')),
+            sessionStore: store,
+        });
+
+        expect(error).toBeUndefined();
+        expect(out).toContain('logged in to shop.example');
+        expect(seen.resolution?.response).toMatch(/^\d{6}$/);
+
+        const reuse = await reuseStoredSession({ store, detector: new ReauthDetector(), key: 'shop.example' });
+        expect(reuse.outcome).toBe('reuse');
     });
 });

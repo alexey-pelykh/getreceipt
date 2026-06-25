@@ -231,6 +231,20 @@ auth:
 `config validate` checks the block (unknown type, a `seed` on a non-`totp` type, a `totp` without a
 seed, or a non-boolean `trustDevice` all fail) without ever echoing the seed.
 
+When a `totp` source is collected (or logged in to), the one-time code is computed **locally and fully
+unattended** — no prompt, no human — from the resolved seed, so `from`, `all`, and the MCP `collect`
+tools sail past the second factor on their own.
+
+> **Security — storing a TOTP `seed` collapses both factors onto one anchor.** TOTP is a _second_
+> factor precisely because the seed normally lives only on a separate device. Storing it so GetReceipt
+> can compute codes unattended puts that seed wherever your other secrets live, so whoever can read
+> that store (or its master credential) then holds **both** factors and the practical protection drops
+> toward single-factor. This is **opt-in and never the default**: a source has no second factor until
+> you add an `mfa` block, and `totp` only stores a seed because you wrote one — enable it deliberately,
+> for the unattended runs you want it for. To keep the factors meaningfully separate, put the seed in a
+> **different trust domain** than the password (a distinct vault, or an `encrypted-file:` seed unlocked
+> by a run-time passphrase) rather than right beside it.
+
 ## Where receipts are written
 
 Each collected receipt is written to:

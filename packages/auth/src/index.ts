@@ -66,6 +66,16 @@ export {
     CredentialBackendUnavailableError,
     CredentialResolutionError,
     SessionStoreError,
+    TotpError,
     UnsupportedAuthKindError,
 } from './errors.js';
-export type { AuthenticationFailureReason, CredentialResolutionReason, SessionStoreFailureReason } from './errors.js';
+export type {
+    AuthenticationFailureReason,
+    CredentialResolutionReason,
+    SessionStoreFailureReason,
+    TotpFailureReason,
+} from './errors.js';
+export { decodeBase32, generateTotp } from './totp.js';
+export type { TotpParams } from './totp.js';
+export { createMfaChallengeResolver, TotpChallengeResolver } from './totp-resolver.js';
+export type { MfaChallengeResolverDeps, TotpChallengeResolverOptions } from './totp-resolver.js';

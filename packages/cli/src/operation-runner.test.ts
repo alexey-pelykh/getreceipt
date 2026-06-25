@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { ConfigError, CredentialBackendUnavailableError, fromCredentialContext, Secret } from '@getreceipt/auth';
+import {
+    ConfigError,
+    CredentialBackendUnavailableError,
+    decodeBase32,
+    fromCredentialContext,
+    generateTotp,
+    Secret,
+} from '@getreceipt/auth';
 import type { ConfigParseResult, CredentialValue } from '@getreceipt/auth';
 import { collect, SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
+    AuthResult,
+    ChallengeResolution,
     CollectRequest,
     CollectResult,
     ReceiptRef,
@@ -403,5 +412,104 @@ describe('runOperation — #127 behavioral proof through real collect()', () => 
         );
         expect(utc.outcome).toBe('succeeded');
         expect(utc.written.map((r) => r.id)).toEqual([]);
+    });
+});
+
+describe('runOperation — unattended TOTP (mfa.type: totp) through real collect() (AC1, #137)', () => {
+    // RFC 6238 reference seed (canonical Base32). Codes are validated like a real server would: the
+    // current 30s step ±1 (clock-skew tolerance), so the assertion never flakes across a step boundary.
+    const TOTP_SEED_BASE32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+
+    function acceptsCurrentTotp(seedBase32: string, code: string): boolean {
+        const key = decodeBase32(seedBase32);
+        const nowMs = Date.now();
+        return [-1, 0, 1].some((step) => generateTotp(key, nowMs + step * 30_000) === code);
+    }
+
+    const totpConfig: ConfigParseResult = {
+        config: {
+            sources: {
+                'shop.example': {
+                    kind: 'password',
+                    username: 'alice@shop.example',
+                    secret: 'pw',
+                    mfa: { type: 'totp', seed: { ref: 'op://Vault/totp' } },
+                },
+            },
+        },
+        warnings: [],
+    };
+
+    /** A source that demands an otp-totp factor on authenticate, then validates the resolved code like a server. */
+    function totpChallengingAdapter(seen: { resolution?: ChallengeResolution }): SourceAdapter {
+        return {
+            ...adapter(),
+            authenticate: (): Promise<AuthResult> =>
+                Promise.resolve({
+                    challenge: { type: 'otp-totp', prompt: 'Enter your 6-digit code' },
+                    resume: (resolution) => {
+                        seen.resolution = resolution;
+                        if (!acceptsCurrentTotp(TOTP_SEED_BASE32, resolution.response)) {
+                            return Promise.reject(new Error('source rejected the TOTP code'));
+                        }
+                        return Promise.resolve({} as unknown as AuthHandle);
+                    },
+                }),
+            list: async () => [],
+        };
+    }
+
+    it('collects fully unattended — code computed locally from the seed, no human, no prompt', async () => {
+        const seen: { resolution?: ChallengeResolution } = {};
+        const result = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                loadConfig: () => totpConfig,
+                resolver: resolverWith(totpChallengingAdapter(seen)),
+                resolveCredential: () => Promise.resolve(new Secret(TOTP_SEED_BASE32)),
+                collect,
+            }),
+        );
+
+        expect(result.outcome).toBe('succeeded');
+        // The challenge was answered with a locally computed 6-digit code — no prompt was ever involved.
+        expect(seen.resolution?.response).toMatch(/^\d{6}$/);
+    });
+
+    it('wires an in-process resolver into the collect request only for a totp source', async () => {
+        const totpCapture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                loadConfig: () => totpConfig,
+                resolveCredential: () => Promise.resolve(new Secret(TOTP_SEED_BASE32)),
+                collect: totpCapture.collect,
+            }),
+        );
+        expect(totpCapture.request()?.challengeResolver).toBeDefined();
+
+        // The default config has no mfa block → no resolver is attached.
+        const plainCapture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ collect: plainCapture.collect }),
+        );
+        expect(plainCapture.request()?.challengeResolver).toBeUndefined();
+    });
+
+    it('a source with no mfa that still issues a challenge surfaces reauth-required, never hangs (#134)', async () => {
+        const seen: { resolution?: ChallengeResolution } = {};
+        const result = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            // Default config: no mfa block, so no resolver is wired for the challenge the adapter raises.
+            deps({ resolver: resolverWith(totpChallengingAdapter(seen)), collect }),
+        );
+
+        expect(result.outcome).toBe('reauth-required');
+        expect(seen.resolution).toBeUndefined();
     });
 });

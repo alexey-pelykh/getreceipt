@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { asCredentialContext, ConfigError } from '@getreceipt/auth';
+import { asCredentialContext, ConfigError, createMfaChallengeResolver } from '@getreceipt/auth';
 import type {
     ConfigParseResult,
     ConfigSelection,
@@ -10,6 +10,7 @@ import type {
 } from '@getreceipt/auth';
 import { hostTimeZone, toOperationResult, UnknownSourceError, zonedDayEnd, zonedDayStart } from '@getreceipt/core';
 import type {
+    ChallengeResolver,
     CollectRequest,
     CollectResult,
     CredentialContext,
@@ -90,12 +91,12 @@ export async function runOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<OperationResult> {
-    const { adapter, credentials } = await resolveSourceContext(
+    const { adapter, credentials, challengeResolver } = await resolveSourceContext(
         { source: spec.source, ...(selection ? { selection } : {}) },
         deps,
     );
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
-    const request = buildRequest(spec.window, runAdapter, credentials, deps);
+    const request = buildRequest(spec.window, runAdapter, credentials, challengeResolver, deps);
     return toOperationResult(await deps.collect(request));
 }
 
@@ -110,13 +111,24 @@ export async function runOperation(
 export async function resolveSourceContext(
     spec: { readonly source: string; readonly selection?: ConfigSelection },
     deps: ResolveSourceDeps,
-): Promise<{ readonly adapter: SourceAdapter; readonly credentials: CredentialContext }> {
+): Promise<{
+    readonly adapter: SourceAdapter;
+    readonly credentials: CredentialContext;
+    readonly challengeResolver?: ChallengeResolver;
+}> {
     const adapter = resolveAdapter(deps.resolver, spec.source);
     const path = deps.resolveConfigPath(spec.selection);
     const parsed = loadConfigOrThrow(deps.loadConfig, path);
     const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
-    return { adapter, credentials };
+    // An `mfa.type: totp` source resolves its second factor unattended — the code is computed locally
+    // from the configured seed (#137). Built per-source (the seed is per-source) and lazily (no seed
+    // `op read` unless a challenge actually fires). A non-totp / no-mfa source gets no resolver, so an
+    // issued challenge surfaces as the structured reauth-required (#134) instead of hanging.
+    const challengeResolver = createMfaChallengeResolver(sourceConfig.mfa, {
+        resolveCredential: deps.resolveCredential,
+    });
+    return { adapter, credentials, ...(challengeResolver === undefined ? {} : { challengeResolver }) };
 }
 
 function resolveAdapter(resolver: SourceResolver, source: string): SourceAdapter {
@@ -203,12 +215,20 @@ function buildRequest(
     window: OperationWindow | undefined,
     adapter: SourceAdapter,
     credentials: CollectRequest['credentials'],
+    challengeResolver: ChallengeResolver | undefined,
     deps: OperationRunnerDeps,
 ): CollectRequest {
     const writer = deps.createWriter();
     const now = deps.now();
+    const base: CollectRequest = {
+        adapter,
+        credentials,
+        writer,
+        now,
+        ...(challengeResolver === undefined ? {} : { challengeResolver }),
+    };
     if (window === undefined) {
-        return { adapter, credentials, writer, now };
+        return base;
     }
     const zone = adapter.descriptor.timezone ?? (deps.localTimeZone ?? hostTimeZone)();
     const range: DateRange = {
@@ -224,5 +244,5 @@ function buildRequest(
             '--since is in the future: an open-ended window starting after now matches nothing',
         );
     }
-    return { adapter, credentials, writer, now, window: range };
+    return { ...base, window: range };
 }

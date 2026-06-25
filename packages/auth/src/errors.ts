@@ -129,3 +129,27 @@ export class AuthenticationError extends Error {
         super(message);
     }
 }
+
+/**
+ * Why a {@link TotpError} happened:
+ *  - `invalid-seed` — the configured TOTP seed is empty or not valid Base32;
+ *  - `unsupported-challenge` — the in-process TOTP resolver was handed a non-`otp-totp` challenge.
+ */
+export type TotpFailureReason = 'invalid-seed' | 'unsupported-challenge';
+
+/**
+ * Thrown while computing or resolving a TOTP code. Like every error in this subsystem, it
+ * deliberately NEVER carries the seed or the derived code — only a human-readable message and a
+ * machine-readable {@link reason}.
+ */
+export class TotpError extends Error {
+    override readonly name = 'TotpError';
+
+    constructor(
+        message: string,
+        /** The machine-readable cause; see {@link TotpFailureReason}. */
+        readonly reason: TotpFailureReason,
+    ) {
+        super(message);
+    }
+}
