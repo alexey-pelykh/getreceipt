@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import type { ChallengeOutcome } from './challenge-observer.js';
 import type { CollectResult } from './collect.js';
 import type { ReceiptMetadatum, ReceiptRef } from './source-adapter.js';
 
@@ -65,6 +66,12 @@ export interface OperationResult {
     readonly skipped: readonly ReceiptSummary[];
     /** Human-readable detail for a `partial` / `failed` / `reauth-required` outcome; carries no secret material. */
     readonly reason?: string;
+    /**
+     * Per-source interactive-challenge outcomes (#142 AC3) — what 2FA the source demanded and how each
+     * resolved or degraded. Omitted when no challenge occurred. Redaction-safe by construction (closed
+     * enums only); surfaced identically to CLI `--json` and the MCP structured report via this one mapper.
+     */
+    readonly challenges?: readonly ChallengeOutcome[];
 }
 
 function summarize(ref: ReceiptRef): ReceiptSummary {
@@ -86,6 +93,8 @@ function summarize(ref: ReceiptRef): ReceiptSummary {
  */
 export function toOperationResult(result: CollectResult): OperationResult {
     const window = { from: result.window.from.toISOString(), to: result.window.to.toISOString() };
+    // Challenge outcomes ride through verbatim (already redaction-safe closed enums); omit when absent.
+    const challenges = result.challenges === undefined ? {} : { challenges: result.challenges };
 
     if (result.outcome === 'succeeded') {
         return {
@@ -94,6 +103,7 @@ export function toOperationResult(result: CollectResult): OperationResult {
             window,
             written: result.written.map(summarize),
             skipped: result.skipped.map(summarize),
+            ...challenges,
         };
     }
 
@@ -104,6 +114,7 @@ export function toOperationResult(result: CollectResult): OperationResult {
             window,
             written: [],
             skipped: [],
+            ...challenges,
         };
         return result.reason === undefined ? base : { ...base, reason: result.reason };
     }
@@ -117,5 +128,6 @@ export function toOperationResult(result: CollectResult): OperationResult {
         written: result.written.map(summarize),
         skipped: result.skipped.map(summarize),
         reason: result.reason,
+        ...challenges,
     };
 }

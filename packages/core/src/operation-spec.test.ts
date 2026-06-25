@@ -125,4 +125,44 @@ describe('toOperationResult', () => {
         const result = toOperationResult(collected);
         expect(JSON.parse(JSON.stringify(result))).toEqual(result);
     });
+
+    it('carries per-source challenge outcomes through verbatim (#142 AC3)', () => {
+        const collected: CollectResult = {
+            outcome: 'succeeded',
+            source: 'shop.example',
+            window,
+            written: [ref('inv-1')],
+            skipped: [],
+            challenges: [{ outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' }],
+        };
+
+        expect(toOperationResult(collected).challenges).toEqual([
+            { outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' },
+        ]);
+    });
+
+    it('carries a degraded challenge outcome onto a reauth-required result (#142 AC3)', () => {
+        const collected: CollectResult = {
+            outcome: 'reauth-required',
+            source: 'shop.example',
+            window,
+            challenges: [{ outcome: 'degraded', reason: 'no-resolver', type: 'otp-sms' }],
+        };
+
+        expect(toOperationResult(collected).challenges).toEqual([
+            { outcome: 'degraded', reason: 'no-resolver', type: 'otp-sms' },
+        ]);
+    });
+
+    it('omits `challenges` entirely when the run had none (exactOptionalPropertyTypes)', () => {
+        const collected: CollectResult = {
+            outcome: 'succeeded',
+            source: 'shop.example',
+            window,
+            written: [ref('inv-1')],
+            skipped: [],
+        };
+
+        expect(toOperationResult(collected)).not.toHaveProperty('challenges');
+    });
 });

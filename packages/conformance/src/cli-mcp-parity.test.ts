@@ -108,6 +108,13 @@ const COLLECT_RESULT: CollectResult = {
         },
     ],
     skipped: [ref('inv-0', 4)],
+    // Per-source challenge outcomes (#142 AC3) — both resolution modes — so the parity gate proves the
+    // challenge report lands byte-for-byte identical in CLI `--json` and MCP structured output, not just
+    // shape-compatible via the compile-time drift guard.
+    challenges: [
+        { outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' },
+        { outcome: 'resolved', type: 'otp-sms', mode: 'human-entered' },
+    ],
 };
 
 /** Never invoked (collect is stubbed) — a typed no-op so no production writer/casts leak in. */
@@ -243,7 +250,15 @@ describe('CLI `--json` output equals the MCP structured result (issue #18)', () 
         const cli = await cliJson(['from', 'shop.example', '--json', '--accept-consent']);
         const mcp = await mcpStructured('collect', { source: 'shop.example', acceptConsent: true });
         expect(cli).toEqual(mcp);
-        expect(mcp).toMatchObject({ source: 'shop.example', outcome: 'succeeded' });
+        expect(mcp).toMatchObject({
+            source: 'shop.example',
+            outcome: 'succeeded',
+            // The redaction-safe challenge outcomes (#142 AC3) survive identically across both surfaces.
+            challenges: [
+                { outcome: 'resolved', type: 'otp-totp', mode: 'totp-computed' },
+                { outcome: 'resolved', type: 'otp-sms', mode: 'human-entered' },
+            ],
+        });
     });
 
     it('all ↔ collect_all (mixed ok / per-source error)', async () => {

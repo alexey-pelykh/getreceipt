@@ -19,6 +19,7 @@ import type {
 } from '@getreceipt/auth';
 import { FilesystemReceiptWriter, Semaphore, collect as coreCollect, listSources } from '@getreceipt/core';
 import type {
+    ChallengeObserver,
     ChallengeResolver,
     CollectRequest,
     CollectResult,
@@ -77,6 +78,8 @@ export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandR
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
+    /** Optional sink for the challenge lifecycle (e.g. the verbose trace, #142); omitted → no live trace. */
+    readonly challengeObserver?: ChallengeObserver;
 }
 
 /**
@@ -144,6 +147,7 @@ function toRunnerDeps(deps: McpCollectionDeps, outDir: string): OperationRunnerD
         collect: deps.collect,
         now: deps.now,
         ...(deps.instrument === undefined ? {} : { instrument: deps.instrument }),
+        ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
         ...(deps.buildOutOfBandResolver === undefined ? {} : { buildOutOfBandResolver: deps.buildOutOfBandResolver }),
     };
 }

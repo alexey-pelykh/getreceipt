@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';
+import type { ChallengeObserver, ChallengeOutcome } from './challenge-observer.js';
 import type { ChallengeResolver } from './challenge.js';
 import { ReauthRequiredError } from './errors.js';
 import type { RateLimiter } from './rate-limiter.js';
@@ -38,6 +39,13 @@ export interface CollectRequest {
      * `login` ceremony (#134), rather than hanging or failing opaquely.
      */
     readonly challengeResolver?: ChallengeResolver;
+    /**
+     * Observes the challenge lifecycle (emitted / resolved / degraded) as it happens (#142). The
+     * terminal outcome of each challenge is ALSO recorded on {@link CollectResult.challenges} regardless
+     * of whether this is set — so the structured report carries per-source outcomes even on a silent run;
+     * this sink is for live logging (e.g. the CLI `--verbose` trace). It never receives secret material.
+     */
+    readonly challengeObserver?: ChallengeObserver;
 }
 
 interface CollectResultBase {
@@ -45,6 +53,12 @@ interface CollectResultBase {
     readonly source: string;
     /** The effective window applied to {@link SourceAdapter.list} (echoed back, default-resolved). */
     readonly window: DateRange;
+    /**
+     * Terminal outcome of each interactive challenge this run resolved or degraded on (#142 AC3), in
+     * order. Omitted when no challenge occurred (the common case). Redaction-safe: each
+     * {@link ChallengeOutcome} carries only the challenge type + resolution mode / degrade reason.
+     */
+    readonly challenges?: readonly ChallengeOutcome[];
 }
 
 /** Every listed receipt was written or skipped (idempotent). */
@@ -103,6 +117,25 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
     const now = request.now ?? new Date();
     const window = request.window ?? materializeWindow(adapter.descriptor.defaultWindow, now);
 
+    // Record each challenge's terminal outcome for the structured report (#142 AC3) while forwarding the
+    // live lifecycle to the caller's observer (AC1). Recording is unconditional — the report carries
+    // per-source outcomes even when no observer is wired and even when the run later degrades.
+    const challenges: ChallengeOutcome[] = [];
+    const observer: ChallengeObserver = (event) => {
+        request.challengeObserver?.(event);
+        if (event.phase === 'resolved') {
+            challenges.push({ outcome: 'resolved', type: event.type, mode: event.mode });
+        } else if (event.phase === 'degraded') {
+            challenges.push(
+                event.type === undefined
+                    ? { outcome: 'degraded', reason: event.reason }
+                    : { outcome: 'degraded', reason: event.reason, type: event.type },
+            );
+        }
+    };
+    const withChallenges = (result: CollectResult): CollectResult =>
+        challenges.length === 0 ? result : { ...result, challenges };
+
     let auth: AuthHandle;
     let refs: readonly ReceiptRef[];
     let semaphore: Semaphore;
@@ -111,12 +144,16 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
         // result rather than an uncaught throw (Semaphore rejects a bad capacity).
         semaphore = new Semaphore(request.fetchConcurrency ?? 1);
         // authenticate may demand an interactive challenge; the orchestrator resolves it through
-        // the injected resolver and resumes, yielding the session (#133).
-        auth = await resolveAuthChallenges(await adapter.authenticate(credentials), request.challengeResolver);
+        // the injected resolver and resumes, yielding the session (#133), emitting the lifecycle as it goes.
+        auth = await resolveAuthChallenges(await adapter.authenticate(credentials), request.challengeResolver, {
+            source,
+            observer,
+        });
         refs = await adapter.list(auth, window);
     } catch (error) {
-        // authenticate/list run before any write, so there is no partial progress.
-        return summarizeErrors([error], source, window, [], []);
+        // authenticate/list run before any write, so there is no partial progress. A degraded challenge
+        // recorded its outcome on `challenges` before the throw, so it still reaches the report.
+        return withChallenges(summarizeErrors([error], source, window, [], []));
     }
 
     const dispositions = new Array<Disposition | undefined>(refs.length);
@@ -137,9 +174,9 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
         .filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
         .map((outcome): unknown => outcome.reason);
     if (errors.length > 0) {
-        return summarizeErrors(errors, source, window, written, skipped);
+        return withChallenges(summarizeErrors(errors, source, window, written, skipped));
     }
-    return { outcome: 'succeeded', source, window, written, skipped };
+    return withChallenges({ outcome: 'succeeded', source, window, written, skipped });
 }
 
 /** Decide a single receipt's fate: skip if the writer already has it, else fetch and write. */

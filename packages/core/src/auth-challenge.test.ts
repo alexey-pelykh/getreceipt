@@ -12,6 +12,8 @@ import type {
     AuthChallengeRequired,
     AuthHandle,
     AuthResult,
+    ChallengeLifecycleEvent,
+    ChallengeObserver,
     ChallengeResolution,
     ChallengeResolver,
     ChallengeType,
@@ -137,6 +139,115 @@ describe('resolveAuthChallenges', () => {
             name: 'UnresolvedChallengeError',
             reason: 'exhausted',
         });
+    });
+});
+
+describe('resolveAuthChallenges — lifecycle observability (#142 AC1/AC2)', () => {
+    function recordEvents(): { readonly observer: ChallengeObserver; readonly events: ChallengeLifecycleEvent[] } {
+        const events: ChallengeLifecycleEvent[] = [];
+        return { observer: (event) => events.push(event), events };
+    }
+
+    it('emits emitted then resolved for a single challenge, with the source and type-derived mode', async () => {
+        const { resolver } = recordingResolver();
+        const { initial } = challengeChain(['otp-totp']);
+        const { observer, events } = recordEvents();
+
+        await resolveAuthChallenges(initial, resolver, { source: 'free.fr', observer });
+
+        expect(events).toEqual([
+            { phase: 'emitted', source: 'free.fr', type: 'otp-totp' },
+            { phase: 'resolved', source: 'free.fr', type: 'otp-totp', mode: 'totp-computed' },
+        ]);
+    });
+
+    it('reports an out-of-band challenge as human-entered', async () => {
+        const { resolver } = recordingResolver();
+        const { initial } = challengeChain(['otp-sms']);
+        const { observer, events } = recordEvents();
+
+        await resolveAuthChallenges(initial, resolver, { source: 'monoprix.fr', observer });
+
+        expect(events).toContainEqual({
+            phase: 'resolved',
+            source: 'monoprix.fr',
+            type: 'otp-sms',
+            mode: 'human-entered',
+        });
+    });
+
+    it('streams an event per round across a multi-challenge chain', async () => {
+        const { resolver } = recordingResolver();
+        const { initial } = challengeChain(['otp-sms', 'push']);
+        const { observer, events } = recordEvents();
+
+        await resolveAuthChallenges(initial, resolver, { source: 'free.fr', observer });
+
+        expect(events.map((e) => `${e.phase}:${'type' in e ? e.type : ''}`)).toEqual([
+            'emitted:otp-sms',
+            'resolved:otp-sms',
+            'emitted:push',
+            'resolved:push',
+        ]);
+    });
+
+    it('emits degraded(no-resolver) carrying the type before raising', async () => {
+        const { initial } = challengeChain(['otp-email']);
+        const { observer, events } = recordEvents();
+
+        await expect(resolveAuthChallenges(initial, undefined, { source: 'free.fr', observer })).rejects.toMatchObject({
+            reason: 'no-resolver',
+        });
+        expect(events).toEqual([
+            { phase: 'emitted', source: 'free.fr', type: 'otp-email' },
+            { phase: 'degraded', source: 'free.fr', reason: 'no-resolver', type: 'otp-email' },
+        ]);
+    });
+
+    it('emits degraded(exhausted) with NO type before raising past the round ceiling', async () => {
+        const { resolver } = recordingResolver();
+        const types = Array.from({ length: MAX_AUTH_CHALLENGE_ROUNDS + 1 }, (): ChallengeType => 'otp-totp');
+        const { initial } = challengeChain(types);
+        const { observer, events } = recordEvents();
+
+        await expect(resolveAuthChallenges(initial, resolver, { source: 'free.fr', observer })).rejects.toMatchObject({
+            reason: 'exhausted',
+        });
+        const degraded = events.filter((e) => e.phase === 'degraded');
+        expect(degraded).toEqual([{ phase: 'degraded', source: 'free.fr', reason: 'exhausted' }]);
+    });
+
+    it('derives exactly the modes it can produce: totp-computed for TOTP, human-entered for the rest', async () => {
+        const { resolver } = recordingResolver();
+        const { initial } = challengeChain(['otp-totp', 'otp-sms', 'push', 'captcha', 'webauthn']);
+        const { observer, events } = recordEvents();
+
+        await resolveAuthChallenges(initial, resolver, { source: 'free.fr', observer });
+
+        // The resolved-event mode is a closed OUTPUT set — no third mode leaks in (a device-trust mode
+        // would arrive with its own producer in #140, not be derivable here).
+        const modes = events.flatMap((e) => (e.phase === 'resolved' ? [e.mode] : []));
+        expect(new Set(modes)).toEqual(new Set(['totp-computed', 'human-entered']));
+    });
+
+    it('puts NO secret material on any event — the resolved code travels only on the resolution (AC2)', async () => {
+        const { resolver } = recordingResolver({ response: '123456', trustThisDevice: true });
+        const { initial } = challengeChain(['otp-totp']);
+        const { observer, events } = recordEvents();
+
+        await resolveAuthChallenges(initial, resolver, { source: 'free.fr', observer });
+
+        const serialized = JSON.stringify(events);
+        expect(serialized).not.toContain('123456');
+        // The trust-this-device election is a resolution detail, not an event field.
+        expect(serialized).not.toContain('trustThisDevice');
+    });
+
+    it('runs silently with no observer (backward-compatible 2-arg call is unaffected)', async () => {
+        const { resolver } = recordingResolver();
+        const { initial } = challengeChain(['otp-totp']);
+
+        await expect(resolveAuthChallenges(initial, resolver)).resolves.toBe(handle);
     });
 });
 

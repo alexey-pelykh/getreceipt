@@ -17,6 +17,7 @@ import {
     zonedDayStart,
 } from '@getreceipt/core';
 import type {
+    ChallengeObserver,
     ChallengeResolver,
     CollectRequest,
     CollectResult,
@@ -89,6 +90,8 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
+    /** Optional sink for the challenge lifecycle (e.g. the verbose trace, #142); omitted → no live trace. */
+    readonly challengeObserver?: ChallengeObserver;
     /** Resolves the host IANA zone used when a source declares none; injectable so the fallback is deterministic in tests. Defaults to {@link @getreceipt/core!hostTimeZone}. */
     readonly localTimeZone?: () => string;
 }
@@ -246,6 +249,7 @@ function buildRequest(
         writer,
         now,
         ...(challengeResolver === undefined ? {} : { challengeResolver }),
+        ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
     };
     if (window === undefined) {
         return base;

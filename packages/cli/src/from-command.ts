@@ -10,7 +10,7 @@ import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError } from './operation-runner.js';
 import { defaultCollectionDeps, runCollect, type CollectionDeps, type CollectParams } from './operations.js';
 import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
-import { traceAdapter } from './verbose-trace.js';
+import { traceAdapter, traceChallengeObserver } from './verbose-trace.js';
 import { parseWindow } from './window.js';
 
 /**
@@ -101,9 +101,14 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
                 outDir,
                 ...(window === undefined ? {} : { window }),
             };
-            // Verbose wraps the adapter with a secret-fenced tracer; the trace sink is the CLI's stderr.
+            // Verbose wraps the adapter with a secret-fenced stage tracer AND a challenge-lifecycle
+            // observer (#142); both trace sinks are the CLI's stderr.
             const deps: CollectionDeps = verbose
-                ? { ...env, instrument: (adapter) => traceAdapter(adapter, env.io.writeErr) }
+                ? {
+                      ...env,
+                      instrument: (adapter) => traceAdapter(adapter, env.io.writeErr),
+                      challengeObserver: traceChallengeObserver(env.io.writeErr),
+                  }
                 : env;
 
             let result: OperationResult;
