@@ -92,8 +92,6 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
     /** Optional sink for the challenge lifecycle (e.g. the verbose trace, #142); omitted → no live trace. */
     readonly challengeObserver?: ChallengeObserver;
-    /** Resolves the host IANA zone used when a source declares none; injectable so the fallback is deterministic in tests. Defaults to {@link @getreceipt/core!hostTimeZone}. */
-    readonly localTimeZone?: () => string;
 }
 
 /**
@@ -233,6 +231,11 @@ async function resolveCredentials(
  * zone) — `since` → start-of-day, `until` → end-of-day — so a month-aligned window returns that
  * month's receipts even when the local month-start precedes UTC midnight (#127). An absent `until`
  * makes the window open-ended to `now`.
+ *
+ * The host-zone branch is a defense-in-depth default, NOT a configurable seam (#146): every SHIPPED
+ * adapter declares an explicit zone (enforced by the conformance posture test), so in production the
+ * window always resolves in the source's own zone. The fallback only catches a hypothetical adapter
+ * that forgot the field — host zone beats a silent UTC, but the conformance gate is the real guarantee.
  */
 function buildRequest(
     window: OperationWindow | undefined,
@@ -254,7 +257,7 @@ function buildRequest(
     if (window === undefined) {
         return base;
     }
-    const zone = adapter.descriptor.timezone ?? (deps.localTimeZone ?? hostTimeZone)();
+    const zone = adapter.descriptor.timezone ?? hostTimeZone();
     const range: DateRange = {
         from: zonedDayStart(window.since, zone),
         to: window.until === undefined ? now : zonedDayEnd(window.until, zone),
