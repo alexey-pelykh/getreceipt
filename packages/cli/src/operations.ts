@@ -19,6 +19,7 @@ import type {
 } from '@getreceipt/auth';
 import { FilesystemReceiptWriter, Semaphore, collect as coreCollect, listSources } from '@getreceipt/core';
 import type {
+    ChallengeResolver,
     CollectRequest,
     CollectResult,
     OperationResult,
@@ -61,11 +62,13 @@ export const DEFAULT_CONCURRENCY = 3;
  * and `collect_all` (batch, via {@link runCollectAll}). Mirrors {@link OperationRunnerDeps} but takes
  * `createWriter(outDir)` (the front-end supplies the directory) rather than a pre-bound writer.
  *
- * Deliberately `Omit`s the LOGIN-ONLY `buildOutOfBandResolver` (#138): the collection paths (CLI
- * `from`/`all`, MCP `collect`/`collect_all`) are unattended and must never carry the interactive-prompt
- * seam. Excluding it at the type root makes the AC2 firewall STRUCTURAL — an unattended out-of-band
- * challenge can only surface as `reauth-required` (#134), and no future {@link toRunnerDeps} change
- * (e.g. tidying its explicit field list into a `...deps` spread) can re-open an inline prompt here.
+ * Deliberately `Omit`s the `buildOutOfBandResolver` (#138): the UNATTENDED CLI `from`/`all` path must
+ * never carry an out-of-band resolver, so a challenge there can only surface as `reauth-required`
+ * (#134). Excluding it at the type root makes that firewall STRUCTURAL for the CLI — `from`/`all`
+ * construct their deps as THIS type, which cannot name the field, so no future {@link toRunnerDeps}
+ * change (e.g. tidying its explicit field list into a `...deps` spread) can re-open an inline prompt
+ * for them. The MCP `collect`/`collect_all` path, which has a client that MAY support elicitation,
+ * opts in through the wider {@link McpCollectionDeps} instead (#139) — never this type.
  */
 export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandResolver'> {
     /** Builds the receipt writer bound to a target directory. */
@@ -74,6 +77,26 @@ export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandR
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
+}
+
+/**
+ * {@link CollectionDeps} PLUS the `out-of-band` challenge-resolver builder — the deps the MCP
+ * `collect`/`collect_all` path uses to resolve an interactive `otp-sms`/`otp-email`/`push` challenge
+ * mid-collect via MCP elicitation (#139). It RE-ADDS the field {@link CollectionDeps} structurally
+ * `Omit`s, keeping the opt-in asymmetric and compile-checked: the CLI `from`/`all` verbs build the
+ * narrower {@link CollectionDeps} (which cannot name the field) and stay firewalled, while ONLY the
+ * MCP path — whose client may declare the elicitation capability — constructs this wider shape, and
+ * even then ONLY when that capability is present. A {@link CollectionDeps} value is assignable here
+ * (the added field is optional), so {@link runCollect} / {@link runCollectAll} accept BOTH surfaces
+ * through one signature without the CLI ever being able to supply a resolver.
+ */
+export interface McpCollectionDeps extends CollectionDeps {
+    /**
+     * Builds the `out-of-band` {@link ChallengeResolver} for a source's configured trust-this-device
+     * election. Absent → the routing resolver has no out-of-band surface and an out-of-band challenge
+     * degrades to `reauth-required` (#134) — the same outcome the firewalled CLI path always gives.
+     */
+    readonly buildOutOfBandResolver?: (trustDevice: boolean) => ChallengeResolver;
 }
 
 /** Inputs for one single-source collection run. */
@@ -96,7 +119,7 @@ export interface CollectParams {
  * front-ends produce an identical {@link OperationResult} (including a first-class `reauth-required`
  * outcome). Pre-flight problems throw {@link OperationError}; a run that executed returns its result.
  */
-export function runCollect(params: CollectParams, deps: CollectionDeps): Promise<OperationResult> {
+export function runCollect(params: CollectParams, deps: McpCollectionDeps): Promise<OperationResult> {
     const spec: OperationSpec =
         params.window === undefined
             ? { source: params.source, profile: params.profile }
@@ -104,8 +127,13 @@ export function runCollect(params: CollectParams, deps: CollectionDeps): Promise
     return runOperation(spec, params.selection, toRunnerDeps(deps, params.outDir));
 }
 
-/** Bind the directory-taking {@link CollectionDeps} into the writer-bound {@link OperationRunnerDeps} {@link runOperation} expects. */
-function toRunnerDeps(deps: CollectionDeps, outDir: string): OperationRunnerDeps {
+/**
+ * Bind the directory-taking {@link McpCollectionDeps} into the writer-bound {@link OperationRunnerDeps}
+ * {@link runOperation} expects. Threads `buildOutOfBandResolver` ONLY when the caller supplied it (the
+ * MCP elicitation path, #139) — a narrower {@link CollectionDeps} omits the field, so the field is read
+ * EXPLICITLY (never via a `...deps` spread) and the CLI `from`/`all` firewall is preserved by the type.
+ */
+function toRunnerDeps(deps: McpCollectionDeps, outDir: string): OperationRunnerDeps {
     return {
         resolver: deps.resolver,
         resolveConfigPath: deps.resolveConfigPath,
@@ -116,6 +144,7 @@ function toRunnerDeps(deps: CollectionDeps, outDir: string): OperationRunnerDeps
         collect: deps.collect,
         now: deps.now,
         ...(deps.instrument === undefined ? {} : { instrument: deps.instrument }),
+        ...(deps.buildOutOfBandResolver === undefined ? {} : { buildOutOfBandResolver: deps.buildOutOfBandResolver }),
     };
 }
 
@@ -139,7 +168,7 @@ export interface CollectAllParams {
  * config, undefined profile) throws {@link OperationError}. Per-source failures are DATA in the
  * report, never thrown — one source can't strand the rest.
  */
-export async function runCollectAll(params: CollectAllParams, deps: CollectionDeps): Promise<BatchReport> {
+export async function runCollectAll(params: CollectAllParams, deps: McpCollectionDeps): Promise<BatchReport> {
     // Pre-flight the config ONCE so a missing/unreadable file is a single error,
     // not the same error repeated per source.
     const path = deps.resolveConfigPath(params.selection);

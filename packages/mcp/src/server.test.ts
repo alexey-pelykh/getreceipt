@@ -13,12 +13,21 @@ import {
     SourceAdapterRegistry,
     SourceResolver,
 } from '@getreceipt/core';
-import type { ArtifactHandle, AuthHandle, ReceiptRef, SourceAdapter } from '@getreceipt/core';
+import type {
+    ArtifactHandle,
+    AuthChallenge,
+    AuthHandle,
+    AuthResult,
+    ReceiptRef,
+    SourceAdapter,
+} from '@getreceipt/core';
 import type { AuthStatusDeps, CollectionDeps, ConsentGate, ListSourcesDeps } from '@getreceipt/cli';
 import { ConsentRequiredError } from '@getreceipt/cli';
 import { UNOFFICIAL_DISCLAIMER } from '@getreceipt/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { ElicitResult } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { McpToolDeps } from './deps.js';
@@ -69,6 +78,27 @@ function fakeAdapter(options: FakeAdapterOptions = {}): SourceAdapter {
                 contentType: 'application/pdf',
                 filename: `${receipt.id}.pdf`,
             } as unknown as ArtifactHandle);
+        },
+    };
+}
+
+/**
+ * A `shop.example` adapter that demands ONE out-of-band challenge on authenticate, then resumes into a
+ * session iff the resolution carries `expectedCode` — the fixture behind the elicitation tests (#139).
+ * `list`/`fetch` are inherited from {@link fakeAdapter}, so a resumed session flows into a real collection.
+ */
+function challengingAdapter(type: AuthChallenge['type'], expectedCode: string): SourceAdapter {
+    const base = fakeAdapter();
+    return {
+        ...base,
+        authenticate(): Promise<AuthResult> {
+            return Promise.resolve({
+                challenge: { type, prompt: 'Enter the code', metadata: { target: 'phone ending 89' } },
+                resume: (resolution) =>
+                    resolution.response === expectedCode
+                        ? Promise.resolve({} as unknown as AuthHandle)
+                        : Promise.reject(new Error('wrong code')),
+            });
         },
     };
 }
@@ -163,6 +193,33 @@ async function connect(deps: McpToolDeps = toolDeps()): Promise<Client> {
     await client.connect(clientTransport);
     clients.push(client);
     return client;
+}
+
+/**
+ * Like {@link connect}, but the client DECLARES the elicitation capability and answers every
+ * `elicitation/create` request via `onElicit` — a real bidirectional MCP elicitation over the
+ * in-memory pipe (#139). `seen` records each elicited message so a test can assert what was shown.
+ */
+async function connectWithElicitation(
+    deps: McpToolDeps,
+    onElicit: (message: string) => ElicitResult,
+): Promise<{ client: Client; seen: string[] }> {
+    const seen: string[] = [];
+    const server = createMcpServer(deps);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client(
+        { name: 'getreceipt-test', version: '0.0.0' },
+        { capabilities: { elicitation: { form: {} } } },
+    );
+    client.setRequestHandler(ElicitRequestSchema, (request) => {
+        const message = request.params.message;
+        seen.push(message);
+        return onElicit(message);
+    });
+    await client.connect(clientTransport);
+    clients.push(client);
+    return { client, seen };
 }
 
 function tempDir(): string {
@@ -306,6 +363,114 @@ describe('collect_all tool (↔ CLI `all`)', () => {
         expect(result.isError).toBe(true);
         expect(textOf(result)).toContain('Consent');
         expect(collect).not.toHaveBeenCalled();
+    });
+});
+
+describe('elicitation challenge resolver — mid-collect HITL (#139)', () => {
+    const CODE = '424242';
+
+    it('elicits a mid-collect otp-sms challenge through an elicitation-capable client and completes (AC1)', async () => {
+        const dir = tempDir();
+        const { client, seen } = await connectWithElicitation(
+            toolDeps({ collection: { resolver: resolverWith(challengingAdapter('otp-sms', CODE)) } }),
+            () => ({ action: 'accept', content: { code: CODE } }),
+        );
+
+        const result = await call(client, 'collect', { source: 'shop.example', out: dir, acceptConsent: true });
+
+        expect(result.isError ?? false).toBe(false);
+        const manifest = result.structuredContent as { outcome: string; written: { id: string }[] };
+        expect(manifest.outcome).toBe('succeeded');
+        expect(manifest.written.map((r) => r.id).sort()).toEqual(['inv-1', 'inv-2']);
+        // The challenge was elicited through the client with a redaction-safe message (prompt + descriptor).
+        expect(seen).toEqual(['Enter the code (target: phone ending 89)']);
+        // The resumed session flowed into a real collection — genuine writes on disk.
+        expect(existsSync(join(dir, 'shop.example', 'inv-1.pdf'))).toBe(true);
+        // The elicited code never leaks into the tool result.
+        expect(JSON.stringify(result)).not.toContain(CODE);
+    });
+
+    it('collect_all elicits a per-source challenge through the client and completes (AC1)', async () => {
+        const dir = tempDir();
+        const { client, seen } = await connectWithElicitation(
+            toolDeps({ collection: { resolver: resolverWith(challengingAdapter('otp-sms', CODE)) } }),
+            () => ({ action: 'accept', content: { code: CODE } }),
+        );
+
+        const result = await call(client, 'collect_all', { out: dir, acceptConsent: true });
+
+        expect(result.isError ?? false).toBe(false);
+        const report = result.structuredContent as {
+            sources: { source: string; ok: boolean; result?: { outcome: string } }[];
+        };
+        const shop = report.sources.find((s) => s.source === 'shop.example');
+        expect(shop?.ok).toBe(true);
+        expect(shop?.result?.outcome).toBe('succeeded');
+        expect(seen).toContain('Enter the code (target: phone ending 89)');
+        expect(existsSync(join(dir, 'shop.example', 'inv-1.pdf'))).toBe(true);
+    });
+
+    it('fails the collection on a WRONG elicited code — never a false success (the code is load-bearing)', async () => {
+        const dir = tempDir();
+        const { client, seen } = await connectWithElicitation(
+            toolDeps({ collection: { resolver: resolverWith(challengingAdapter('otp-sms', CODE)) } }),
+            () => ({ action: 'accept', content: { code: '000000' } }),
+        );
+
+        const result = await call(client, 'collect', { source: 'shop.example', out: dir, acceptConsent: true });
+
+        // The wrong answer was elicited and flowed back through `resume`, which rejected it.
+        expect(seen).toEqual(['Enter the code (target: phone ending 89)']);
+        expect(result.isError ?? false).toBe(false);
+        const manifest = result.structuredContent as { outcome: string; reason?: string };
+        // `failed`, not `succeeded` (no false pass) and not `reauth-required` (a bad code is a hard auth
+        // failure, distinct from no-elicitation-support).
+        expect(manifest.outcome).toBe('failed');
+        expect(manifest.reason).toContain('wrong code');
+        // Auth failed before any list/fetch — nothing landed on disk.
+        expect(existsSync(join(dir, 'shop.example', 'inv-1.pdf'))).toBe(false);
+    });
+
+    it('degrades to reauth-required when the client has NO elicitation support (AC2 — never hang, never silent)', async () => {
+        const dir = tempDir();
+        // The plain `connect` client declares no elicitation capability → the out-of-band surface stays
+        // unwired and the firewall behavior (#138) holds.
+        const client = await connect(
+            toolDeps({ collection: { resolver: resolverWith(challengingAdapter('otp-sms', CODE)) } }),
+        );
+
+        const result = await call(client, 'collect', { source: 'shop.example', out: dir, acceptConsent: true });
+
+        expect(result.isError ?? false).toBe(false); // reauth-required is DATA, not an error
+        const manifest = result.structuredContent as { outcome: string; reason?: string };
+        expect(manifest.outcome).toBe('reauth-required');
+        expect(manifest.reason).toContain('otp-sms');
+    });
+
+    it('degrades to reauth-required when the user declines the elicitation', async () => {
+        const dir = tempDir();
+        const { client } = await connectWithElicitation(
+            toolDeps({ collection: { resolver: resolverWith(challengingAdapter('otp-sms', CODE)) } }),
+            () => ({ action: 'decline' }),
+        );
+
+        const result = await call(client, 'collect', { source: 'shop.example', out: dir, acceptConsent: true });
+
+        expect(result.isError ?? false).toBe(false);
+        const manifest = result.structuredContent as { outcome: string; reason?: string };
+        expect(manifest.outcome).toBe('reauth-required');
+        expect(manifest.reason).toContain('otp-sms');
+    });
+
+    it('introduces no new tool — elicitation lives inside collect/collect_all; tool count stays 4 (AC3)', async () => {
+        const { client } = await connectWithElicitation(toolDeps(), () => ({
+            action: 'accept',
+            content: { code: CODE },
+        }));
+
+        const { tools } = await client.listTools();
+
+        expect(tools.map((t) => t.name).sort()).toEqual(['auth_status', 'collect', 'collect_all', 'list_sources']);
     });
 });
 

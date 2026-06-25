@@ -10,13 +10,15 @@ import {
     runListSources,
     validateWindow,
 } from '@getreceipt/cli';
-import type { ConsentGate, McpLaunchSelection } from '@getreceipt/cli';
+import type { CollectionDeps, ConsentGate, McpCollectionDeps, McpLaunchSelection } from '@getreceipt/cli';
 import type { ConfigSelection } from '@getreceipt/auth';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 import { defaultMcpToolDeps } from './deps.js';
 import type { McpToolDeps } from './deps.js';
+import { McpElicitationChallengeResolver } from './elicitation-challenge-resolver.js';
 import { mcpServerDescription, withToolDisclaimer } from './disclosure.js';
 import {
     authStatusInputShape,
@@ -91,6 +93,29 @@ async function consentDenial(consent: ConsentGate, acceptConsent: boolean | unde
 }
 
 /**
+ * Per-call collection deps for a `collect` / `collect_all` tool, wiring the MCP elicitation out-of-band
+ * resolver (#139) ONLY when the connected client declared the elicitation capability: a mid-collect
+ * `otp-sms` / `otp-email` / `push` challenge is then requested through the client and the call
+ * completes. Without that capability the base deps are returned unchanged, so the unattended firewall
+ * (#138) holds and an out-of-band challenge degrades to `reauth-required` (#134) — never a hang, never
+ * silent. The resolver is bound to the live `server` and the tool call's abort `signal`, so a
+ * cancelled call cancels the prompt.
+ */
+function collectionWithElicitation(base: CollectionDeps, server: Server, signal: AbortSignal): McpCollectionDeps {
+    if (server.getClientCapabilities()?.elicitation === undefined) {
+        return base;
+    }
+    return {
+        ...base,
+        buildOutOfBandResolver: (trustDevice) =>
+            new McpElicitationChallengeResolver({
+                elicit: (params, options) => server.elicitInput(params, { ...options, signal }),
+                trustDevice,
+            }),
+    };
+}
+
+/**
  * Build the getreceipt MCP server with its four tools — `collect` / `collect_all` / `list_sources` /
  * `auth_status` — each backed by the SAME operation layer (`runCollect` etc.) the CLI verbs drive, so
  * the two surfaces cannot diverge (the CLI↔MCP parity gate proves it). The unofficial / personal-use
@@ -115,7 +140,7 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
             outputSchema: collectOutputSchema,
             annotations: { readOnlyHint: false, openWorldHint: true },
         },
-        async (args) => {
+        async (args, extra) => {
             const denial = await consentDenial(deps.consent, args.acceptConsent);
             if (denial !== undefined) {
                 return errorResult(denial);
@@ -134,7 +159,7 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
                         outDir: args.out ?? '.',
                         ...(window.window === undefined ? {} : { window: window.window }),
                     },
-                    deps.collection,
+                    collectionWithElicitation(deps.collection, server.server, extra.signal),
                 );
                 return structuredResult(result);
             } catch (error) {
@@ -157,7 +182,7 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
             outputSchema: collectAllOutputSchema,
             annotations: { readOnlyHint: false, openWorldHint: true },
         },
-        async (args) => {
+        async (args, extra) => {
             const denial = await consentDenial(deps.consent, args.acceptConsent);
             if (denial !== undefined) {
                 return errorResult(denial);
@@ -176,7 +201,7 @@ export function createMcpServer(deps: McpToolDeps = defaultMcpToolDeps(), versio
                         outDir: args.out ?? '.',
                         ...(window.window === undefined ? {} : { window: window.window }),
                     },
-                    deps.collection,
+                    collectionWithElicitation(deps.collection, server.server, extra.signal),
                 );
                 return structuredResult(report);
             } catch (error) {

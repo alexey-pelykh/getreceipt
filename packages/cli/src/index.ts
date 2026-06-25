@@ -71,6 +71,7 @@ export type {
     CollectParams,
     ListSourcesDeps,
     ListSourcesParams,
+    McpCollectionDeps,
 } from './operations.js';
 
 export { EXIT_CODES, exitCodeFor, reauthRemedy, renderResultsTable } from './from-render.js';

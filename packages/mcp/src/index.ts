@@ -2,6 +2,9 @@
 
 export { describeMcp, MCP_TOOL_DISCLAIMER, mcpServerDescription, withToolDisclaimer } from './disclosure.js';
 
+export { DEFAULT_ELICITATION_TIMEOUT_MS, McpElicitationChallengeResolver } from './elicitation-challenge-resolver.js';
+export type { ElicitFn, McpElicitationChallengeResolverOptions } from './elicitation-challenge-resolver.js';
+
 export { createMcpServer } from './server.js';
 export { startMcpServer } from './start.js';
 
