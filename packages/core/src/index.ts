@@ -29,6 +29,8 @@ export { isAuthChallengeRequired } from './source-adapter.js';
 export type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeType } from './challenge.js';
 export { MAX_AUTH_CHALLENGE_ROUNDS, resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';
 export type { UnresolvedChallengeReason } from './auth-challenge.js';
+export { challengeSurface, RoutingChallengeResolver } from './challenge-surface.js';
+export type { ChallengeSurface } from './challenge-surface.js';
 export { SourceAdapterRegistry } from './registry.js';
 export { SourceResolver } from './resolver.js';
 export { DuplicateSourceError, ReauthRequiredError, UnknownSourceError } from './errors.js';
