@@ -42,6 +42,7 @@ const DESCRIPTOR: SourceDescriptor = {
     // names for it), and courses.monoprix.fr is a different product, not a receipt source.
     aliasDomains: [],
     authKind: 'password',
+    credentialShapes: ['password'],
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

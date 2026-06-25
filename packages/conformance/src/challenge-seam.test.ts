@@ -65,6 +65,7 @@ const baseDescriptor: SourceDescriptor = {
     canonicalDomain: 'seam.example',
     aliasDomains: [],
     authKind: 'password',
+    credentialShapes: ['password'],
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

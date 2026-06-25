@@ -27,6 +27,7 @@ export type {
     SecretRef,
     SecurityWarning,
 } from './config.js';
+export { configuredCredentialShapes } from './credential-shape.js';
 export { createConsentStore, defaultConsentPath, FileConsentStore } from './consent-store.js';
 export type { ConsentRecord, ConsentStore } from './consent-store.js';
 export { PasswordAuthDriver } from './password-driver.js';

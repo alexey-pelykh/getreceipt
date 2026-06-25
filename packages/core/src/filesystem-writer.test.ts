@@ -216,6 +216,7 @@ function makeArtifactAdapter(refs: readonly ReceiptRef[]): SourceAdapter {
         canonicalDomain: 'free.fr',
         aliasDomains: [],
         authKind: 'password',
+        credentialShapes: ['password'],
         transportTier: 'http-api',
         artifactMode: 'pdf-download',
         dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

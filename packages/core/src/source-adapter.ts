@@ -38,6 +38,27 @@ export type ArtifactHandle = Opaque<'getreceipt:ArtifactHandle'>;
 /** How a source authenticates, by the credential the user supplies — not the wire protocol. (`oauth2` dropped in #149: an OIDC source is `password` from the user's side; the code-flow is an adapter detail.) */
 export type AuthKind = 'none' | 'password' | 'api-token' | 'passkey';
 
+/**
+ * The credential shape a source accepts — a small CLOSED vocabulary (#169), the adapter's half of the
+ * validation contract the core resolve-time gate checks a configured source against. Distinct from
+ * {@link AuthKind}, NOT a synonym: `authKind` is the coarse SCALAR audit/policy label surfaced to the
+ * user (CLI `sources`, MCP schema); a descriptor's SET of credential shapes is the validation contract
+ * — never surfaced, only enforced. Keeping them separate is deliberate: the kind labels, the shape set
+ * gates.
+ *
+ * It exists to disambiguate the one genuinely-ambiguous YAML — a lone `secret:`, which the config
+ * parser defaults to `password` but is equally an `api-token` (#151). The adapter declares which it
+ * accepts, so the gate resolves the collision fail-closed instead of guessing config-side.
+ *
+ * 0.1.0 SCOPE BOUNDARY (#169 AC4): only shapes a shipped 0.1.0 source can use are enumerated. Every
+ * current source is single-credential `password` (a single-item ref OR per-field username+secret);
+ * `api-token` is modeled because it is the other half of the lone-`secret:` ambiguity, even though no
+ * 0.1.0 source declares it. Exotic combos — e.g. a `username` + `passkey` second factor (the #150
+ * passkey spike) — are deliberately NOT modeled yet; they extend this union ADDITIVELY (a new member)
+ * without reworking the gate or existing members, so forward-compat costs nothing here.
+ */
+export type CredentialShape = 'none' | 'password' | 'api-token';
+
 /** How a source is reached. */
 export type TransportTier = 'http-api' | 'html-scrape' | 'headless-browser';
 
@@ -78,6 +99,18 @@ export interface SourceDescriptor {
     /** Other domains that resolve to this same source (e.g. `adsl.free.fr` → `free.fr`). */
     readonly aliasDomains: readonly string[];
     readonly authKind: AuthKind;
+    /**
+     * The credential {@link CredentialShape}s this adapter accepts — the validation contract the
+     * resolve-time gate ({@link @getreceipt/core!resolveCredentialShape}) checks a configured
+     * source against, fail-closed (#169). A SET, not a scalar: it disambiguates the lone-`secret:`
+     * collision (an adapter listing `api-token` claims it; one listing `password` claims it as a
+     * secret-only login) and lets a source accept more than one shape. Complementary to — never a
+     * synonym for — {@link authKind} (the displayed label). Required (no fail-open default): the type
+     * forces every adapter to declare, and the conformance posture test asserts each shipped adapter's
+     * set is present and non-empty — so a misdeclared source fails a gate rather than silently
+     * accepting any shape.
+     */
+    readonly credentialShapes: readonly CredentialShape[];
     readonly transportTier: TransportTier;
     readonly artifactMode: ArtifactMode;
     readonly dateFilter: DateFilter;

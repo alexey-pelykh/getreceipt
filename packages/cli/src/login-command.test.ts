@@ -57,6 +57,7 @@ function fakeAdapter(
             canonicalDomain: opts.canonicalDomain ?? 'shop.example',
             aliasDomains: opts.aliasDomains ?? [],
             authKind: 'password',
+            credentialShapes: ['password'],
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
