@@ -43,6 +43,7 @@ export { SourceResolver } from './resolver.js';
 export { DuplicateSourceError, ReauthRequiredError, UnknownSourceError } from './errors.js';
 
 export { collect } from './collect.js';
+export { isWithinDateFilter } from './date-filter.js';
 export { hostTimeZone, zonedDayEnd, zonedDayStart } from './zoned-window.js';
 export type {
     CollectFailed,

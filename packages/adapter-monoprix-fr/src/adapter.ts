@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AuthenticationError, fromCredentialContext, Secret } from '@getreceipt/auth';
 import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
+import { isWithinDateFilter, ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -232,14 +232,11 @@ async function fetchReceipts(transport: Transport, r5Token: Secret, range: DateR
  * de-duplicating by that id while preserving listing order.
  */
 function expandToRefs(receipts: readonly ReceiptDto[], range: DateRange): ReceiptRef[] {
-    const fromMs = range.from.getTime();
-    const toMs = range.to.getTime();
     const byId = new Map<string, ReceiptRef>();
     for (const receipt of receipts) {
         const issuedAt = new Date(receipt.date);
-        const issuedMs = issuedAt.getTime();
-        if (issuedMs < fromMs || issuedMs > toMs) {
-            continue; // inclusive on both bounds, per the declared DateFilter
+        if (!isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
+            continue; // honor the source's declared bound inclusivity (DateFilter), not a hardcoded both-ends
         }
         const id = `${receipt.id}${REF_ID_DELIMITER}${receipt.type}`;
         if (!byId.has(id)) {

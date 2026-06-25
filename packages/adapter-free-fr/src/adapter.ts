@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError, fromCredentialContext, Secret } from '@getreceipt/auth';
 import type { SessionPersistableAdapter, StoredSession } from '@getreceipt/auth';
-import { ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
+import { isWithinDateFilter, ReauthRequiredError, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -213,14 +213,11 @@ async function visitSession(path: string, id: string, idt: string, jar: Map<stri
  * packed `mois__no_facture` id while preserving listing order.
  */
 function expandToRefs(invoices: readonly InvoiceDto[], range: DateRange): ReceiptRef[] {
-    const fromMs = range.from.getTime();
-    const toMs = range.to.getTime();
     const byId = new Map<string, ReceiptRef>();
     for (const invoice of invoices) {
         const issuedAt = firstOfMonth(invoice.mois);
-        const issuedMs = issuedAt.getTime();
-        if (issuedMs < fromMs || issuedMs > toMs) {
-            continue; // inclusive on both bounds, per the declared DateFilter
+        if (!isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
+            continue; // honor the source's declared bound inclusivity (DateFilter), not a hardcoded both-ends
         }
         const id = `${invoice.mois}${REF_ID_DELIMITER}${invoice.noFacture}`;
         if (!byId.has(id)) {
