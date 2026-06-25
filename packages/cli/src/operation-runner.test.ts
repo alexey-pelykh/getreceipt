@@ -154,7 +154,8 @@ describe('runOperation — happy path', () => {
         const result = await runOperation(
             { source: 'shop.example', profile: 'default', window: { since: '2024-01-01', until: '2024-01-31' } },
             undefined,
-            deps({ collect: capture.collect, localTimeZone: () => 'UTC' }),
+            // A UTC-declaring adapter pins the instants via the source's own zone, host-independent.
+            deps({ resolver: resolverWith(adapter('UTC')), collect: capture.collect }),
         );
 
         expect(result.outcome).toBe('succeeded');
@@ -194,12 +195,24 @@ describe('runOperation — happy path', () => {
 
     it('falls back to the host zone when the source declares none', async () => {
         const capture = capturingCollect();
-        await runOperation(
-            { source: 'shop.example', profile: 'default', window: { since: '2026-06-01', until: '2026-06-01' } },
-            undefined,
-            // adapter() declares no zone → the injected host zone (New York, EDT −04:00) resolves the window.
-            deps({ collect: capture.collect, localTimeZone: () => 'America/New_York' }),
-        );
+        // adapter() declares no zone → the window resolves in the REAL host zone via hostTimeZone(). Pin TZ
+        // so the defense-in-depth fallback (#127/#146) is deterministic without a test-only injection seam.
+        const originalTz = process.env.TZ;
+        process.env.TZ = 'America/New_York';
+        try {
+            await runOperation(
+                { source: 'shop.example', profile: 'default', window: { since: '2026-06-01', until: '2026-06-01' } },
+                undefined,
+                deps({ collect: capture.collect }),
+            );
+        } finally {
+            if (originalTz === undefined) {
+                delete process.env.TZ;
+            } else {
+                process.env.TZ = originalTz;
+            }
+        }
+        // New York is EDT (−04:00) on 2026-06-01, so the local day maps to these UTC instants.
         expect(capture.request()?.window?.from.toISOString()).toBe('2026-06-01T04:00:00.000Z');
         expect(capture.request()?.window?.to.toISOString()).toBe('2026-06-02T03:59:59.999Z');
     });
