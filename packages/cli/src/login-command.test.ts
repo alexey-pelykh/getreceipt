@@ -23,6 +23,7 @@ import type {
 import { describe, expect, it } from 'vitest';
 
 import { ConsentRequiredError } from './consent-gate.js';
+import { InteractivePromptChallengeResolver } from './interactive-challenge-resolver.js';
 import { createLoginCommand } from './login-command.js';
 import type { LoginCommandEnv } from './login-command.js';
 import { addGlobalConfigOptions } from './resolve-options.js';
@@ -320,5 +321,163 @@ describe('login — unattended TOTP second factor (#137)', () => {
 
         const reuse = await reuseStoredSession({ store, detector: new ReauthDetector(), key: 'shop.example' });
         expect(reuse.outcome).toBe('reuse');
+    });
+});
+
+describe('login — interactive out-of-band second factor via CLI prompt (#138) [AC1]', () => {
+    /** A flat config that adds an out-of-band `mfa` block (sms; no seed) to the shop source. */
+    function smsConfig(trustDevice?: boolean): ConfigParseResult {
+        return {
+            config: {
+                sources: {
+                    'shop.example': {
+                        kind: 'password',
+                        username: 'shopper',
+                        secret: { ref: 'PW' },
+                        mfa: trustDevice === undefined ? { type: 'sms' } : { type: 'sms', trustDevice },
+                    },
+                },
+            },
+            warnings: [],
+        };
+    }
+
+    /**
+     * A persistable source that demands an out-of-band factor on authenticate, records the resolution
+     * it is resumed with, and (when `expect` is set) validates the submitted code like a server would.
+     */
+    function challengingAdapter(
+        seen: { resolution?: ChallengeResolution },
+        opts: { type?: 'otp-sms' | 'push'; expect?: string; trustOption?: boolean } = {},
+    ): SourceAdapter {
+        const persistable = fakeAdapter() as SourceAdapter & SessionPersistableAdapter;
+        const type = opts.type ?? 'otp-sms';
+        return {
+            ...persistable,
+            authenticate: (): Promise<AuthResult> =>
+                Promise.resolve({
+                    challenge: {
+                        type,
+                        prompt: type === 'push' ? 'Approve the sign-in on your device' : 'Enter the texted code',
+                        ...(opts.trustOption === undefined ? {} : { trustOption: opts.trustOption }),
+                    },
+                    resume: (resolution) => {
+                        seen.resolution = resolution;
+                        if (opts.expect !== undefined && resolution.response !== opts.expect) {
+                            return Promise.reject(
+                                new AuthenticationError('the code was rejected', 'invalid-credentials'),
+                            );
+                        }
+                        return Promise.resolve({ token: new Secret(TOKEN) } as unknown as AuthHandle);
+                    },
+                }),
+        };
+    }
+
+    /**
+     * Wire login with the REAL {@link InteractivePromptChallengeResolver} but a scripted line reader +
+     * forced interactivity, so the whole config→ceremony→prompt→election chain runs without a TTY. The
+     * trustDevice the factory receives is the source's configured election (resolved internally).
+     */
+    function runOutOfBandLogin(args: {
+        line: string;
+        config: ConfigParseResult;
+        adapter: SourceAdapter;
+        sessionStore?: SessionStore;
+    }): Promise<RunResult> {
+        return runLogin(['shop.example'], {
+            loadConfig: () => args.config,
+            resolver: resolverWith(args.adapter),
+            ...(args.sessionStore === undefined ? {} : { sessionStore: args.sessionStore }),
+            buildOutOfBandResolver: (trustDevice) =>
+                new InteractivePromptChallengeResolver({
+                    io: { writeOut: () => {}, writeErr: () => {} },
+                    isInteractive: () => true,
+                    readLine: () => Promise.resolve(args.line),
+                    trustDevice,
+                }),
+        });
+    }
+
+    it('prompts for the out-of-band code, completes auth, and persists the session', async () => {
+        const seen: { resolution?: ChallengeResolution } = {};
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+
+        const { out, error } = await runOutOfBandLogin({
+            line: '  123456 \n',
+            config: smsConfig(),
+            adapter: challengingAdapter(seen, { expect: '123456' }),
+            sessionStore: store,
+        });
+
+        expect(error).toBeUndefined();
+        expect(out).toContain('logged in to shop.example');
+        // The code typed at the prompt was submitted to the source (trimmed).
+        expect(seen.resolution?.response).toBe('123456');
+        expect((await reuseStoredSession({ store, detector: new ReauthDetector(), key: 'shop.example' })).outcome).toBe(
+            'reuse',
+        );
+    });
+
+    it('sends trust-this-device ONLY when the source set trustDevice (and the challenge offers it)', async () => {
+        const withTrust: { resolution?: ChallengeResolution } = {};
+        await runOutOfBandLogin({
+            line: '123456',
+            config: smsConfig(true),
+            adapter: challengingAdapter(withTrust, { trustOption: true }),
+        });
+        expect(withTrust.resolution?.trustThisDevice).toBe(true);
+
+        // Same offered challenge, but the source did NOT set trustDevice → election is not sent.
+        const withoutTrust: { resolution?: ChallengeResolution } = {};
+        await runOutOfBandLogin({
+            line: '123456',
+            config: smsConfig(),
+            adapter: challengingAdapter(withoutTrust, { trustOption: true }),
+        });
+        expect(withoutTrust.resolution?.trustThisDevice).toBeUndefined();
+
+        // Source set trustDevice, but THIS challenge did not offer it → still not sent (both must hold).
+        const notOffered: { resolution?: ChallengeResolution } = {};
+        await runOutOfBandLogin({
+            line: '123456',
+            config: smsConfig(true),
+            adapter: challengingAdapter(notOffered),
+        });
+        expect(notOffered.resolution?.trustThisDevice).toBeUndefined();
+    });
+
+    it('completes a push challenge with no typed code — the operator approves on their device', async () => {
+        const seen: { resolution?: ChallengeResolution } = {};
+
+        const { out, error } = await runOutOfBandLogin({
+            line: '',
+            config: smsConfig(),
+            adapter: challengingAdapter(seen, { type: 'push' }),
+        });
+
+        expect(error).toBeUndefined();
+        expect(out).toContain('logged in to shop.example');
+        expect(seen.resolution?.response).toBe('');
+    });
+
+    it('NEVER prints the entered code [no-leak]', async () => {
+        const code = 'sk' + '_live_' + 'Y'.repeat(28);
+        const seen: { resolution?: ChallengeResolution } = {};
+
+        const { out, err } = await runOutOfBandLogin({
+            line: code,
+            config: smsConfig(),
+            adapter: challengingAdapter(seen, { expect: code }),
+        });
+
+        expect(out).not.toContain(code);
+        expect(err).not.toContain(code);
+        expect(
+            scanForSecrets([
+                { path: 'login-out', content: out },
+                { path: 'login-err', content: err },
+            ]),
+        ).toEqual([]);
     });
 });

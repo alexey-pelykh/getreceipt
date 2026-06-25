@@ -21,6 +21,7 @@ import { Command, CommanderError } from 'commander';
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { createDefaultResolver } from './default-sources.js';
 import { EXIT_CODES } from './from-render.js';
+import { InteractivePromptChallengeResolver } from './interactive-challenge-resolver.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError, resolveSourceContext } from './operation-runner.js';
 import { resolveConfigSelection } from './resolve-options.js';
@@ -46,11 +47,13 @@ export interface LoginCommandEnv {
     /** Where the established session is persisted. Defaults to the writable encrypted-file store. */
     readonly sessionStore: SessionStore;
     /**
-     * Resolves an interactive challenge (2FA / human step) a source may demand mid-login (#133).
-     * Omitted by default — no shipped source challenges yet; a concrete resolver is injected here when
-     * one does. Without it, a challenge surfaces as a usage-level authentication failure.
+     * Builds the `out-of-band` interactive-prompt {@link ChallengeResolver} (#138) — the human-in-the-
+     * loop step a source may demand mid-login (an SMS/email code, a push approval) — given the source's
+     * configured trust-this-device election. Wired ONLY into the `login` ceremony, never the unattended
+     * collect path. Defaults to a prompt via {@link InteractivePromptChallengeResolver}; tests inject a
+     * fake. (`in-process` TOTP, #137, is resolved unattended by `resolveSourceContext` itself.)
      */
-    readonly challengeResolver?: ChallengeResolver;
+    readonly buildOutOfBandResolver?: (trustDevice: boolean) => ChallengeResolver;
 }
 
 interface LoginOptions {
@@ -87,6 +90,12 @@ function exitWith(exitCode: number, code: string): CommanderError {
  */
 export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Command {
     const env: LoginCommandEnv = { ...defaultEnv(), ...overrides };
+    // Resolve the out-of-band builder AFTER merging overrides so the default prompt writes to the
+    // EFFECTIVE io (a test that overrides io still sees prompts on its io). Login-only: passed to
+    // `resolveSourceContext` so the interactive prompt is wired for `login` and never the collect path.
+    const buildOutOfBandResolver: (trustDevice: boolean) => ChallengeResolver =
+        env.buildOutOfBandResolver ??
+        ((trustDevice) => new InteractivePromptChallengeResolver({ io: env.io, trustDevice }));
 
     return new Command('login')
         .description('Authenticate to a configured source and store a reusable session.')
@@ -107,14 +116,16 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
 
             let adapter: SourceAdapter;
             let credentials: CredentialContext;
-            // An `mfa.type: totp` source yields an in-process resolver here, so login resolves the
-            // second factor unattended too (#137); an explicit `env.challengeResolver` override is the
-            // fallback for non-config-derived challenges.
+            // The login ceremony resolves BOTH surfaces a source might demand: `in-process` TOTP
+            // computed from the seed (#137, unattended) AND `out-of-band` (an SMS/email code or push
+            // approval) via the interactive prompt (#138) — assembled into one routing resolver by
+            // `resolveSourceContext` because we pass `buildOutOfBandResolver`. The collect path omits
+            // that builder, so the same out-of-band challenge there is reauth-required, never a prompt.
             let challengeResolver: ChallengeResolver | undefined;
             try {
                 ({ adapter, credentials, challengeResolver } = await resolveSourceContext(
                     { source: domain, selection },
-                    env,
+                    { ...env, buildOutOfBandResolver },
                 ));
             } catch (error) {
                 if (error instanceof OperationError) {
@@ -134,10 +145,7 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
                 // The adapter runs its real auth (incl. any multi-step token mint); the orchestrator
                 // resolves any interactive challenge it emits and resumes (#133), then the just-
                 // authenticated handle projects into the persistable session — the token stays fenced.
-                const handle = await resolveAuthChallenges(
-                    await adapter.authenticate(credentials),
-                    challengeResolver ?? env.challengeResolver,
-                );
+                const handle = await resolveAuthChallenges(await adapter.authenticate(credentials), challengeResolver);
                 session = adapter.toStoredSession(handle);
             } catch (error) {
                 // Auth failures are typed + secret-free (AuthenticationError); surface the message, never the cause.

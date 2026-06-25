@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { RoutingChallengeResolver } from '@getreceipt/core';
-import type { AuthChallenge, ChallengeResolution, ChallengeResolver } from '@getreceipt/core';
+import type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeSurface } from '@getreceipt/core';
 
 import type { CredentialValue, MfaConfig } from './config.js';
 import { TotpError } from './errors.js';
@@ -70,22 +70,24 @@ export interface MfaChallengeResolverDeps {
 }
 
 /**
- * Build the {@link ChallengeResolver} for a source's `mfa` config, or `undefined` when none applies.
- * Only `totp` is resolvable in-process today, so it is the only type wired: the result is a
- * {@link RoutingChallengeResolver} with the `in-process` surface bound to a {@link TotpChallengeResolver}
- * — the SAME one port the pipeline (`collect()`) and the `login` ceremony already accept.
+ * The per-{@link ChallengeSurface} resolvers a source's `mfa` config yields ON ITS OWN — today only
+ * the unattended `in-process` surface (a {@link TotpChallengeResolver} computed from the seed). The
+ * `out-of-band` and `browser-ceremony` surfaces deliver their code/approval through a human or a
+ * browser, so they are NOT config-derivable here: the composition root injects them (the `login`
+ * ceremony adds an interactive prompt for `out-of-band`, #138).
  *
- * `sms` / `email` / `push` deliver their code out-of-band and need a (not-yet-built) out-of-band
- * resolver; returning `undefined` for them (and for a source with no `mfa`) means an issued challenge
- * surfaces as the structured `reauth-required` (#134) rather than a wrong or empty answer.
+ * Returns a fresh, possibly-empty map by design — a composition root spreads it and ADDS its own
+ * surfaces before wrapping the whole in one {@link RoutingChallengeResolver} (the documented "one
+ * port, assembled from per-surface resolvers" pattern). {@link createMfaChallengeResolver} is the
+ * unattended convenience over it, used by the collect path.
  */
-export function createMfaChallengeResolver(
+export function mfaSurfaceResolvers(
     mfa: MfaConfig | undefined,
     deps: MfaChallengeResolverDeps,
-): ChallengeResolver | undefined {
+): Partial<Record<ChallengeSurface, ChallengeResolver>> {
     // `seed` is guaranteed for `totp` by config validation (#130); the guard is defensive.
     if (mfa === undefined || mfa.type !== 'totp' || mfa.seed === undefined) {
-        return undefined;
+        return {};
     }
     const seed = mfa.seed;
     const totp = new TotpChallengeResolver({
@@ -93,5 +95,22 @@ export function createMfaChallengeResolver(
         ...(deps.now === undefined ? {} : { now: deps.now }),
         ...(mfa.trustDevice === undefined ? {} : { trustDevice: mfa.trustDevice }),
     });
-    return new RoutingChallengeResolver({ 'in-process': totp });
+    return { 'in-process': totp };
+}
+
+/**
+ * Build the unattended {@link ChallengeResolver} for a source's `mfa` config, or `undefined` when the
+ * config yields no surface (no `mfa`, or an `sms`/`email`/`push` type that delivers its code
+ * out-of-band). `undefined` is load-bearing on the collect path: an issued challenge with no resolver
+ * surfaces as the structured `reauth-required` (#134) rather than a wrong or empty answer — and an
+ * out-of-band challenge never opens an inline prompt during an unattended run. The `login` ceremony
+ * does NOT use this — it assembles its own {@link RoutingChallengeResolver} from
+ * {@link mfaSurfaceResolvers} plus an interactive `out-of-band` resolver (#138).
+ */
+export function createMfaChallengeResolver(
+    mfa: MfaConfig | undefined,
+    deps: MfaChallengeResolverDeps,
+): ChallengeResolver | undefined {
+    const surfaces = mfaSurfaceResolvers(mfa, deps);
+    return Object.keys(surfaces).length === 0 ? undefined : new RoutingChallengeResolver(surfaces);
 }

@@ -235,6 +235,13 @@ When a `totp` source is collected (or logged in to), the one-time code is comput
 unattended** — no prompt, no human — from the resolved seed, so `from`, `all`, and the MCP `collect`
 tools sail past the second factor on their own.
 
+An `sms`, `email`, or `push` source delivers its code or approval **out-of-band**, so it cannot be
+answered unattended. Running **`login <domain>`** prompts you for the code (or, for `push`, asks you to
+approve on your device) and completes the sign-in — sending the "remember this device" election only
+when you set **`trustDevice`**. An unattended **`collect`** (`from`, `all`, the MCP `collect` tools)
+never prompts: an out-of-band challenge there surfaces as **`reauth-required`**, pointing you back at
+`login` to refresh the session interactively.
+
 > **Security — storing a TOTP `seed` collapses both factors onto one anchor.** TOTP is a _second_
 > factor precisely because the seed normally lives only on a separate device. Storing it so GetReceipt
 > can compute codes unattended puts that seed wherever your other secrets live, so whoever can read

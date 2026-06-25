@@ -77,5 +77,5 @@ export type {
 } from './errors.js';
 export { decodeBase32, generateTotp } from './totp.js';
 export type { TotpParams } from './totp.js';
-export { createMfaChallengeResolver, TotpChallengeResolver } from './totp-resolver.js';
+export { createMfaChallengeResolver, mfaSurfaceResolvers, TotpChallengeResolver } from './totp-resolver.js';
 export type { MfaChallengeResolverDeps, TotpChallengeResolverOptions } from './totp-resolver.js';

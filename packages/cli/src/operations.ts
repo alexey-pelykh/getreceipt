@@ -60,8 +60,14 @@ export const DEFAULT_CONCURRENCY = 3;
  * The source-resolution + collection seams shared by `collect` (single, via {@link runOperation})
  * and `collect_all` (batch, via {@link runCollectAll}). Mirrors {@link OperationRunnerDeps} but takes
  * `createWriter(outDir)` (the front-end supplies the directory) rather than a pre-bound writer.
+ *
+ * Deliberately `Omit`s the LOGIN-ONLY `buildOutOfBandResolver` (#138): the collection paths (CLI
+ * `from`/`all`, MCP `collect`/`collect_all`) are unattended and must never carry the interactive-prompt
+ * seam. Excluding it at the type root makes the AC2 firewall STRUCTURAL — an unattended out-of-band
+ * challenge can only surface as `reauth-required` (#134), and no future {@link toRunnerDeps} change
+ * (e.g. tidying its explicit field list into a `...deps` spread) can re-open an inline prompt here.
  */
-export interface CollectionDeps extends ResolveSourceDeps {
+export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandResolver'> {
     /** Builds the receipt writer bound to a target directory. */
     readonly createWriter: (outDir: string) => ReceiptWriter;
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
