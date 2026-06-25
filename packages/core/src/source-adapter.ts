@@ -21,7 +21,7 @@ export type Opaque<Tag extends string> = { readonly __brand: Tag };
 
 /**
  * Resolved credentials handed to {@link SourceAdapter.authenticate}. Produced by
- * the auth subsystem (the AuthOrchestrator + credential resolver); opaque here so
+ * the auth subsystem (the credential resolver); opaque here so
  * the adapter contract stays independent of how credentials are stored or resolved.
  */
 export type CredentialContext = Opaque<'getreceipt:CredentialContext'>;
@@ -35,7 +35,7 @@ export type AuthHandle = Opaque<'getreceipt:AuthHandle'>;
 /** Handle to a fetched receipt artifact (e.g. a downloaded document), returned by {@link SourceAdapter.fetch}. */
 export type ArtifactHandle = Opaque<'getreceipt:ArtifactHandle'>;
 
-/** How a source authenticates. Drives auth-driver selection in the AuthOrchestrator. */
+/** How a source authenticates. */
 export type AuthKind = 'none' | 'password' | 'oauth2' | 'api-token' | 'passkey';
 
 /** How a source is reached. */
@@ -69,7 +69,7 @@ export interface RelativeDateWindow {
 
 /**
  * The DECLARED half of an adapter: a static capability descriptor that the
- * registry, resolver, pipeline, and auth orchestrator read to route to and drive
+ * registry, resolver, and pipeline read to route to and drive
  * the source — without invoking any of its stages.
  */
 export interface SourceDescriptor {
@@ -195,7 +195,7 @@ export function isAuthChallengeRequired(result: AuthResult): result is AuthChall
  * drives in order — authenticate → list → fetch.
  */
 export interface SourceAdapter {
-    /** The source's declared capabilities. Read by the registry, resolver, pipeline, and auth orchestrator. */
+    /** The source's declared capabilities. Read by the registry, resolver, and pipeline. */
     readonly descriptor: SourceDescriptor;
     /**
      * Establish a session from resolved credentials — or return an {@link AuthChallengeRequired} when

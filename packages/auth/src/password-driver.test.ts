@@ -15,10 +15,6 @@ function credentials(password = PASSWORD): { email: string; password: Secret } {
 }
 
 describe('PasswordAuthDriver', () => {
-    it('declares the password auth kind, so it slots into the AuthOrchestrator seam', () => {
-        expect(new PasswordAuthDriver().kind).toBe('password');
-    });
-
     it('authenticates against the (mocked) transport and returns the session token fenced in a Secret', async () => {
         let received: unknown;
         server.use(

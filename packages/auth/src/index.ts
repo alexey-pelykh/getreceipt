@@ -22,8 +22,6 @@ export type {
 } from './config.js';
 export { createConsentStore, defaultConsentPath, FileConsentStore } from './consent-store.js';
 export type { ConsentRecord, ConsentStore } from './consent-store.js';
-export { AuthOrchestrator } from './auth-orchestrator.js';
-export type { AuthDriver } from './auth-orchestrator.js';
 export { PasswordAuthDriver } from './password-driver.js';
 export type { AuthSession, PasswordAuthRequest, PasswordCredentials } from './password-driver.js';
 export { CredentialResolver, ENCRYPTED_FILE_PASSPHRASE_ENV, defaultCommandRunner } from './credential-resolver.js';
@@ -67,7 +65,6 @@ export {
     CredentialResolutionError,
     SessionStoreError,
     TotpError,
-    UnsupportedAuthKindError,
 } from './errors.js';
 export type {
     AuthenticationFailureReason,
