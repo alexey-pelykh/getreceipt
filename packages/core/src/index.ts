@@ -13,6 +13,7 @@ export type {
     AuthKind,
     AuthResult,
     CredentialContext,
+    CredentialShape,
     DateFilter,
     DateFilterBasis,
     DateRange,
@@ -26,6 +27,7 @@ export type {
     TransportTier,
 } from './source-adapter.js';
 export { isAuthChallengeRequired } from './source-adapter.js';
+export { resolveCredentialShape } from './credential-shape.js';
 export type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeType } from './challenge.js';
 export { MAX_AUTH_CHALLENGE_ROUNDS, resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';
 export type { ResolveAuthChallengesOptions, UnresolvedChallengeReason } from './auth-challenge.js';
@@ -40,7 +42,12 @@ export type {
 } from './challenge-observer.js';
 export { SourceAdapterRegistry } from './registry.js';
 export { SourceResolver } from './resolver.js';
-export { DuplicateSourceError, ReauthRequiredError, UnknownSourceError } from './errors.js';
+export {
+    DuplicateSourceError,
+    ReauthRequiredError,
+    UnknownSourceError,
+    UnsupportedCredentialShapeError,
+} from './errors.js';
 
 export { collect } from './collect.js';
 export { isWithinDateFilter } from './date-filter.js';

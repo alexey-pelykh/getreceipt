@@ -5,13 +5,14 @@ import { join } from 'node:path';
 
 import {
     asCredentialContext,
+    configuredCredentialShapes,
     CredentialBackendUnavailableError,
     CredentialResolutionError,
     CredentialResolver,
 } from '@getreceipt/auth';
-import type { CredentialValue, ResolvedCredentials, Secret } from '@getreceipt/auth';
+import type { CredentialValue, DomainAuthConfig, ResolvedCredentials, Secret } from '@getreceipt/auth';
 import { createDefaultResolver } from '@getreceipt/cli';
-import { collect, FilesystemReceiptWriter } from '@getreceipt/core';
+import { resolveCredentialShape, collect, FilesystemReceiptWriter } from '@getreceipt/core';
 import type { CollectRequest, CollectResult, SourceResolver } from '@getreceipt/core';
 
 import type { LivePlan } from './gate.js';
@@ -70,8 +71,9 @@ function defaultDeps(): LiveHarnessDeps {
 /**
  * Run ONE real collection against a live source and report the trust-state it justifies —
  * the actual end-to-end exercise #19 AC1 asks for. The flow mirrors the production CLI path:
- * resolve the adapter, resolve its credential at call-time, pack it into the opaque
- * credential context, then drive `collect()`.
+ * resolve the adapter, run the same fail-closed credential-shape gate the resolve path runs (#169),
+ * resolve its credential at call-time, pack it into the opaque credential context, then drive
+ * `collect()`.
  *
  * Honesty / safety properties:
  *  - credentials are resolved at the point of use, never held in the {@link LivePlan} (#19 AC1);
@@ -85,6 +87,12 @@ function defaultDeps(): LiveHarnessDeps {
 export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveHarnessDeps> = {}): Promise<LiveRun> {
     const deps: LiveHarnessDeps = { ...defaultDeps(), ...overrides };
     const adapter = deps.resolver.resolve(plan.source);
+
+    // A LivePlan supplies a username+secret (a per-field password); run the SAME fail-closed shape gate
+    // the production resolve path runs (#169) so a plan whose shape the adapter rejects fails here at
+    // setup, not deep inside `authenticate()` — keeping the oracle a true mirror of production.
+    const planConfig: DomainAuthConfig = { kind: 'password', username: plan.username, secret: plan.secret };
+    resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(planConfig));
 
     let username: string;
     let secret: Secret;

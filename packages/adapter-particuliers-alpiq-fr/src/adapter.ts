@@ -54,6 +54,7 @@ const DESCRIPTOR: SourceDescriptor = {
     aliasDomains: [],
     // Keycloak OIDC Authorization-Code flow, driven headless → BFF cookie session (the monoprix OIDC flow).
     authKind: 'password',
+    credentialShapes: ['password'],
     transportTier: 'http-api',
     // PDF arrives base64 in a JSON envelope (`pdfContent`); the base64 is unwrapped inside fetch() — still pdf-download.
     artifactMode: 'pdf-download',

@@ -14,6 +14,7 @@ function fakeAdapter(canonicalDomain: string, descriptor: Partial<SourceDescript
             canonicalDomain,
             aliasDomains: [],
             authKind: 'password',
+            credentialShapes: ['password'],
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

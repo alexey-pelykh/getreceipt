@@ -14,6 +14,7 @@ function fakeAdapter(canonicalDomain = 'shop.example', aliasDomains: string[] = 
             canonicalDomain,
             aliasDomains,
             authKind: 'password',
+            credentialShapes: ['password'],
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

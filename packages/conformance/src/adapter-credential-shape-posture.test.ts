@@ -3,9 +3,15 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { fromCredentialContext, parseConfig, Secret } from '@getreceipt/auth';
+import { configuredCredentialShapes, fromCredentialContext, parseConfig, Secret } from '@getreceipt/auth';
+import type { DomainAuthConfig } from '@getreceipt/auth';
 import { BUNDLED_ADAPTERS } from '@getreceipt/cli';
-import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
+import {
+    resolveCredentialShape,
+    SourceAdapterRegistry,
+    SourceResolver,
+    UnsupportedCredentialShapeError,
+} from '@getreceipt/core';
 import type { CollectRequest, CollectResult, SourceAdapter } from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
 
@@ -108,4 +114,53 @@ describe('#152 — alpiq + monoprix are password sources (oauth2 → password re
             expect(run.source).toBe(domain);
         },
     );
+});
+
+/**
+ * #169 — every shipped adapter declares its supported credential shape(s), and the core fail-closed
+ * gate accepts a representative good config while rejecting a bad one. The five sources are named
+ * EXPLICITLY (not filtered from BUNDLED_ADAPTERS) so a dropped or misdeclared adapter FAILS here rather
+ * than silently leaving a filtered set (degenerate subject); a coverage guard asserts the bundle is
+ * exactly these five. Each good/bad pair drives the REAL descriptor through the REAL projection
+ * (`configuredCredentialShapes`) and the REAL gate (`resolveCredentialShape`) — the cross-package
+ * linkage no single package owns.
+ */
+const SHIPPED_SOURCES = ['free.fr', 'grandfrais.com', 'monoprix.fr', 'particuliers.alpiq.fr', 'pro.free.fr'] as const;
+
+/** Parse one source's `auth` block into its typed config (the domain was just inserted, so it resolves). */
+function shippedSourceConfig(domain: string, auth: unknown): DomainAuthConfig {
+    const config = parseConfig({ sources: { [domain]: { auth } } }).config.sources[domain];
+    if (config === undefined) {
+        throw new Error(`expected a parsed config for "${domain}"`);
+    }
+    return config;
+}
+
+describe('#169 — shipped adapters declare a credential shape the fail-closed gate enforces', () => {
+    it('the bundled set is exactly the five shipped sources (no adapter silently dropped)', () => {
+        const bundled = BUNDLED_ADAPTERS.map((adapter) => adapter.descriptor.canonicalDomain).sort();
+        expect(bundled).toEqual([...SHIPPED_SOURCES].sort());
+    });
+
+    it.each(SHIPPED_SOURCES)('%s declares a non-empty credentialShapes set that includes password', (domain) => {
+        const { credentialShapes } = bundledAdapterFor(domain).descriptor;
+        expect(credentialShapes.length).toBeGreaterThan(0);
+        expect(credentialShapes).toContain('password');
+    });
+
+    // Good: a single-item password login resolves to `password` through the real descriptor + gate.
+    it.each(SHIPPED_SOURCES)('%s: a representative password config passes the shape gate', (domain) => {
+        const adapter = bundledAdapterFor(domain);
+        const config = shippedSourceConfig(domain, { ref: 'op://Vault/Item' });
+        expect(resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(config))).toBe('password');
+    });
+
+    // Bad: an explicit api-token config against a password-only adapter is rejected fail-closed.
+    it.each(SHIPPED_SOURCES)('%s: an api-token config is rejected fail-closed', (domain) => {
+        const adapter = bundledAdapterFor(domain);
+        const config = shippedSourceConfig(domain, { kind: 'api-token', secret: { ref: 'op://Vault/Item' } });
+        expect(() => resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(config))).toThrow(
+            UnsupportedCredentialShapeError,
+        );
+    });
 });

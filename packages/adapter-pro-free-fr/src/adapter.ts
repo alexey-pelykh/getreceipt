@@ -34,6 +34,7 @@ const DESCRIPTOR: SourceDescriptor = {
     // pro.free.fr is a SEPARATE source from free.fr — its own login + REST stack, NOT an alias of it (#105).
     aliasDomains: [],
     authKind: 'password',
+    credentialShapes: ['password'],
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

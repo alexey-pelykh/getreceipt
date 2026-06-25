@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { asCredentialContext, ConfigError, mfaSurfaceResolvers } from '@getreceipt/auth';
+import { asCredentialContext, ConfigError, configuredCredentialShapes, mfaSurfaceResolvers } from '@getreceipt/auth';
 import type {
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
+    DomainAuthConfig,
     LoginSecrets,
     ResolvedCredentials,
     Secret,
 } from '@getreceipt/auth';
 import {
+    resolveCredentialShape,
     hostTimeZone,
     RoutingChallengeResolver,
     toOperationResult,
     UnknownSourceError,
+    UnsupportedCredentialShapeError,
     zonedDayEnd,
     zonedDayStart,
 } from '@getreceipt/core';
@@ -32,7 +35,13 @@ import type {
 } from '@getreceipt/core';
 
 /** Why an operation could not even start — each maps to the same `usage` exit code, but the kind tags the failure for diagnostics. */
-export type OperationErrorKind = 'unknown-source' | 'config' | 'not-configured' | 'credentials' | 'window';
+export type OperationErrorKind =
+    | 'unknown-source'
+    | 'config'
+    | 'not-configured'
+    | 'unsupported-shape'
+    | 'credentials'
+    | 'window';
 
 /**
  * A pre-flight failure: the operation never reached `collect()` (unknown source,
@@ -136,6 +145,11 @@ export async function resolveSourceContext(
     const path = deps.resolveConfigPath(spec.selection);
     const parsed = loadConfigOrThrow(deps.loadConfig, path);
     const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
+    // Fail closed BEFORE resolving credentials / authenticate(): reject a source whose configured
+    // credential shape the adapter does not accept (#169). Runs here, the one seam holding BOTH the
+    // parsed config shape and the adapter descriptor, so a mis-shaped source surfaces as a pre-flight
+    // OperationError at setup rather than failing opaquely deep in the auth flow.
+    assertConfiguredShapeSupported(adapter, sourceConfig);
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
     // Per-surface resolvers the config yields on its own — today only `in-process` (TOTP), computed
     // locally from the seed (#137) and safe to share by collect AND login (unattended either way). Built
@@ -183,6 +197,23 @@ function findSourceConfig(parsed: ConfigParseResult, source: string, adapter: So
         throw new OperationError('not-configured', `source "${source}" is not configured in ${path}`);
     }
     return sourceConfig;
+}
+
+/**
+ * Run the core credential-shape gate (#169) over a configured source, re-projecting the typed
+ * {@link UnsupportedCredentialShapeError} onto a pre-flight {@link OperationError}. The core error's
+ * message already names the configured shape and what the adapter accepts (and carries no secret), so it
+ * passes through verbatim.
+ */
+function assertConfiguredShapeSupported(adapter: SourceAdapter, sourceConfig: DomainAuthConfig): void {
+    try {
+        resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(sourceConfig));
+    } catch (error) {
+        if (error instanceof UnsupportedCredentialShapeError) {
+            throw new OperationError('unsupported-shape', error.message);
+        }
+        throw error;
+    }
 }
 
 async function resolveCredentials(

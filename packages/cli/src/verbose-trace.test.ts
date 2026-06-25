@@ -8,6 +8,7 @@ const DESCRIPTOR: SourceDescriptor = {
     canonicalDomain: 'shop.example',
     aliasDomains: [],
     authKind: 'password',
+    credentialShapes: ['password'],
     transportTier: 'http-api',
     artifactMode: 'pdf-download',
     dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },

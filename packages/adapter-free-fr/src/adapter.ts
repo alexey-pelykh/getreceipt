@@ -41,6 +41,7 @@ const DESCRIPTOR: SourceDescriptor = {
     // it; pro.free.fr is a SEPARATE source (own login + REST listing), tracked separately — not an alias.
     aliasDomains: [],
     authKind: 'password',
+    credentialShapes: ['password'],
     // Server-rendered HTML listing parsed in-process — no JSON API, no browser.
     transportTier: 'html-scrape',
     artifactMode: 'pdf-download',

@@ -38,6 +38,7 @@ function adapter(timezone?: string): SourceAdapter {
             canonicalDomain: 'shop.example',
             aliasDomains: ['www.shop.example'],
             authKind: 'password',
+            credentialShapes: ['password'],
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
@@ -602,5 +603,44 @@ describe('runOperation — out-of-band challenge stays reauth-required on the un
         // sms/email/push are not config-resolvable in-process, and the collect path never adds the
         // out-of-band interactive prompt — so the request carries no resolver (login is where it lives).
         expect(capture.request()?.challengeResolver).toBeUndefined();
+    });
+});
+
+describe('runOperation — credential-shape gate (#169)', () => {
+    it('rejects a config whose shape the adapter does not accept, as a pre-flight error before collect()', async () => {
+        // An api-token-only adapter; the default config supplies username+secret — unambiguously password,
+        // never an api-token — so the gate must fail closed at resolve time, before authenticate/collect.
+        const base = adapter();
+        const apiTokenAdapter: SourceAdapter = {
+            ...base,
+            descriptor: { ...base.descriptor, credentialShapes: ['api-token'] },
+        };
+        let collectCalled = false;
+
+        const error = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(apiTokenAdapter),
+                collect: () => {
+                    collectCalled = true;
+                    return Promise.resolve(SUCCEEDED);
+                },
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        // The message names both sides (and carries no secret — the config's inline value never appears).
+        expect((error as OperationError).message).toContain('"password"');
+        expect((error as OperationError).message).toContain('"api-token"');
+        expect(collectCalled).toBe(false);
+    });
+
+    it('admits a config whose shape the adapter accepts', async () => {
+        // The default adapter accepts ['password'] and the default config is a username+secret password.
+        await expect(runOperation({ source: 'shop.example', profile: 'default' }, undefined, deps())).resolves.toEqual(
+            expect.objectContaining({ outcome: 'succeeded' }),
+        );
     });
 });

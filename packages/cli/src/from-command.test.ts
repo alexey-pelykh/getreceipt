@@ -73,6 +73,7 @@ function fakeAdapter(options: FakeAdapterOptions = {}): SourceAdapter {
             canonicalDomain: 'shop.example',
             aliasDomains: ['www.shop.example'],
             authKind: 'password',
+            credentialShapes: ['password'],
             transportTier: 'http-api',
             artifactMode: 'pdf-download',
             dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
