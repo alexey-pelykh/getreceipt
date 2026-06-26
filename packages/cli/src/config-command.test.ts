@@ -168,6 +168,73 @@ describe('config validate', () => {
     });
 });
 
+describe('config — bare-ref sugar (#151) surface', () => {
+    function withConfig(yaml: string): { dir: string; path: string } {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-cli-bareref-'));
+        const path = join(dir, '.getreceipt.yaml');
+        writeFileSync(path, yaml);
+        return { dir, path };
+    }
+
+    it('show renders a bare-ref source: the pointer is shown UNRESOLVED and the kind derives to password', async () => {
+        // A lone reference string IS the single-item login — no `auth:`/`kind:` block to spell out (#151).
+        const { dir, path } = withConfig('sources:\n  shop.example: op://Vault/shop-login\n');
+        try {
+            const { out, err, error } = await runConfig(['show'], { resolveConfigPath: () => path });
+
+            expect(error).toBeUndefined();
+            expect(err).toBe('');
+            // Routed through the existing `ref` rendering — the pointer is shown verbatim, never dereferenced.
+            expect(out).toContain('ref: op://Vault/shop-login');
+            // `kind` is DERIVED from the desugared shape; it is absent from the source file.
+            expect(out).toContain('kind: password');
+            expect(out).toContain('shop.example');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('validate accepts the one-line bare-ref form (exit 0, no warning — a reference is not an inline literal)', async () => {
+        const { dir, path } = withConfig('sources:\n  shop.example: op://Vault/shop-login\n');
+        try {
+            const { out, err, error } = await runConfig(['validate'], { resolveConfigPath: () => path });
+
+            expect(error).toBeUndefined();
+            expect(out).toContain('valid');
+            // A `ref` is the recommended form — it must NOT raise the inline-credential warning.
+            expect(err).toBe('');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('validate rejects `ref` + `username`/`secret` with a clear either/or error naming both forms', async () => {
+        // The single-item `ref` and the per-field `username`/`secret` are mutually exclusive (config.ts).
+        const { dir, path } = withConfig(
+            [
+                'sources:',
+                '  shop.example:',
+                '    auth:',
+                '      ref: op://Vault/Item',
+                '      username: alice',
+                '',
+            ].join('\n'),
+        );
+        try {
+            const { out, err, error } = await runConfig(['validate'], { resolveConfigPath: () => path });
+
+            expect(error).toMatchObject({ exitCode: 1 });
+            expect(out).toBe('');
+            // The message names BOTH alternatives so the user knows which to drop — mirrors config.ts.
+            expect(err).toContain('either');
+            expect(err).toContain('ref');
+            expect(err).toContain('username');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
 describe('config path', () => {
     it('reports the resolved path, active profile, and existence', async () => {
         const { out, error } = await runConfig(['path'], { resolveConfigPath: () => validFixture });

@@ -6,9 +6,10 @@ import { AUTH_KINDS } from '@getreceipt/auth';
  * domain) that documents the {@link https://github.com/alexey-pelykh/getreceipt/blob/main/docs/configuration.md
  * config guide} shape. Each file IS one profile — the FILE the scaffold is written to (the caller
  * resolves it from `--profile`/`--config`) names the profile — so there is no `profiles:` map. The
- * single ACTIVE source uses an `op://` reference (recommended) so a freshly scaffolded file
- * validates with NO warnings; the discouraged inline-literal form is shown as a comment. `profile`
- * is the profile NAME, used only in the header comment. Pure — the caller writes the bytes.
+ * single ACTIVE source LEADS with the recommended one-line bare-ref form (#151) — a domain mapped
+ * straight to an `op://` reference — so a freshly scaffolded file validates with NO warnings; the
+ * per-field form and the discouraged inline literal are demoted to comments. `profile` is the
+ * profile NAME, used only in the header comment. Pure — the caller writes the bytes.
  */
 export function renderStarterConfig(profile: string): string {
     return `# getreceipt configuration (profile: ${profile})
@@ -23,17 +24,24 @@ export function renderStarterConfig(profile: string): string {
 # then check the file with \`getreceipt config validate\`.
 
 sources: # the sources this profile collects from, keyed by domain
-  example.com: # a source domain (canonical, or a known alias of one)
-    auth:
-      kind: password # one of: ${AUTH_KINDS.join(', ')}
-      username: you@example.com # optional; omit for kinds that need none
-      # Recommended — reference a secret kept OUTSIDE this file, so no secret value is ever
-      # written to disk: a 1Password item (op://…) or an encrypted file (encrypted-file:<path>).
-      secret:
-        ref: op://Personal/example.com/password
-      # Discouraged — an inline literal sits in this file in plaintext, so \`config validate\`
-      # warns and \`config show\` masks it. Prefer a reference (above) instead:
-      #   secret: your-secret-here
+  # Recommended — the one-line form: map a source domain straight to a single reference to a secret
+  # kept OUTSIDE this file, so no secret value is ever written to disk. One reference resolves BOTH
+  # the username and the password — a 1Password login item (op://…) or an encrypted file
+  # (encrypted-file:<path>). \`kind\` is derived (password); nothing else is needed.
+  example.com: op://Personal/example.com # a source domain (canonical, or a known alias of one)
+
+  # Per-field alternative — spell the credential out when one reference can't resolve both fields
+  # (or for a non-password source). \`auth.kind\` is optional (derived from the shape); set it only
+  # to pin a specific kind. Uncomment and adapt:
+  #   another.example.com:
+  #     auth:
+  #       kind: password # one of: ${AUTH_KINDS.join(', ')}
+  #       username: you@example.com # optional; omit for kinds that need none
+  #       secret:
+  #         ref: op://Personal/another.example.com/password
+  #       # Discouraged — an inline literal sits in this file in plaintext, so \`config validate\`
+  #       # warns and \`config show\` masks it. Prefer a reference (above) instead:
+  #       #   secret: your-secret-here
 `;
 }
 

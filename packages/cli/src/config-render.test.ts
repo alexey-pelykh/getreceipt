@@ -137,16 +137,16 @@ describe('renderConfigShow', () => {
 
 describe('buildValidateVerdict', () => {
     it('marks a successful load valid and maps warnings', () => {
+        // Per-file model: warning paths are `sources.<domain>.auth.…` — there is NO `profiles.` prefix
+        // (that map was removed in #120, and parseConfig now rejects a top-level `profiles:`).
         const verdict = buildValidateVerdict('/cfg.yaml', {
             ok: true,
-            warnings: [
-                { code: 'inline-credential', path: 'profiles.default.sources.x.auth.secret', message: 'use a ref' },
-            ],
+            warnings: [{ code: 'inline-credential', path: 'sources.x.auth.secret', message: 'use a ref' }],
         });
         expect(verdict.valid).toBe(true);
         expect(verdict.error).toBeNull();
         expect(verdict.warnings).toEqual([
-            { code: 'inline-credential', path: 'profiles.default.sources.x.auth.secret', message: 'use a ref' },
+            { code: 'inline-credential', path: 'sources.x.auth.secret', message: 'use a ref' },
         ]);
     });
 

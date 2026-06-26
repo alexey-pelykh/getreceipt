@@ -31,14 +31,29 @@ describe('renderStarterConfig', () => {
         expect(result.config.sources['example.com']).toBeDefined();
     });
 
-    it('shows the op:// reference (active) and the inline-literal form (commented, discouraged)', () => {
+    it('leads with the one-line bare-ref form (active); per-field + inline literal are commented', () => {
         const text = renderStarterConfig('default');
 
-        expect(text).toContain('ref: op://Personal/example.com/password');
-        // The literal form appears only as a comment, with its discouraged framing.
+        // The ACTIVE example is the recommended one-line bare-ref form (#151): a domain mapped
+        // straight to a single reference — no `auth:`/`kind:`/`secret:` block to fill in.
+        expect(text).toContain('example.com: op://Personal/example.com');
+        // The per-field form is demoted to a comment (its source key sits behind a `#`).
+        expect(text).toContain('#   another.example.com:');
+        // The discouraged inline-literal form remains only as a comment, with its framing.
         expect(text).toContain('#   secret: your-secret-here');
         expect(text).toMatch(/Discouraged/);
         expect(text).toMatch(/Recommended/);
+    });
+
+    it('the active source parses as the bare-ref single-item login (kind derives to password, no warnings)', () => {
+        const result = parseConfig(parseYaml(renderStarterConfig('default')));
+
+        // Bare-ref sugar (#151): a lone reference string desugars to a single-item login `ref` shape.
+        expect(result.config.sources['example.com']).toEqual({ kind: 'password', ref: 'op://Personal/example.com' });
+        expect(result.warnings).toEqual([]);
+        // The per-field `another.example.com` form is genuinely demoted to a comment — it is NOT a
+        // second active source (the scaffold leads with exactly the one bare-ref example).
+        expect(Object.keys(result.config.sources)).toEqual(['example.com']);
     });
 
     it('advertises only the reference schemes the resolver actually supports (op:// and encrypted-file:)', () => {
