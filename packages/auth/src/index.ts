@@ -93,6 +93,8 @@ export { browserUserDataDir, resolveProfile } from './profile-resolver.js';
 export type { ResolveProfileOptions } from './profile-resolver.js';
 export { decryptChromeCookie, deriveChromeSafeStorageKey, readChromeCookies } from './cookie-reader.js';
 export type { BrowserCookie, ReadChromeCookiesOptions } from './cookie-reader.js';
+export { fromBrowserSession, importBrowserSession } from './browser-session.js';
+export type { BrowserSession, BrowserSessionDescriptor, ImportBrowserSessionOptions } from './browser-session.js';
 export { decodeBase32, generateTotp } from './totp.js';
 export type { TotpParams } from './totp.js';
 export { createMfaChallengeResolver, mfaSurfaceResolvers, TotpChallengeResolver } from './totp-resolver.js';
