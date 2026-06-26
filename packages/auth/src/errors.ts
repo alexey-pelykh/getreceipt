@@ -122,6 +122,46 @@ export class AuthenticationError extends Error {
 }
 
 /**
+ * Why a {@link ProfileResolutionError} happened. Lets a caller branch on the cause without parsing
+ * the message:
+ *  - `unsupported-browser` — the browser keeps no Chromium-style `Local State` cache (Firefox);
+ *  - `user-data-dir-unset` — the platform location of the user-data dir can't be determined (e.g. Windows `%LOCALAPPDATA%` is unset);
+ *  - `local-state-unreadable` — the `Local State` file is missing or could not be read;
+ *  - `local-state-malformed` — the `Local State` file is not valid JSON or lacks `profile.info_cache`;
+ *  - `account-not-found` — an `@` value matched no `info_cache` entry (by `user_name`/`name`);
+ *  - `profile-not-found` — a directory-name value (or an account's resolved directory) does not exist on disk;
+ *  - `invalid-profile-value` — the value is empty or names something other than a single path segment.
+ */
+export type ProfileResolutionReason =
+    | 'unsupported-browser'
+    | 'user-data-dir-unset'
+    | 'local-state-unreadable'
+    | 'local-state-malformed'
+    | 'account-not-found'
+    | 'profile-not-found'
+    | 'invalid-profile-value';
+
+/**
+ * Thrown when a configured browser `profile` value cannot be resolved to a concrete profile directory.
+ * Like every error in this subsystem, it deliberately NEVER carries the configured value (a profile
+ * name or an account email) — only the {@link browser}, a human-readable message, and a machine-readable
+ * {@link reason}. (A unified error taxonomy across the auth subsystem is #178.)
+ */
+export class ProfileResolutionError extends Error {
+    override readonly name = 'ProfileResolutionError';
+
+    constructor(
+        message: string,
+        /** The machine-readable cause; see {@link ProfileResolutionReason}. */
+        readonly reason: ProfileResolutionReason,
+        /** Which browser's profile cache was being resolved (a {@link BrowserKind} value). */
+        readonly browser: string,
+    ) {
+        super(message);
+    }
+}
+
+/**
  * Why a {@link TotpError} happened:
  *  - `invalid-seed` — the configured TOTP seed is empty or not valid Base32;
  *  - `unsupported-challenge` — the in-process TOTP resolver was handed a non-`otp-totp` challenge.
