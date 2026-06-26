@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { asCredentialContext, ConfigError, configuredCredentialShapes, mfaSurfaceResolvers } from '@getreceipt/auth';
+import {
+    asCredentialContext,
+    ConfigError,
+    configuredCredentialShapes,
+    mfaSurfaceResolvers,
+    resolveBrowserSession,
+} from '@getreceipt/auth';
 import type {
     ConfigParseResult,
     ConfigSelection,
@@ -148,8 +154,12 @@ export async function resolveSourceContext(
     // Fail closed BEFORE resolving credentials / authenticate(): reject a source whose configured
     // credential shape the adapter does not accept (#169). Runs here, the one seam holding BOTH the
     // parsed config shape and the adapter descriptor, so a mis-shaped source surfaces as a pre-flight
-    // OperationError at setup rather than failing opaquely deep in the auth flow.
-    assertConfiguredShapeSupported(adapter, sourceConfig);
+    // OperationError at setup rather than failing opaquely deep in the auth flow. A `session` source is
+    // exempt: it supplies no resolve-time credential (the login lives in the browser's cookie store), so
+    // there is no credential shape to validate — resolveCredentials resolves it to its descriptor (#180).
+    if (sourceConfig.kind !== 'session') {
+        assertConfiguredShapeSupported(adapter, sourceConfig);
+    }
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
     // Per-surface resolvers the config yields on its own — today only `in-process` (TOTP), computed
     // locally from the seed (#137) and safe to share by collect AND login (unattended either way). Built
@@ -218,13 +228,15 @@ function assertConfiguredShapeSupported(adapter: SourceAdapter, sourceConfig: Do
 
 async function resolveCredentials(
     deps: ResolveSourceDeps,
-    sourceConfig: {
-        kind: ResolvedCredentials['kind'];
-        username?: CredentialValue;
-        secret?: CredentialValue;
-        ref?: string;
-    },
+    sourceConfig: DomainAuthConfig,
 ): Promise<ResolvedCredentials> {
+    // A browser `session` carries no secret to dereference — the already-authenticated login lives in the
+    // browser's cookie store — so resolving it is lifting the `{ browser, profile }` pair out of config
+    // (#180). The adapter's authenticate() hands this descriptor to importBrowserSession. The shape gate is
+    // skipped for session upstream, so this branch is the one credential path a session source takes.
+    if (sourceConfig.kind === 'session') {
+        return { kind: 'session', session: resolveBrowserSession(sourceConfig) };
+    }
     const resolved: { kind: ResolvedCredentials['kind']; username?: string; secret?: Secret } = {
         kind: sourceConfig.kind,
     };

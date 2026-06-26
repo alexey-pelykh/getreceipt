@@ -53,7 +53,7 @@ describe('configuredCredentialShapes', () => {
         expect(configuredCredentialShapes(authConfig({ kind: 'passkey' }))).toEqual([]);
     });
 
-    it('projects a browser-session config to the empty set — no 0.1.0 credential shape, fails closed until #176', () => {
+    it('projects a browser-session config to the empty set — a session has no credential shape (the front-end skips the gate for it, #180)', () => {
         expect(configuredCredentialShapes(authConfig({ browser: 'chrome', profile: 'Default' }))).toEqual([]);
     });
 });

@@ -18,9 +18,11 @@ import type { DomainAuthConfig } from './config.js';
  *  - `none` / `api-token` map to themselves;
  *  - `passkey` has no 0.1.0 shape (the #150 spike) → empty set → fails the gate closed. Modeling it is
  *    deferred per the {@link CredentialShape} scope boundary; until then a passkey source cannot resolve.
- *  - `session` (#174) likewise has no 0.1.0 credential shape — a browser session imports an existing login
- *    rather than supplying a credential the resolve-gate validates — so it maps to the empty set and fails
- *    closed until the session-import path lands (#176).
+ *  - `session` (#174) has no credential shape at all — a browser session imports an existing login rather
+ *    than supplying a credential the resolve-gate validates — so it maps to the empty set too. Unlike
+ *    `passkey`, the empty set no longer gates a session source closed: the front-end SKIPS the shape gate
+ *    for `kind: session` (there is no credential to validate) and resolves it to its `{ browser, profile }`
+ *    descriptor instead (#180). The empty set here states "no credential shape", nothing more.
  */
 export function configuredCredentialShapes(config: DomainAuthConfig): readonly CredentialShape[] {
     switch (config.kind) {

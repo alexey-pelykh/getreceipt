@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { AuthKind, CredentialContext } from '@getreceipt/core';
 
+import type { BrowserSessionDescriptor } from './browser-session.js';
 import type { Secret } from './secret.js';
 
 /**
@@ -20,6 +21,13 @@ export interface ResolvedCredentials {
     readonly username?: string;
     /** The resolved secret, still fenced — adapters call {@link Secret.expose} only at the point of use. */
     readonly secret?: Secret;
+    /**
+     * For `kind: session` only (#180): the resolved `{ browser, profile }` descriptor a session adapter's
+     * `authenticate()` hands to {@link importBrowserSession}. A session supplies NO secret — the already
+     * authenticated login lives in the browser's cookie store — so resolving it is lifting the pair out of
+     * config (via {@link resolveBrowserSession}), not unlocking a secret. Absent for every other kind.
+     */
+    readonly session?: BrowserSessionDescriptor;
 }
 
 /**
