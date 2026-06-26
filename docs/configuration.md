@@ -167,6 +167,23 @@ secret from the login item), just written on one line. It is the single-item log
 per-field credential still needs the `auth:` block with `username`/`secret`. To add a second factor,
 use the block form (`auth: { ref: …, mfa: … }`); the one-line sugar carries no `mfa`.
 
+### Migrating from 0.1.0-rc
+
+The credential model changed in 0.1.0, but the change is **additive — an existing 0.1.0-rc config
+keeps validating unchanged, no action required**:
+
+- **The `ref` forms are exactly as before.** Per-field (`username`/`secret`) and single-item (`ref`)
+  1Password references still validate as written — [bare-reference sugar](#bare-reference-sugar) is a
+  new one-line shorthand for the single-item form, not a replacement.
+- **`kind:` is now optional.** It used to be written by hand; it is now [derived from the
+  shape](#auth-kinds). An explicit `kind:` already in your file is **validated against** the shape
+  rather than required — keep it or drop it, both validate.
+- **`oauth2` is gone.** An OIDC source is `password` from your side (the code-flow is an adapter
+  detail), so the `oauth2` kind was removed. The bundled **`monoprix.fr`** and
+  **`particuliers.alpiq.fr`** sources are now `password`, so the single-item `ref` (and bare-ref sugar)
+  now works for them like any other password source. The one config that needs an edit is the rare one
+  that wrote `kind: oauth2` by hand — delete that line and the kind derives to `password`.
+
 ## Credentials
 
 A `secret` is given as a **reference** that `getreceipt` resolves when the source runs, so the secret
