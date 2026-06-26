@@ -68,6 +68,14 @@ describe('renderSourcesText', () => {
         expect(text).not.toContain('⚠');
     });
 
+    it('renders the `session` auth kind for a browser-session source (#174)', () => {
+        const text = renderSourcesText({
+            profile: 'default',
+            sources: [{ ...view('amazon.fr', true), authKind: 'session' }],
+        });
+        expect(text).toMatch(/amazon\.fr\s+session\s+http-api/);
+    });
+
     it('renders "(no sources registered)" for an empty registry', () => {
         expect(renderSourcesText({ profile: 'default', sources: [] })).toContain('(no sources registered)');
     });

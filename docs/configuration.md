@@ -78,13 +78,17 @@ sources: # the sources this profile can collect from
 - **`sources`** — a mapping of domain → source config (required; may be empty). There is **no**
   `profiles:` map — see [Migrating](#migrating-from-the-profiles-map) if you used one.
 - **`<domain>.auth.kind`** — **optional and derived** from the credential shape (see
-  [Auth kinds](#auth-kinds)); one of `none`, `password`, `api-token`, `passkey`. If you write it, it
-  is **validated against** the shape (it can't contradict it), never trusted as the source of truth.
+  [Auth kinds](#auth-kinds)); one of `none`, `password`, `session`, `api-token`, `passkey`. If you write
+  it, it is **validated against** the shape (it can't contradict it), never trusted as the source of truth.
 - **`<domain>.auth.username`** — optional string or credential reference.
 - **`<domain>.auth.secret`** — optional credential (see [Credentials](#credentials)).
 - **`<domain>.auth.ref`** — optional **single-item** 1Password reference that resolves BOTH username
   and secret from one LOGIN item (see [Credentials](#credentials)). Mutually exclusive with
   `username`/`secret`; it is the password LOGIN-item form (so it derives `kind: password`).
+- **`<domain>.auth.browser`** / **`<domain>.auth.profile`** — a **browser session** (see
+  [Browser session](#browser-session)): the browser whose already-authenticated login to import, and
+  which of its profiles. The pair derives `kind: session` and is mutually exclusive with any credential
+  (`ref`/`username`/`secret`).
 - **`<domain>.auth.mfa`** — optional **second factor** (see [Two-factor authentication](#two-factor-authentication-mfa)).
   Orthogonal to the credential choice above — it may accompany either `username`/`secret` or `ref`.
 
@@ -128,18 +132,19 @@ file that still has a top-level `profiles:` key fails fast with a message pointi
 
 ## Auth kinds
 
-A source's auth `kind` is one of `none`, `password`, `api-token`, or `passkey`. Each source's adapter
-declares the kind it needs; `getreceipt sources` lists it per source.
+A source's auth `kind` is one of `none`, `password`, `session`, `api-token`, or `passkey`. Each source's
+adapter declares the kind it needs; `getreceipt sources` lists it per source.
 
 You don't write `kind` — it is **derived from the shape** of the auth block, so the configured shape
 and the kind can never drift apart:
 
-| You wrote                                                        | Derived `kind`                       |
-| ---------------------------------------------------------------- | ------------------------------------ |
-| a single-item `ref` (or [bare-ref sugar](#bare-reference-sugar)) | `password`                           |
-| `username` and/or `secret`                                       | `password`                           |
-| a single `secret` and nothing else                               | `password` (the default — see below) |
-| an empty `auth: {}`                                              | `none`                               |
+| You wrote                                                            | Derived `kind`                       |
+| -------------------------------------------------------------------- | ------------------------------------ |
+| a single-item `ref` (or [bare-ref sugar](#bare-reference-sugar))     | `password`                           |
+| `username` and/or `secret`                                           | `password`                           |
+| a single `secret` and nothing else                                   | `password` (the default — see below) |
+| a `browser` + `profile` pair (a [browser session](#browser-session)) | `session`                            |
+| an empty `auth: {}`                                                  | `none`                               |
 
 A single opaque secret is **ambiguous** — it could be a password or an API token (identical YAML). The
 config derives the `password` default and the source's **adapter** disambiguates and validates it,
@@ -151,6 +156,40 @@ trusted: a `kind:` that contradicts the shape (e.g. `kind: none` with a `secret`
 with a `username`) is rejected. References are never scheme-sniffed — a `ref`/`secret` string is taken
 as a reference whatever its backend (`op://`, `encrypted-file:`, or a bare env-var name), so the
 **field** it sits in, not its text, decides how it resolves.
+
+### Browser session
+
+A `session` source supplies **no credential of its own**: you point getreceipt at a browser profile and
+it **imports that browser's already-authenticated session** from the browser's cookie store (the model
+yt-dlp's `--cookies-from-browser` uses). getreceipt never drives the login — it reuses the session you
+already established in your own browser.
+
+```yaml
+sources:
+  amazon.fr:
+    browser: chrome # one of: chrome, brave, edge, chromium, firefox
+    profile: 'Profile 1' # the browser profile: a profile directory name, or the account email
+```
+
+The terse top-level `browser`/`profile` pair above is **shorthand** (the session analogue of
+[bare-ref sugar](#bare-reference-sugar)); the explicit `auth:`-block form is equivalent:
+
+```yaml
+sources:
+  amazon.fr:
+    auth:
+      browser: chrome
+      profile: 'Profile 1'
+```
+
+- **`browser`** — which browser's cookie store to read: one of `chrome`, `brave`, `edge`, `chromium`,
+  `firefox`.
+- **`profile`** — which of that browser's profiles to import (a profile directory name, or the account
+  email). How that name maps to a concrete profile is resolved when the source runs.
+
+`kind: session` is **derived** from the `browser`/`profile` pair, exactly as `password` is derived from a
+credential — you don't write it (and a literal `kind: session` without the pair is rejected). A session
+carries no credential, so pairing `browser`/`profile` with a `ref`/`username`/`secret` is also rejected.
 
 ### Bare-reference sugar
 

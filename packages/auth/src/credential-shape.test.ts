@@ -52,4 +52,8 @@ describe('configuredCredentialShapes', () => {
     it('projects a passkey config to the empty set — out of 0.1.0 shape scope, fails the gate closed', () => {
         expect(configuredCredentialShapes(authConfig({ kind: 'passkey' }))).toEqual([]);
     });
+
+    it('projects a browser-session config to the empty set — no 0.1.0 credential shape, fails closed until #176', () => {
+        expect(configuredCredentialShapes(authConfig({ browser: 'chrome', profile: 'Default' }))).toEqual([]);
+    });
 });

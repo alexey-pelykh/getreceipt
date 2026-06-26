@@ -35,8 +35,15 @@ export type AuthHandle = Opaque<'getreceipt:AuthHandle'>;
 /** Handle to a fetched receipt artifact (e.g. a downloaded document), returned by {@link SourceAdapter.fetch}. */
 export type ArtifactHandle = Opaque<'getreceipt:ArtifactHandle'>;
 
-/** How a source authenticates, by the credential the user supplies — not the wire protocol. (`oauth2` dropped in #149: an OIDC source is `password` from the user's side; the code-flow is an adapter detail.) */
-export type AuthKind = 'none' | 'password' | 'api-token' | 'passkey';
+/**
+ * How a source authenticates, by the credential the user supplies — not the wire protocol. (`oauth2`
+ * dropped in #149: an OIDC source is `password` from the user's side; the code-flow is an adapter
+ * detail.) `session` (#174) supplies NO credential of its own: the user points at a browser profile and
+ * getreceipt imports that browser's already-authenticated session (the yt-dlp `--cookies-from-browser`
+ * model) — it never drives the login, so the kind is derived from a `browser`/`profile` config block,
+ * never user-declared from thin air.
+ */
+export type AuthKind = 'none' | 'password' | 'session' | 'api-token' | 'passkey';
 
 /**
  * The credential shape a source accepts — a small CLOSED vocabulary (#169), the adapter's half of the
