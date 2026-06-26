@@ -71,6 +71,7 @@ export { isSessionPersistable } from './session-persistable.js';
 export type { SessionPersistableAdapter } from './session-persistable.js';
 export {
     AuthenticationError,
+    BrowserCookieStoreError,
     ConfigError,
     CookieReadError,
     CredentialBackendUnavailableError,
@@ -81,6 +82,7 @@ export {
 } from './errors.js';
 export type {
     AuthenticationFailureReason,
+    BrowserCookieStoreReason,
     CookieReadReason,
     CredentialResolutionReason,
     ProfileResolutionReason,
