@@ -10,7 +10,7 @@ export class ConfigError extends Error {
 
     constructor(
         message: string,
-        /** Dotted path to the offending node, e.g. `profiles.default.sources.<domain>.auth.kind`. */
+        /** Dotted path to the offending node, e.g. `sources.<domain>.auth.kind` (per-file model — no `profiles.` prefix). */
         readonly path: string,
     ) {
         super(`${path}: ${message}`);
