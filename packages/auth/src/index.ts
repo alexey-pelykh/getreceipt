@@ -72,6 +72,7 @@ export type { SessionPersistableAdapter } from './session-persistable.js';
 export {
     AuthenticationError,
     ConfigError,
+    CookieReadError,
     CredentialBackendUnavailableError,
     CredentialResolutionError,
     ProfileResolutionError,
@@ -80,6 +81,7 @@ export {
 } from './errors.js';
 export type {
     AuthenticationFailureReason,
+    CookieReadReason,
     CredentialResolutionReason,
     ProfileResolutionReason,
     SessionStoreFailureReason,
@@ -87,6 +89,8 @@ export type {
 } from './errors.js';
 export { browserUserDataDir, resolveProfile } from './profile-resolver.js';
 export type { ResolveProfileOptions } from './profile-resolver.js';
+export { decryptChromeCookie, deriveChromeSafeStorageKey, readChromeCookies } from './cookie-reader.js';
+export type { BrowserCookie, ReadChromeCookiesOptions } from './cookie-reader.js';
 export { decodeBase32, generateTotp } from './totp.js';
 export type { TotpParams } from './totp.js';
 export { createMfaChallengeResolver, mfaSurfaceResolvers, TotpChallengeResolver } from './totp-resolver.js';

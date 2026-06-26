@@ -162,6 +162,42 @@ export class ProfileResolutionError extends Error {
 }
 
 /**
+ * Why a {@link CookieReadError} happened. Lets a caller branch on the cause without parsing the message:
+ *  - `unsupported-browser` — the browser does not use the Chromium "Safe Storage" cookie scheme (Firefox);
+ *  - `unsupported-platform` — cookie reading was attempted off macOS without an injected key (this reader is macOS-only);
+ *  - `invalid-domain` — the target domain to scope the read to is empty;
+ *  - `keychain-unavailable` — the macOS Keychain "Safe Storage" key could not be read (access denied / browser absent);
+ *  - `cookie-store-unreadable` — the `Cookies` SQLite store is missing, locked, or not a readable database;
+ *  - `app-bound-encryption` — a value uses a non-`v10` scheme (e.g. OS-level App-Bound Encryption) this reader will not circumvent;
+ *  - `decryption-failed` — a `v10` value did not decrypt under the derived key (wrong key or corrupt value).
+ */
+export type CookieReadReason =
+    | 'unsupported-browser'
+    | 'unsupported-platform'
+    | 'invalid-domain'
+    | 'keychain-unavailable'
+    | 'cookie-store-unreadable'
+    | 'app-bound-encryption'
+    | 'decryption-failed';
+
+/**
+ * Thrown when a browser cookie store cannot be read or a cookie value cannot be decrypted. Like every error in this
+ * subsystem, it deliberately NEVER carries a cookie value, the decryption key, or the Keychain password — only a
+ * human-readable message and a machine-readable {@link reason}. (A unified error taxonomy across the auth subsystem is #178.)
+ */
+export class CookieReadError extends Error {
+    override readonly name = 'CookieReadError';
+
+    constructor(
+        message: string,
+        /** The machine-readable cause; see {@link CookieReadReason}. */
+        readonly reason: CookieReadReason,
+    ) {
+        super(message);
+    }
+}
+
+/**
  * Why a {@link TotpError} happened:
  *  - `invalid-seed` — the configured TOTP seed is empty or not valid Base32;
  *  - `unsupported-challenge` — the in-process TOTP resolver was handed a non-`otp-totp` challenge.
