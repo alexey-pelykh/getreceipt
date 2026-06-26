@@ -5,16 +5,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { collect, ReauthRequiredError } from '@getreceipt/core';
+import type {
+    ArtifactHandle,
+    AuthHandle,
+    CredentialContext,
+    ReceiptRef,
+    ReceiptWriter,
+    SourceAdapter,
+    SourceDescriptor,
+} from '@getreceipt/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+    asCredentialContext,
     BrowserCookieStoreError,
+    browserSessionReauthRequired,
     deriveChromeSafeStorageKey,
     fromBrowserSession,
+    fromCredentialContext,
     importBrowserSession,
+    resolveBrowserSession,
     Secret,
 } from './index.js';
-import type { BrowserCookie, BrowserCookieStoreReason } from './index.js';
+import type { BrowserCookie, BrowserCookieStoreReason, BrowserSession } from './index.js';
 
 /** Chromium's fixed cookie IV (16 spaces) — mirrored so fixtures encrypt exactly as the reader decrypts. */
 const IV = Buffer.alloc(16, ' ');
@@ -324,5 +338,184 @@ describe('importBrowserSession — structured failures via BrowserCookieStoreErr
             'decryption-failed',
         );
         expect(`${error.message}${error.stack ?? ''}`).not.toContain('super-secret-value');
+    });
+});
+
+// --- the session-kind auth contract on the REAL collect path (#180) --------
+// A fake `session` source proving the contract end-to-end against core's real `collect()`: the resolver
+// yields the descriptor, `authenticate()` imports-and-returns via importBrowserSession (no login), and
+// `list`/`fetch` read the session back. All data is synthetic — a temp user-data dir + an injected Safe
+// Storage key (KEY) — so no real Keychain is touched and CI stays hermetic.
+
+const SESSION_DESCRIPTOR: SourceDescriptor = {
+    canonicalDomain: 'amazon.fr',
+    aliasDomains: [],
+    authKind: 'session',
+    // Unused on the collect path: a session source bypasses the #169 credential-shape gate (it supplies no
+    // credential). Present only because the descriptor field is required + non-empty.
+    credentialShapes: ['none'],
+    transportTier: 'headless-browser',
+    artifactMode: 'pdf-download',
+    dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+    defaultWindow: { days: 90 },
+    pagination: 'none',
+};
+
+const NOW = new Date('2026-06-21T00:00:00.000Z');
+
+interface SessionAdapterScript {
+    readonly userDataDir: string;
+    /** Observe the session `list()` reads back from the imported handle. */
+    readonly onList?: (session: BrowserSession) => void;
+    /** Observe the session `fetch()` reads — proves a cookie value is exposable at the point of use. */
+    readonly onFetch?: (session: BrowserSession) => void;
+    /** When set, `list()` throws this instead of listing — models a stale imported session rejected later. */
+    readonly listError?: () => Error;
+}
+
+/** A fake `session` adapter whose `authenticate()` imports via the #179 helper and returns the handle. */
+function sessionAdapter(script: SessionAdapterScript): SourceAdapter {
+    return {
+        descriptor: SESSION_DESCRIPTOR,
+        authenticate: async (credentials): Promise<AuthHandle> => {
+            const resolved = fromCredentialContext(credentials);
+            if (resolved.session === undefined) {
+                throw new Error('expected a resolved session descriptor on the credential context');
+            }
+            // Import-and-return: no credential exchange, no browser launch — just read the cookie store.
+            return importBrowserSession(resolved.session, SESSION_DESCRIPTOR.canonicalDomain, {
+                userDataDir: script.userDataDir,
+                key: KEY,
+            });
+        },
+        list: async (auth): Promise<readonly ReceiptRef[]> => {
+            if (script.listError !== undefined) {
+                throw script.listError();
+            }
+            const session = fromBrowserSession(auth);
+            script.onList?.(session);
+            // One ref per imported cookie, so a written-set assertion proves the session threaded through.
+            return session.cookies.map((cookie) => ({
+                id: `receipt-${cookie.name}`,
+                issuedAt: new Date('2026-03-01T00:00:00.000Z'),
+            }));
+        },
+        fetch: async (auth, receiptRef): Promise<ArtifactHandle> => {
+            script.onFetch?.(fromBrowserSession(auth));
+            return { id: receiptRef.id } as unknown as ArtifactHandle;
+        },
+    };
+}
+
+/** A writer that records what it was asked to persist; never inspects the artifact. */
+function recordingWriter(): { writer: ReceiptWriter; written: string[] } {
+    const written: string[] = [];
+    const writer: ReceiptWriter = {
+        has: async () => false,
+        write: async (_source, receiptRef) => {
+            written.push(receiptRef.id);
+        },
+    };
+    return { writer, written };
+}
+
+/** The credential context a front-end resolves for a session source — via the real {@link resolveBrowserSession}. */
+function sessionCredentials(profile: string): CredentialContext {
+    return asCredentialContext({
+        kind: 'session',
+        session: resolveBrowserSession({ kind: 'session', browser: 'chrome', profile }),
+    });
+}
+
+describe('resolveBrowserSession — the session credential resolver (#180)', () => {
+    it('lifts the { browser, profile } pair out of a session config arm (no secret to dereference)', () => {
+        expect(resolveBrowserSession({ kind: 'session', browser: 'brave', profile: 'Profile 1' })).toEqual({
+            browser: 'brave',
+            profile: 'Profile 1',
+        });
+    });
+});
+
+describe('browserSessionReauthRequired — a stale session reuses the existing reauth seam (#180)', () => {
+    it('mints a ReauthRequiredError with browser-pointing, PII-free guidance (no parallel error type)', () => {
+        const error = browserSessionReauthRequired('amazon.fr');
+        expect(error).toBeInstanceOf(ReauthRequiredError);
+        expect(error.domain).toBe('amazon.fr');
+        expect(error.reason).toContain('browser');
+        // The reason never echoes a configured profile / account / cookie.
+        expect(error.reason).not.toContain('Default');
+    });
+});
+
+describe('session-kind adapter on the real collect path (#180)', () => {
+    it('authenticates via importBrowserSession, then lists + fetches the session end-to-end [AC5]', async () => {
+        const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: AMAZON_COOKIES });
+        let listed: string[] | undefined;
+        const adapter = sessionAdapter({
+            userDataDir,
+            onList: (session) => {
+                listed = session.cookies.map((c) => c.name).sort();
+            },
+        });
+        const { writer, written } = recordingWriter();
+
+        // Resolve by account email — exercises the resolver -> context -> authenticate -> import chain.
+        const result = await collect({
+            adapter,
+            credentials: sessionCredentials('alice@personal.example'),
+            writer,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('succeeded');
+        // The imported, domain-scoped session threaded authenticate -> list.
+        expect(listed).toEqual(['host-only', 'session', 'ubid']);
+        // Every listed receipt fetched + written — the AuthHandle carried the session to fetch too.
+        expect(written.sort()).toEqual(['receipt-host-only', 'receipt-session', 'receipt-ubid']);
+    });
+
+    it('keeps cookie values Secret-fenced end-to-end — exposable at point of use, never in the result [no-leak]', async () => {
+        const userDataDir = makeUserDataDir({
+            cookiesIn: 'Default',
+            cookies: [
+                {
+                    host_key: '.amazon.fr',
+                    name: 'session',
+                    encrypted_value: encryptV10('LEAK-SENTINEL-cookie', KEY, '.amazon.fr'),
+                },
+            ],
+        });
+        let exposedInFetch: string | undefined;
+        const adapter = sessionAdapter({
+            userDataDir,
+            onFetch: (session) => {
+                exposedInFetch = byName(session.cookies, 'session').value.expose();
+            },
+        });
+        const { writer } = recordingWriter();
+
+        const result = await collect({ adapter, credentials: sessionCredentials('Default'), writer, now: NOW });
+
+        expect(result.outcome).toBe('succeeded');
+        // The fence is a fence, not deletion — the value is reachable where it is used...
+        expect(exposedInFetch).toBe('LEAK-SENTINEL-cookie');
+        // ...but the structured result never serializes it.
+        expect(JSON.stringify(result)).not.toContain('LEAK-SENTINEL-cookie');
+    });
+
+    it('maps a stale imported session to the existing reauth-required outcome [AC4]', async () => {
+        const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: AMAZON_COOKIES });
+        // Import succeeds (cookies present), but the source rejects them at list time — a stale session.
+        const adapter = sessionAdapter({ userDataDir, listError: () => browserSessionReauthRequired('amazon.fr') });
+        const { writer, written } = recordingWriter();
+
+        const result = await collect({ adapter, credentials: sessionCredentials('Default'), writer, now: NOW });
+
+        expect(result.outcome).toBe('reauth-required');
+        if (result.outcome === 'reauth-required') {
+            expect(result.reason).toContain('browser');
+        }
+        // A re-auth signal at list time means nothing was written.
+        expect(written).toEqual([]);
     });
 });

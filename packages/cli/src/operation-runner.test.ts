@@ -644,3 +644,42 @@ describe('runOperation — credential-shape gate (#169)', () => {
         );
     });
 });
+
+describe('runOperation — session kind (#180)', () => {
+    const sessionConfig: ConfigParseResult = {
+        config: { sources: { 'shop.example': { kind: 'session', browser: 'chrome', profile: 'Default' } } },
+        warnings: [],
+    };
+
+    function sessionAdapter(): SourceAdapter {
+        const base = adapter();
+        // authKind: session; credentialShapes is unused here (the shape gate is skipped for session sources).
+        return { ...base, descriptor: { ...base.descriptor, authKind: 'session', credentialShapes: ['none'] } };
+    }
+
+    it('resolves a session source to its { browser, profile } descriptor — no shape gate, no secret backend', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(sessionAdapter()),
+                loadConfig: () => sessionConfig,
+                collect: capture.collect,
+                // A session has no secret to dereference — these backends must not be consulted.
+                resolveCredential: () =>
+                    Promise.reject(new Error('resolveCredential must not run for a session source')),
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run for a session source')),
+            }),
+        );
+
+        // Reaching collect at all proves the credential-shape gate (#169) was skipped — it throws
+        // unsupported-shape for any session source (its projected shape set is empty). The resolved context
+        // carries the descriptor the adapter's authenticate() hands to importBrowserSession.
+        const resolved = fromCredentialContext(capture.request()!.credentials);
+        expect(resolved.kind).toBe('session');
+        expect(resolved.session).toEqual({ browser: 'chrome', profile: 'Default' });
+        expect(resolved.secret).toBeUndefined();
+        expect(resolved.username).toBeUndefined();
+    });
+});
