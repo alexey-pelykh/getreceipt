@@ -122,6 +122,69 @@ export class AuthenticationError extends Error {
 }
 
 /**
+ * The unified machine-readable taxonomy for the browser-cookie-store auth path — every cause either
+ * {@link ProfileResolutionError} (locating the profile directory, #176) or {@link CookieReadError}
+ * (reading and decrypting the store, #177) can fail with. A caller branches on the value without parsing
+ * prose; `unsupported-browser`, shared by both halves, collapses to one member. (#178.)
+ */
+export type BrowserCookieStoreReason = ProfileResolutionReason | CookieReadReason;
+
+/**
+ * Stable, actionable, per-reason recovery guidance for the browser-cookie-store path: what the USER can DO
+ * about a failure, distinct from the per-incident {@link Error.message} (what happened). The strings are
+ * STATIC with no interpolation — so, like every error here, this surface can never echo a cookie value,
+ * decryption key, Keychain password, profile path, or account email. The `satisfies` makes coverage
+ * exhaustive at compile time: add a reason to either union without a line here and this file stops
+ * compiling. Module-private — reached only through {@link BrowserCookieStoreError.guidance}.
+ */
+const BROWSER_COOKIE_STORE_GUIDANCE = {
+    'unsupported-browser':
+        'Use a Chromium-family browser (Chrome, Brave, Edge, or Chromium) for browser-session auth — Firefox keeps no compatible profile or cookie store.',
+    'user-data-dir-unset':
+        'The browser user-data location could not be determined; on Windows ensure %LOCALAPPDATA% is set, or pin the user-data directory explicitly.',
+    'local-state-unreadable':
+        'The browser profile cache could not be read; open the browser once to create it, and confirm the configured browser is the one installed.',
+    'local-state-malformed':
+        'The browser profile cache is corrupt or unrecognized; reopen the browser to rebuild it, or name the profile by its directory instead of an account.',
+    'account-not-found':
+        'No browser profile is signed into the configured account; sign into that account in the browser, or set the profile to its directory name.',
+    'profile-not-found':
+        'The configured browser profile does not exist; pick an existing profile, or sign in to create it.',
+    'invalid-profile-value':
+        'Set the profile to a non-empty, single-segment directory name or an account — it must not contain path separators.',
+    'unsupported-platform':
+        'Reading browser cookies is supported on macOS only right now; switch to macOS, or use a different auth method on this platform.',
+    'invalid-domain':
+        'No target domain was set for the cookie read; configure the site domain the source authenticates against.',
+    'keychain-unavailable':
+        'Approve the macOS prompt for the browser Safe Storage key, and confirm the browser is installed; denying it blocks cookie decryption.',
+    'cookie-store-unreadable':
+        'The browser cookie store could not be opened; visit the site in that profile at least once, and confirm the browser is installed.',
+    'app-bound-encryption':
+        'This browser uses OS-level App-Bound cookie encryption this tool will not bypass; use a browser with the standard scheme, or supply credentials another way.',
+    'decryption-failed':
+        'The cookie value could not be decrypted (wrong key or a corrupt store); confirm the configured browser matches the profile, then retry.',
+} satisfies Record<BrowserCookieStoreReason, string>;
+
+/**
+ * Shared supertype for the two halves of the browser-cookie-store auth path — {@link ProfileResolutionError}
+ * (locating the profile directory, #176) and {@link CookieReadError} (reading and decrypting the store, #177).
+ * A consumer (CLI / MCP) catches both in one `instanceof BrowserCookieStoreError` branch and reads the
+ * machine-readable {@link reason}, the human-readable {@link Error.message} (what happened), and the actionable
+ * {@link guidance} (what to do). Like every error in this subsystem, it deliberately NEVER carries a secret or
+ * configured value. (Unifies the taxonomy #176/#177 deferred; #178.)
+ */
+export abstract class BrowserCookieStoreError extends Error {
+    /** The machine-readable cause, from the unified {@link BrowserCookieStoreReason} set. */
+    abstract readonly reason: BrowserCookieStoreReason;
+
+    /** Stable, PII-free, actionable recovery guidance for {@link reason} — what the user can do about it. */
+    get guidance(): string {
+        return BROWSER_COOKIE_STORE_GUIDANCE[this.reason];
+    }
+}
+
+/**
  * Why a {@link ProfileResolutionError} happened. Lets a caller branch on the cause without parsing
  * the message:
  *  - `unsupported-browser` — the browser keeps no Chromium-style `Local State` cache (Firefox);
@@ -145,9 +208,9 @@ export type ProfileResolutionReason =
  * Thrown when a configured browser `profile` value cannot be resolved to a concrete profile directory.
  * Like every error in this subsystem, it deliberately NEVER carries the configured value (a profile
  * name or an account email) — only the {@link browser}, a human-readable message, and a machine-readable
- * {@link reason}. (A unified error taxonomy across the auth subsystem is #178.)
+ * {@link reason}. Extends {@link BrowserCookieStoreError}, the unified browser-cookie-store taxonomy (#178).
  */
-export class ProfileResolutionError extends Error {
+export class ProfileResolutionError extends BrowserCookieStoreError {
     override readonly name = 'ProfileResolutionError';
 
     constructor(
@@ -183,9 +246,10 @@ export type CookieReadReason =
 /**
  * Thrown when a browser cookie store cannot be read or a cookie value cannot be decrypted. Like every error in this
  * subsystem, it deliberately NEVER carries a cookie value, the decryption key, or the Keychain password — only a
- * human-readable message and a machine-readable {@link reason}. (A unified error taxonomy across the auth subsystem is #178.)
+ * human-readable message and a machine-readable {@link reason}. Extends {@link BrowserCookieStoreError}, the unified
+ * browser-cookie-store taxonomy (#178).
  */
-export class CookieReadError extends Error {
+export class CookieReadError extends BrowserCookieStoreError {
     override readonly name = 'CookieReadError';
 
     constructor(
