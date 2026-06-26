@@ -86,7 +86,7 @@ describe('renderStarterConfig', () => {
         // enum automatically. Pin the wiring (derived list) AND the concrete vocabulary, and assert the
         // dropped `oauth2` is absent anywhere in the scaffold.
         expect(text).toContain(`# one of: ${AUTH_KINDS.join(', ')}`);
-        expect(text).toContain('# one of: none, password, api-token, passkey');
+        expect(text).toContain('# one of: none, password, session, api-token, passkey');
         expect(text).not.toContain('oauth2');
     });
 });

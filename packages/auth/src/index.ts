@@ -2,6 +2,7 @@
 
 export {
     AUTH_KINDS,
+    BROWSER_KINDS,
     CONFIG_DIR,
     CONFIG_FILE_ENV,
     defaultConfigPath,
@@ -12,6 +13,8 @@ export {
 export type {
     ApiTokenAuthShape,
     AuthShape,
+    BrowserKind,
+    BrowserSessionAuthShape,
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,

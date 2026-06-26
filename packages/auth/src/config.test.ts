@@ -6,7 +6,14 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { ConfigError, CredentialResolver, loadConfig, parseConfig, resolveConfigFilePath } from './index.js';
+import {
+    BROWSER_KINDS,
+    ConfigError,
+    CredentialResolver,
+    loadConfig,
+    parseConfig,
+    resolveConfigFilePath,
+} from './index.js';
 
 describe('parseConfig', () => {
     it('parses a valid flat config into typed per-domain auth', () => {
@@ -595,6 +602,156 @@ describe('parseConfig — #151 shape-discriminated union + derived kind', () => 
         const source = readFileSync(fileURLToPath(new URL('./config.ts', import.meta.url)), 'utf8');
         expect(source).not.toMatch(/from '@getreceipt\/(cli|adapter-)/);
         expect(source).not.toMatch(/SourceAdapterRegistry|SourceResolver|BUNDLED_ADAPTERS/);
+    });
+});
+
+describe('parseConfig — #174 browser-session arm + derived `session` kind', () => {
+    // --- `session` derives from the `browser`/`profile` pair, in either the `auth:` block or the sugar. ---
+    it('derives `session` from an `auth: { browser, profile }` block when `kind` is omitted', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.fr': { auth: { browser: 'chrome', profile: 'Profile 1' } } },
+        });
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon.fr'];
+        expect(source?.kind).toBe('session');
+        expect(source?.browser).toBe('chrome');
+        expect(source?.profile).toBe('Profile 1');
+        // A session carries NO credential.
+        expect(source?.ref).toBeUndefined();
+        expect(source?.username).toBeUndefined();
+        expect(source?.secret).toBeUndefined();
+    });
+
+    it('desugars the top-level `{ browser, profile }` shorthand to the session arm (no `auth:` block)', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.fr': { browser: 'firefox', profile: 'default-release' } },
+        });
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon.fr'];
+        expect(source?.kind).toBe('session');
+        expect(source?.browser).toBe('firefox');
+        expect(source?.profile).toBe('default-release');
+    });
+
+    it('accepts an explicit `kind: session` validated against the shape (rc-window)', () => {
+        const { config } = parseConfig({
+            sources: { 'amazon.fr': { auth: { kind: 'session', browser: 'brave', profile: 'Default' } } },
+        });
+        expect(config.sources['amazon.fr']?.kind).toBe('session');
+        expect(config.sources['amazon.fr']?.browser).toBe('brave');
+    });
+
+    it('accepts every browser in the closed BROWSER_KINDS vocabulary', () => {
+        for (const browser of BROWSER_KINDS) {
+            const { config } = parseConfig({ sources: { x: { browser, profile: 'P' } } });
+            expect(config.sources['x']?.browser).toBe(browser);
+            expect(config.sources['x']?.kind).toBe('session');
+        }
+    });
+
+    // --- `session` is DERIVED, never summoned from a bare `kind:` (consistent with #151). ---
+    it('rejects `kind: session` with no `browser`/`profile` (not declarable from thin air)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'session' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('session');
+    });
+
+    // --- Skew: a browser session and a credential are mutually exclusive (the compile-error, at runtime). ---
+    it('rejects a session block carrying a credential `ref` (browser + ref skew)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { browser: 'chrome', profile: 'P', ref: 'op://V/i' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('credential');
+    });
+
+    it('rejects a declared non-session kind carrying `browser`/`profile` (kind: password + browser)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'password', browser: 'chrome', profile: 'P' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('session');
+    });
+
+    // --- The arm needs BOTH fields — each alone is incomplete. ---
+    it('rejects `browser` without `profile`, naming the missing field', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { browser: 'chrome' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.profile');
+    });
+
+    it('rejects `profile` without `browser`, naming the missing field', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { profile: 'Default' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.browser');
+    });
+
+    it('rejects an off-vocabulary `browser` value, naming the path (never echoing the value)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { browser: 'safari', profile: 'P' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.browser');
+        expect((caught as ConfigError).message).not.toContain('safari');
+    });
+
+    it('rejects an empty `profile` string, naming the path', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { browser: 'chrome', profile: '' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.profile');
+    });
+
+    // --- The top-level sugar and an `auth:` block are mutually exclusive — two credential sources is ambiguous. ---
+    it('rejects mixing the top-level sugar with an `auth:` block', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { browser: 'chrome', profile: 'P', auth: { ref: 'op://V/i' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x');
+    });
+
+    // --- `mfa` stays orthogonal — it attaches to the session arm like any other. ---
+    it('accepts `mfa` alongside a session (orthogonal to the credential/session choice)', () => {
+        const { config } = parseConfig({
+            sources: { x: { auth: { browser: 'edge', profile: 'Work', mfa: { type: 'push' } } } },
+        });
+        expect(config.sources['x']?.kind).toBe('session');
+        expect(config.sources['x']?.mfa?.type).toBe('push');
     });
 });
 

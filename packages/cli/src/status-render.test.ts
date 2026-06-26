@@ -47,6 +47,14 @@ describe('renderStatusText', () => {
         expect(text).toContain('    stored session expired at 2024-01-01T00:00:00.000Z');
     });
 
+    it('renders the `session` auth kind for a browser-session source (#174)', () => {
+        const text = renderStatusText({
+            profile: 'default',
+            sources: [view({ source: 'amazon.fr', requested: 'amazon.fr', authKind: 'session' })],
+        });
+        expect(text).toMatch(/amazon\.fr\s+session\s+session: none/);
+    });
+
     it('renders "(no sources configured)" for an empty profile', () => {
         expect(renderStatusText({ profile: 'default', sources: [] })).toContain('(no sources configured)');
     });

@@ -26,6 +26,14 @@ export type _AuthShapeTypeTests = [
     Expect<Rejected<{ kind: 'api-token'; secret: { ref: string }; username: string }>>,
     Expect<Rejected<{ kind: 'none'; secret: { ref: string } }>>,
     Expect<Rejected<{ kind: 'passkey'; ref: string }>>,
+    // A browser `session` carries no credential: `browser` + a `ref` is assignable to no arm (#174).
+    Expect<Rejected<{ kind: 'session'; browser: 'chrome'; profile: string; ref: string }>>,
+    // A credential arm carries no `browser`: the cross-skew is rejected from the other side too.
+    Expect<Rejected<{ kind: 'password'; ref: string; browser: 'chrome' }>>,
+    // The session arm needs BOTH fields — `browser` alone (no `profile`) is not constructible.
+    Expect<Rejected<{ kind: 'session'; browser: 'chrome' }>>,
+    // `browser` is the closed BrowserKind vocabulary — an off-list value is rejected.
+    Expect<Rejected<{ kind: 'session'; browser: 'safari'; profile: string }>>,
 
     // Every valid arm IS constructible.
     Expect<Constructible<{ kind: 'none' }>>,
@@ -34,11 +42,13 @@ export type _AuthShapeTypeTests = [
     Expect<Constructible<{ kind: 'password'; secret: { ref: string } }>>,
     Expect<Constructible<{ kind: 'api-token'; secret: { ref: string } }>>,
     Expect<Constructible<{ kind: 'passkey' }>>,
+    Expect<Constructible<{ kind: 'session'; browser: 'chrome'; profile: string }>>,
 
     // `mfa` is orthogonal — it attaches to ANY arm.
     Expect<Constructible<{ kind: 'none'; mfa: { type: 'sms' } }>>,
     Expect<Constructible<{ kind: 'password'; ref: string; mfa: { type: 'totp'; seed: { ref: string } } }>>,
+    Expect<Constructible<{ kind: 'session'; browser: 'firefox'; profile: string; mfa: { type: 'push' } }>>,
 
-    // The union discriminant is exactly the AuthKind vocabulary (#149).
-    Expect<Equal<AuthShape['kind'], 'none' | 'password' | 'api-token' | 'passkey'>>,
+    // The union discriminant is exactly the AuthKind vocabulary (#149, #174).
+    Expect<Equal<AuthShape['kind'], 'none' | 'password' | 'session' | 'api-token' | 'passkey'>>,
 ];
