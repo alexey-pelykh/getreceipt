@@ -96,6 +96,26 @@ export interface RelativeDateWindow {
 }
 
 /**
+ * Per-instance parameters for a multi-instance source (#190): the data that varies between
+ * `amazon.com` and `amazon.fr` while ONE adapter implementation and ONE credential serve both.
+ * The instance axis is the sibling of {@link SourceDescriptor.aliasDomains}: aliases are the SAME
+ * data under multiple names; instances are SEPARATE data (orders on `.com` are not visible on `.fr`)
+ * reached with the SAME shared session. Instance-specific behavior lives in this DATA — the adapter
+ * reads it in `list`/`fetch` rather than branching on the domain, so adding an instance is adding a
+ * context entry, not new code.
+ */
+export interface InstanceContext {
+    /** The instance domain this context parameterizes (e.g. `amazon.com`). The resolver key and the per-instance output namespace. */
+    readonly domain: string;
+    /** Base origin every request (endpoint path) for this instance is templated onto (e.g. `https://www.amazon.com`). */
+    readonly host: string;
+    /** Cookie host-key suffix the shared session is scoped to for this instance (e.g. `amazon.com`) — which of the session's cookies travel to this instance. */
+    readonly cookieDomain: string;
+    /** Accept-Language / locale tag this instance renders in (e.g. `en-US`); drives the request header and locale-sensitive parsing. */
+    readonly locale: string;
+}
+
+/**
  * The DECLARED half of an adapter: a static capability descriptor that the
  * registry, resolver, and pipeline read to route to and drive
  * the source — without invoking any of its stages.
@@ -105,6 +125,15 @@ export interface SourceDescriptor {
     readonly canonicalDomain: string;
     /** Other domains that resolve to this same source (e.g. `adsl.free.fr` → `free.fr`). */
     readonly aliasDomains: readonly string[];
+    /**
+     * The instance domains this adapter serves as SEPARATE data instances (#190), each paired with its
+     * {@link InstanceContext}. The instance axis, sibling of {@link aliasDomains}: instances are
+     * different data behind one shared credential/session; aliases are the same data under other names.
+     * Absent/empty → a single-instance source, unaffected by the instance machinery (behaves as before
+     * #190). The bare instance-domain list is `instances.map((i) => i.domain)`. A `canonicalDomain` that
+     * is itself an instance is listed here with its own context (so it routes uniformly).
+     */
+    readonly instances?: readonly InstanceContext[];
     readonly authKind: AuthKind;
     /**
      * The credential {@link CredentialShape}s this adapter accepts — the validation contract the
@@ -245,8 +274,12 @@ export interface SourceAdapter {
      * {@link ChallengeResolver} and resumes. (#133)
      */
     authenticate(credentials: CredentialContext): Promise<AuthResult>;
-    /** List references to receipts that fall within `range` (on the declared date basis). */
-    list(auth: AuthHandle, range: DateRange): Promise<readonly ReceiptRef[]>;
-    /** Fetch the artifact for a single reference. */
-    fetch(auth: AuthHandle, ref: ReceiptRef): Promise<ArtifactHandle>;
+    /**
+     * List references to receipts that fall within `range` (on the declared date basis). `instance` is
+     * present for a multi-instance source (#190) — the {@link InstanceContext} this run targets (host,
+     * locale, cookie scope); absent for a single-instance source, where the adapter uses its own defaults.
+     */
+    list(auth: AuthHandle, range: DateRange, instance?: InstanceContext): Promise<readonly ReceiptRef[]>;
+    /** Fetch the artifact for a single reference, for the given multi-instance {@link InstanceContext} when present (#190). */
+    fetch(auth: AuthHandle, ref: ReceiptRef, instance?: InstanceContext): Promise<ArtifactHandle>;
 }

@@ -141,6 +141,7 @@ export const listSourcesInputShape = {
 const sourceViewSchema = z.object({
     canonicalDomain: z.string(),
     aliasDomains: z.array(z.string()),
+    instanceDomains: z.array(z.string()),
     authKind: z.enum(['none', 'password', 'session', 'api-token', 'passkey']),
     transportTier: z.enum(['http-api', 'html-scrape', 'headless-browser']),
     artifactMode: z.enum(['pdf-download', 'html-capture', 'rendered']),

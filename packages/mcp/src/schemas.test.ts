@@ -132,6 +132,7 @@ describe('MCP output schemas mirror the canonical domain types', () => {
                 {
                     canonicalDomain: 'example.com',
                     aliasDomains: ['ex.com'],
+                    instanceDomains: ['example.com', 'example.de'],
                     authKind: 'password',
                     transportTier: 'http-api',
                     artifactMode: 'pdf-download',

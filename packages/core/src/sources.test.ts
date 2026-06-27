@@ -48,12 +48,32 @@ describe('listSources', () => {
             {
                 canonicalDomain: 'free.fr',
                 aliasDomains: ['adsl.free.fr'],
+                instanceDomains: [],
                 authKind: 'password',
                 transportTier: 'headless-browser',
                 artifactMode: 'rendered',
                 verificationState: 'unverified',
             },
         ]);
+    });
+
+    it('surfaces a multi-instance source as its declared instance domains (#190)', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(
+            fakeAdapter('amazon.fr', {
+                instances: [
+                    { domain: 'amazon.fr', host: 'https://www.amazon.fr', cookieDomain: 'amazon.fr', locale: 'fr-FR' },
+                    {
+                        domain: 'amazon.com',
+                        host: 'https://www.amazon.com',
+                        cookieDomain: 'amazon.com',
+                        locale: 'en-US',
+                    },
+                ],
+            }),
+        );
+
+        expect(listSources(registry)[0]?.instanceDomains).toEqual(['amazon.fr', 'amazon.com']);
     });
 
     it('preserves registration order', () => {

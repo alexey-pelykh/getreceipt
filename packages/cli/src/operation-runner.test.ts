@@ -14,14 +14,16 @@ import type {
     AuthHandle,
     AuthResult,
     ChallengeResolution,
+    CollectInstancesRequest,
     CollectRequest,
     CollectResult,
+    InstanceContext,
     ReceiptRef,
     SourceAdapter,
 } from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
 
-import { OperationError, runOperation, type OperationRunnerDeps } from './operation-runner.js';
+import { OperationError, runInstancesOperation, runOperation, type OperationRunnerDeps } from './operation-runner.js';
 
 const WINDOW = { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') };
 const SUCCEEDED: CollectResult = {
@@ -76,6 +78,7 @@ function deps(overrides: Partial<OperationRunnerDeps> = {}): OperationRunnerDeps
             Promise.resolve({ username: new Secret('resolved-user'), secret: new Secret('resolved-secret') }),
         createWriter: () => ({ has: async () => false, write: async () => {} }),
         collect: () => Promise.resolve(SUCCEEDED),
+        collectInstances: () => Promise.resolve([SUCCEEDED]),
         now: () => new Date('2024-02-01T00:00:00.000Z'),
         ...overrides,
     };
@@ -681,5 +684,124 @@ describe('runOperation — session kind (#180)', () => {
         expect(resolved.session).toEqual({ browser: 'chrome', profile: 'Default' });
         expect(resolved.secret).toBeUndefined();
         expect(resolved.username).toBeUndefined();
+    });
+});
+
+describe('runInstancesOperation — one config, shared auth, data per instance (#190)', () => {
+    const FR: InstanceContext = {
+        domain: 'amazon.fr',
+        host: 'www.amazon.fr',
+        cookieDomain: '.amazon.fr',
+        locale: 'fr-FR',
+    };
+    const COM: InstanceContext = {
+        domain: 'amazon.com',
+        host: 'www.amazon.com',
+        cookieDomain: '.amazon.com',
+        locale: 'en-US',
+    };
+
+    /** The default fake adapter, re-homed as a multi-instance source declaring it SERVES amazon.fr + amazon.com. */
+    function multiInstanceAdapter(): SourceAdapter {
+        const base = adapter();
+        return {
+            ...base,
+            descriptor: { ...base.descriptor, canonicalDomain: 'amazon.fr', aliasDomains: [], instances: [FR, COM] },
+        };
+    }
+
+    /** A config whose ONE configured source fans out to the named instances (the #190 axis). */
+    function multiConfig(instances: readonly string[]): ConfigParseResult {
+        return {
+            config: {
+                sources: { 'amazon.fr': { kind: 'password', username: 'alice@amazon.fr', secret: 'pw', instances } },
+            },
+            warnings: [],
+        };
+    }
+
+    /** A `collectInstances` stub that records the request and returns one result per configured instance. */
+    function capturingCollectInstances(results: readonly CollectResult[]): {
+        collectInstances: OperationRunnerDeps['collectInstances'];
+        request: () => CollectInstancesRequest | undefined;
+    } {
+        let captured: CollectInstancesRequest | undefined;
+        return {
+            collectInstances: (request) => {
+                captured = request;
+                return Promise.resolve(results);
+            },
+            request: () => captured,
+        };
+    }
+
+    it('resolves the source ONCE and fans collectInstances over the configured instance contexts (AC2)', async () => {
+        const capture = capturingCollectInstances([
+            { ...SUCCEEDED, source: 'amazon.fr' },
+            { ...SUCCEEDED, source: 'amazon.com' },
+        ]);
+        const results = await runInstancesOperation(
+            { source: 'amazon.fr', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(multiInstanceAdapter()),
+                loadConfig: () => multiConfig(['amazon.fr', 'amazon.com']),
+                collectInstances: capture.collectInstances,
+                // collect MUST NOT run on the multi-instance path.
+                collect: () => Promise.reject(new Error('single collect() must not run for a multi-instance source')),
+            }),
+        );
+
+        // One shared request carries BOTH resolved instance contexts (host/cookieDomain/locale), in config order.
+        expect(capture.request()?.instances).toEqual([FR, COM]);
+        // One OperationResult per instance, source-keyed so the caller can attribute each.
+        expect(results.map((r) => r.source)).toEqual(['amazon.fr', 'amazon.com']);
+        expect(results.map((r) => r.outcome)).toEqual(['succeeded', 'succeeded']);
+    });
+
+    it('throws unsupported-instance when config lists an instance the adapter does not serve (fail-closed, AC2)', async () => {
+        const promise = runInstancesOperation(
+            { source: 'amazon.fr', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(multiInstanceAdapter()),
+                loadConfig: () => multiConfig(['amazon.fr', 'amazon.de']),
+                collectInstances: () =>
+                    Promise.reject(new Error('collectInstances must not run when a config instance is unserved')),
+            }),
+        );
+        await expect(promise).rejects.toMatchObject({ name: 'OperationError', kind: 'unsupported-instance' });
+        // The message names the offending instance and the file, never a secret.
+        await expect(promise).rejects.toThrow('amazon.de');
+        await expect(promise).rejects.toThrow('/test/.getreceipt.yaml');
+    });
+
+    it('matches configured instances case-insensitively against what the adapter serves', async () => {
+        const capture = capturingCollectInstances([SUCCEEDED, SUCCEEDED]);
+        await runInstancesOperation(
+            { source: 'amazon.fr', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(multiInstanceAdapter()),
+                loadConfig: () => multiConfig(['AMAZON.FR', 'Amazon.Com']),
+                collectInstances: capture.collectInstances,
+            }),
+        );
+        // Resolved to the adapter's OWN canonical-cased contexts, not the config's casing.
+        expect(capture.request()?.instances).toEqual([FR, COM]);
+    });
+
+    it('degrades to a single collect run when the source configures no instances list', async () => {
+        const single = capturingCollect();
+        const multi = capturingCollectInstances([SUCCEEDED]);
+        const results = await runInstancesOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ collect: single.collect, collectInstances: multi.collectInstances }),
+        );
+
+        expect(results).toHaveLength(1);
+        expect(single.request()).toBeDefined(); // the single-instance path ran
+        expect(multi.request()).toBeUndefined(); // the fan-out path was NOT taken
     });
 });

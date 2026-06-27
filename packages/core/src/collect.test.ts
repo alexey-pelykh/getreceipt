@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { http, HttpResponse, server } from '@getreceipt/testing';
 
-import { collect, formatChallengeEvent, ReauthRequiredError, SourceAdapterRegistry, SourceResolver } from './index.js';
+import {
+    collect,
+    collectInstances,
+    formatChallengeEvent,
+    ReauthRequiredError,
+    SourceAdapterRegistry,
+    SourceResolver,
+} from './index.js';
 import type {
     ArtifactHandle,
     AuthChallenge,
@@ -16,6 +23,7 @@ import type {
     CollectReauthRequired,
     CredentialContext,
     DateRange,
+    InstanceContext,
     ReceiptRef,
     ReceiptWriter,
     SourceAdapter,
@@ -50,6 +58,8 @@ function ref(id: string, issuedAt = '2026-03-01T00:00:00.000Z'): ReceiptRef {
 interface AdapterScript {
     readonly descriptor?: Partial<SourceDescriptor>;
     readonly refs?: readonly ReceiptRef[];
+    /** Per-instance refs keyed by instance domain (#190): lets a multi-instance run yield distinct data per instance. */
+    readonly refsByInstance?: Readonly<Record<string, readonly ReceiptRef[]>>;
     // Widened to AuthResult (#133) so a script can emit an interactive challenge, not only a session.
     readonly authenticate?: () => Promise<AuthResult>;
     readonly fetch?: (auth: AuthHandle, ref: ReceiptRef) => Promise<ArtifactHandle>;
@@ -60,12 +70,20 @@ interface AdapterProbe {
     readonly log: string[];
     readonly listRanges: DateRange[];
     readonly fetched: string[];
+    /** The instance domain each list/fetch was invoked with (undefined for a single-instance call) — used by #190 tests. */
+    readonly listInstances: (string | undefined)[];
+    readonly fetchInstances: (string | undefined)[];
 }
 
 function makeAdapter(script: AdapterScript = {}): AdapterProbe {
     const log: string[] = [];
     const listRanges: DateRange[] = [];
     const fetched: string[] = [];
+    const listInstances: (string | undefined)[] = [];
+    const fetchInstances: (string | undefined)[] = [];
+    // A per-instance script (#190): map an instance domain to the refs its list returns, so a multi-instance
+    // run can yield distinct data per instance. Falls back to the flat `refs` for single-instance runs.
+    const refsByInstance = script.refsByInstance;
     const refs = script.refs ?? [];
 
     const adapter: SourceAdapter = {
@@ -74,18 +92,23 @@ function makeAdapter(script: AdapterScript = {}): AdapterProbe {
             log.push('authenticate');
             return script.authenticate ? script.authenticate() : brand<AuthHandle>({ creds });
         },
-        list: async (_auth, range) => {
+        list: async (_auth, range, instance) => {
             log.push('list');
             listRanges.push(range);
+            listInstances.push(instance?.domain);
+            if (refsByInstance !== undefined && instance !== undefined) {
+                return refsByInstance[instance.domain] ?? [];
+            }
             return refs;
         },
-        fetch: async (auth, receiptRef) => {
+        fetch: async (auth, receiptRef, instance) => {
             log.push(`fetch:${receiptRef.id}`);
             fetched.push(receiptRef.id);
+            fetchInstances.push(instance?.domain);
             return script.fetch ? script.fetch(auth, receiptRef) : brand<ArtifactHandle>({ id: receiptRef.id });
         },
     };
-    return { adapter, log, listRanges, fetched };
+    return { adapter, log, listRanges, fetched, listInstances, fetchInstances };
 }
 
 // --- recording writer ------------------------------------------------------
@@ -93,20 +116,24 @@ interface WriterProbe {
     readonly writer: ReceiptWriter;
     readonly written: string[];
     readonly artifacts: ArtifactHandle[];
+    /** `${source}/${id}` per write — proves per-instance output namespacing (#190 AC7). */
+    readonly writtenPaths: string[];
 }
 
 function makeWriter(options: { has?: (source: string, ref: ReceiptRef) => boolean; log?: string[] } = {}): WriterProbe {
     const written: string[] = [];
     const artifacts: ArtifactHandle[] = [];
+    const writtenPaths: string[] = [];
     const writer: ReceiptWriter = {
         has: async (source, receiptRef) => options.has?.(source, receiptRef) ?? false,
-        write: async (_source, receiptRef, artifact) => {
+        write: async (source, receiptRef, artifact) => {
             options.log?.push(`write:${receiptRef.id}`);
             written.push(receiptRef.id);
+            writtenPaths.push(`${source}/${receiptRef.id}`);
             artifacts.push(artifact);
         },
     };
-    return { writer, written, artifacts };
+    return { writer, written, artifacts, writtenPaths };
 }
 
 // --- concurrency test helpers ---------------------------------------------
@@ -613,3 +640,137 @@ function makeHttpAdapter(): SourceAdapter {
         },
     };
 }
+
+// --- #190 multi-instance: collectInstances (auth once, data per instance) --
+const FR: InstanceContext = {
+    domain: 'amazon.fr',
+    host: 'https://www.amazon.fr',
+    cookieDomain: 'amazon.fr',
+    locale: 'fr-FR',
+};
+const COM: InstanceContext = {
+    domain: 'amazon.com',
+    host: 'https://www.amazon.com',
+    cookieDomain: 'amazon.com',
+    locale: 'en-US',
+};
+const DE: InstanceContext = {
+    domain: 'amazon.de',
+    host: 'https://www.amazon.de',
+    cookieDomain: 'amazon.de',
+    locale: 'de-DE',
+};
+
+describe('collectInstances — one config, shared auth, data per instance (#190)', () => {
+    it('authenticates ONCE then lists/fetches per instance, yielding two distinct data instances [AC4/AC8]', async () => {
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.fr' },
+            refsByInstance: { 'amazon.fr': [ref('FR-1')], 'amazon.com': [ref('COM-1'), ref('COM-2')] },
+        });
+        const writer = makeWriter();
+
+        const results = await collectInstances({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            instances: [FR, COM],
+            now: NOW,
+        });
+
+        // Auth once for the source (AC4); list runs per instance, in order.
+        expect(probe.log.filter((entry) => entry === 'authenticate')).toHaveLength(1);
+        expect(probe.listInstances).toEqual(['amazon.fr', 'amazon.com']);
+        // One result per instance, each keyed by its OWN domain; both succeed.
+        expect(results.map((result) => result.outcome)).toEqual(['succeeded', 'succeeded']);
+        expect(results.map((result) => result.source)).toEqual(['amazon.fr', 'amazon.com']);
+        // Two distinct data instances, namespaced per instance domain (AC7/AC8) — no collision.
+        expect(writer.writtenPaths).toEqual(['amazon.fr/FR-1', 'amazon.com/COM-1', 'amazon.com/COM-2']);
+        expect(probe.fetchInstances).toEqual(['amazon.fr', 'amazon.com', 'amazon.com']);
+    });
+
+    it('surfaces ONE source-level reauth-required for a dead shared session, never one per instance [AC6]', async () => {
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.fr' },
+            authenticate: async () => {
+                throw new ReauthRequiredError('amazon.fr', 'the imported browser session is no longer signed in');
+            },
+        });
+        const writer = makeWriter();
+
+        const results = await collectInstances({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            instances: [FR, COM, DE],
+            now: NOW,
+        });
+
+        // Exactly ONE reauth signal, for the SOURCE (canonical), not N per instance; no instance listed.
+        expect(results).toHaveLength(1);
+        expect(results[0]?.outcome).toBe('reauth-required');
+        expect(results[0]?.source).toBe('amazon.fr');
+        expect(probe.listInstances).toEqual([]);
+    });
+
+    it('stops at the first instance whose session dies mid-run, blocking the rest [AC6]', async () => {
+        const log: string[] = [];
+        const adapter: SourceAdapter = {
+            descriptor: { ...baseDescriptor, canonicalDomain: 'amazon.fr' },
+            authenticate: async () => {
+                log.push('authenticate');
+                return brand<AuthHandle>({});
+            },
+            list: async (_auth, _range, instance) => {
+                log.push(`list:${instance?.domain}`);
+                if (instance?.domain === 'amazon.com') {
+                    throw new ReauthRequiredError('amazon.com');
+                }
+                return [ref('FR-1')];
+            },
+            fetch: async (_auth, receiptRef) => {
+                log.push(`fetch:${receiptRef.id}`);
+                return brand<ArtifactHandle>({ id: receiptRef.id });
+            },
+        };
+
+        const results = await collectInstances({
+            adapter,
+            credentials,
+            writer: makeWriter().writer,
+            instances: [FR, COM, DE],
+            now: NOW,
+        });
+
+        // fr succeeds, com hits reauth, de is never attempted (the dead session blocks every remaining instance).
+        expect(results.map((result) => result.outcome)).toEqual(['succeeded', 'reauth-required']);
+        expect(log).toEqual(['authenticate', 'list:amazon.fr', `fetch:FR-1`, 'list:amazon.com']);
+    });
+
+    it('continues to the next instance after a non-reauth failure (continue-on-error) [AC5]', async () => {
+        const adapter: SourceAdapter = {
+            descriptor: { ...baseDescriptor, canonicalDomain: 'amazon.fr' },
+            authenticate: async () => brand<AuthHandle>({}),
+            list: async (_auth, _range, instance) => {
+                if (instance?.domain === 'amazon.fr') {
+                    throw new Error('fr listing boom');
+                }
+                return [ref('COM-1')];
+            },
+            fetch: async (_auth, receiptRef) => brand<ArtifactHandle>({ id: receiptRef.id }),
+        };
+        const writer = makeWriter();
+
+        const results = await collectInstances({
+            adapter,
+            credentials,
+            writer: writer.writer,
+            instances: [FR, COM],
+            now: NOW,
+        });
+
+        expect(results[0]?.outcome).toBe('failed');
+        expect(results[1]?.outcome).toBe('succeeded');
+        // The failing instance does not strand the next: com still collected, namespaced to its own domain.
+        expect(writer.writtenPaths).toEqual(['amazon.com/COM-1']);
+    });
+});

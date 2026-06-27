@@ -52,6 +52,9 @@ export function renderSourcesText(report: SourcesReport): string {
         if (source.aliasDomains.length > 0) {
             lines.push(`    aliases: ${source.aliasDomains.join(', ')}`);
         }
+        if (source.instanceDomains.length > 0) {
+            lines.push(`    instances: ${source.instanceDomains.join(', ')}`);
+        }
         if (source.lastVerifiedAt !== undefined) {
             lines.push(`    last verified: ${source.lastVerifiedAt}`);
         }

@@ -9,6 +9,7 @@ import type {
     AuthHandle,
     CredentialContext,
     DateRange,
+    InstanceContext,
     ReceiptRef,
     RelativeDateWindow,
     SourceAdapter,
@@ -23,6 +24,12 @@ export interface CollectRequest {
     readonly credentials: CredentialContext;
     /** Where fetched artifacts are persisted (and the idempotency hook lives). */
     readonly writer: ReceiptWriter;
+    /**
+     * The instance to collect for a multi-instance source (#190): its {@link InstanceContext} is threaded
+     * into `list`/`fetch` and its `domain` becomes the source/output key (so receipts namespace per
+     * instance). Omit for a single-instance source — the canonical domain is the key, exactly as before.
+     */
+    readonly instance?: InstanceContext;
     /** Explicit `--since`/`--until` window. Omit to use the adapter's declared default. */
     readonly window?: DateRange;
     /** Clock for materializing the default window; defaults to the current time. */
@@ -45,6 +52,27 @@ export interface CollectRequest {
      * of whether this is set — so the structured report carries per-source outcomes even on a silent run;
      * this sink is for live logging (e.g. the CLI `--verbose` trace). It never receives secret material.
      */
+    readonly challengeObserver?: ChallengeObserver;
+}
+
+/**
+ * Everything one {@link collectInstances} run needs: collect a source across SEVERAL data instances
+ * under ONE shared authentication (#190). Mirrors {@link CollectRequest} but takes an `instances` list
+ * (≥1) instead of a single `instance` — `authenticate()` runs ONCE for the source, then `list`/`fetch`
+ * run per instance with that shared session (AC4).
+ */
+export interface CollectInstancesRequest {
+    readonly adapter: SourceAdapter;
+    readonly credentials: CredentialContext;
+    readonly writer: ReceiptWriter;
+    /** The instances to collect, in order (≥1). Each runs `list`/`fetch` under the one shared session. */
+    readonly instances: readonly InstanceContext[];
+    readonly window?: DateRange;
+    readonly now?: Date;
+    /** Max receipts fetched at once — capped ACROSS instances (one shared semaphore), so instances do not multiply fan-out. */
+    readonly fetchConcurrency?: number;
+    readonly rateLimiter?: RateLimiter;
+    readonly challengeResolver?: ChallengeResolver;
     readonly challengeObserver?: ChallengeObserver;
 }
 
@@ -112,55 +140,127 @@ type Disposition = 'written' | 'skipped';
  * and any other error yields a `failed` result. The only way out is a {@link CollectResult}.
  */
 export async function collect(request: CollectRequest): Promise<CollectResult> {
-    const { adapter, credentials, writer, rateLimiter } = request;
-    const source = adapter.descriptor.canonicalDomain;
+    const { adapter, credentials, writer, rateLimiter, instance } = request;
+    // The instance domain (when present) is the source/output key, so a multi-instance run namespaces per
+    // instance; otherwise the canonical domain, exactly as before (#190).
+    const source = instance?.domain ?? adapter.descriptor.canonicalDomain;
     const now = request.now ?? new Date();
     const window = request.window ?? materializeWindow(adapter.descriptor.defaultWindow, now);
-
-    // Record each challenge's terminal outcome for the structured report (#142 AC3) while forwarding the
-    // live lifecycle to the caller's observer (AC1). Recording is unconditional — the report carries
-    // per-source outcomes even when no observer is wired and even when the run later degrades.
-    const challenges: ChallengeOutcome[] = [];
-    const observer: ChallengeObserver = (event) => {
-        request.challengeObserver?.(event);
-        if (event.phase === 'resolved') {
-            challenges.push({ outcome: 'resolved', type: event.type, mode: event.mode });
-        } else if (event.phase === 'degraded') {
-            challenges.push(
-                event.type === undefined
-                    ? { outcome: 'degraded', reason: event.reason }
-                    : { outcome: 'degraded', reason: event.reason, type: event.type },
-            );
-        }
-    };
-    const withChallenges = (result: CollectResult): CollectResult =>
-        challenges.length === 0 ? result : { ...result, challenges };
+    const { observer, withChallenges } = challengeRecorder(request.challengeObserver);
 
     let auth: AuthHandle;
-    let refs: readonly ReceiptRef[];
     let semaphore: Semaphore;
     try {
         // Inside the boundary so an invalid fetchConcurrency surfaces as a structured
         // result rather than an uncaught throw (Semaphore rejects a bad capacity).
         semaphore = new Semaphore(request.fetchConcurrency ?? 1);
-        // authenticate may demand an interactive challenge; the orchestrator resolves it through
-        // the injected resolver and resumes, yielding the session (#133), emitting the lifecycle as it goes.
-        auth = await resolveAuthChallenges(await adapter.authenticate(credentials), request.challengeResolver, {
-            source,
-            observer,
-        });
-        refs = await adapter.list(auth, window);
+        auth = await authenticateOnce(adapter, credentials, request.challengeResolver, source, observer);
     } catch (error) {
-        // authenticate/list run before any write, so there is no partial progress. A degraded challenge
+        // authenticate runs before any write, so there is no partial progress. A degraded challenge
         // recorded its outcome on `challenges` before the throw, so it still reaches the report.
         return withChallenges(summarizeErrors([error], source, window, [], []));
+    }
+    return withChallenges(await runInstance(adapter, auth, source, window, writer, semaphore, rateLimiter, instance));
+}
+
+/**
+ * Collect ONE source across SEVERAL data instances under a SINGLE shared authentication (#190):
+ * `authenticate()` runs ONCE (AC4), then `list`/`fetch` run per instance — each keyed by its own
+ * domain, so receipts namespace per instance (AC7) and never collide. Instances run sequentially with
+ * ONE shared fetch semaphore (the concurrency cap applies ACROSS instances — no fan-out). Returns one
+ * {@link CollectResult} per instance attempted, in order.
+ *
+ * Re-auth is a SOURCE-level signal, surfaced ONCE, never N times (AC6): a dead/expired shared session
+ * (or an unresolvable challenge) at `authenticate` returns a single `reauth-required` for the source and
+ * runs no instance; a session that dies MID-RUN stops the loop at the first instance to detect it (every
+ * remaining instance would hit the same wall) rather than repeating the signal per instance.
+ */
+export async function collectInstances(request: CollectInstancesRequest): Promise<readonly CollectResult[]> {
+    const { adapter, credentials, writer, instances, rateLimiter } = request;
+    const canonical = adapter.descriptor.canonicalDomain;
+    const now = request.now ?? new Date();
+    const window = request.window ?? materializeWindow(adapter.descriptor.defaultWindow, now);
+    const { observer, withChallenges } = challengeRecorder(request.challengeObserver);
+
+    let auth: AuthHandle;
+    let semaphore: Semaphore;
+    try {
+        // One shared semaphore: the fetch cap applies ACROSS all instances, so instances don't license fan-out.
+        semaphore = new Semaphore(request.fetchConcurrency ?? 1);
+        // Authenticate ONCE for the source; the resulting session is shared across every instance (AC4).
+        auth = await authenticateOnce(adapter, credentials, request.challengeResolver, canonical, observer);
+    } catch (error) {
+        // A dead shared session / unresolvable challenge is ONE source-level reauth (or failure), never N (AC6).
+        return [withChallenges(summarizeErrors([error], canonical, window, [], []))];
+    }
+
+    const results: CollectResult[] = [];
+    for (const instance of instances) {
+        const result = await runInstance(
+            adapter,
+            auth,
+            instance.domain,
+            window,
+            writer,
+            semaphore,
+            rateLimiter,
+            instance,
+        );
+        results.push(result);
+        // The shared session died mid-run: every remaining instance would hit the same reauth, so stop and
+        // surface it once for the source rather than repeating it per instance (AC6).
+        if (result.outcome === 'reauth-required') {
+            break;
+        }
+    }
+    // The source-level challenge outcomes (from the single authenticate) ride on the first result.
+    return results.length === 0 ? results : [withChallenges(results[0]!), ...results.slice(1)];
+}
+
+/**
+ * Authenticate a source ONCE, resolving any interactive challenge through the injected resolver and
+ * resuming into the established session (#133) while emitting the lifecycle to `observer`. Shared by the
+ * single-instance {@link collect} and the multi-instance {@link collectInstances} so "auth once" is one
+ * code path. Throws on a dead session / unresolvable challenge — the caller maps it to a structured result.
+ */
+async function authenticateOnce(
+    adapter: SourceAdapter,
+    credentials: CredentialContext,
+    challengeResolver: ChallengeResolver | undefined,
+    source: string,
+    observer: ChallengeObserver,
+): Promise<AuthHandle> {
+    return resolveAuthChallenges(await adapter.authenticate(credentials), challengeResolver, { source, observer });
+}
+
+/**
+ * The post-auth half: `list` → fetch/write every receipt for ONE instance (or the whole source when
+ * `instance` is undefined), under the shared session and semaphore. Never throws — a `list` failure
+ * (including a stale-session bounce) or any per-receipt error collapses into one structured result.
+ */
+async function runInstance(
+    adapter: SourceAdapter,
+    auth: AuthHandle,
+    source: string,
+    window: DateRange,
+    writer: ReceiptWriter,
+    semaphore: Semaphore,
+    rateLimiter: RateLimiter | undefined,
+    instance: InstanceContext | undefined,
+): Promise<CollectResult> {
+    let refs: readonly ReceiptRef[];
+    try {
+        refs = await adapter.list(auth, window, instance);
+    } catch (error) {
+        // list runs before any write, so there is no partial progress.
+        return summarizeErrors([error], source, window, [], []);
     }
 
     const dispositions = new Array<Disposition | undefined>(refs.length);
     const settled = await Promise.allSettled(
         refs.map((ref, index) =>
             semaphore.run(async () => {
-                const op = (): Promise<Disposition> => processReceipt(adapter, writer, source, auth, ref);
+                const op = (): Promise<Disposition> => processReceipt(adapter, writer, source, auth, ref, instance);
                 dispositions[index] = await (rateLimiter === undefined ? op() : rateLimiter.run(op));
             }),
         ),
@@ -174,9 +274,37 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
         .filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
         .map((outcome): unknown => outcome.reason);
     if (errors.length > 0) {
-        return withChallenges(summarizeErrors(errors, source, window, written, skipped));
+        return summarizeErrors(errors, source, window, written, skipped);
     }
-    return withChallenges({ outcome: 'succeeded', source, window, written, skipped });
+    return { outcome: 'succeeded', source, window, written, skipped };
+}
+
+/**
+ * Build the per-run challenge sink: it records each challenge's terminal outcome for the structured
+ * report (#142 AC3) while forwarding the live lifecycle to the caller's `downstream` observer (AC1).
+ * Recording is unconditional — the report carries per-source outcomes even with no observer wired and
+ * even when the run later degrades. `withChallenges` attaches the accumulated outcomes to a result.
+ */
+function challengeRecorder(downstream: ChallengeObserver | undefined): {
+    readonly observer: ChallengeObserver;
+    readonly withChallenges: (result: CollectResult) => CollectResult;
+} {
+    const challenges: ChallengeOutcome[] = [];
+    const observer: ChallengeObserver = (event) => {
+        downstream?.(event);
+        if (event.phase === 'resolved') {
+            challenges.push({ outcome: 'resolved', type: event.type, mode: event.mode });
+        } else if (event.phase === 'degraded') {
+            challenges.push(
+                event.type === undefined
+                    ? { outcome: 'degraded', reason: event.reason }
+                    : { outcome: 'degraded', reason: event.reason, type: event.type },
+            );
+        }
+    };
+    const withChallenges = (result: CollectResult): CollectResult =>
+        challenges.length === 0 ? result : { ...result, challenges };
+    return { observer, withChallenges };
 }
 
 /** Decide a single receipt's fate: skip if the writer already has it, else fetch and write. */
@@ -186,11 +314,12 @@ async function processReceipt(
     source: string,
     auth: AuthHandle,
     ref: ReceiptRef,
+    instance: InstanceContext | undefined,
 ): Promise<Disposition> {
     if (await writer.has(source, ref)) {
         return 'skipped';
     }
-    const artifact = await adapter.fetch(auth, ref);
+    const artifact = await adapter.fetch(auth, ref, instance);
     await writer.write(source, ref, artifact);
     return 'written';
 }

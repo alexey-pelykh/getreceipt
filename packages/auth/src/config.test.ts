@@ -866,3 +866,68 @@ describe('loadConfig', () => {
         expect((caught as ConfigError).message).not.toContain(sentinel);
     });
 });
+
+describe('parseConfig — #190 multi-instance `instances:` list', () => {
+    it('parses an `instances` list beside the session shorthand (credential configured once)', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.fr': { browser: 'chrome', profile: 'Default', instances: ['amazon.fr', 'amazon.com'] } },
+        });
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon.fr'];
+        expect(source?.kind).toBe('session');
+        expect(source?.browser).toBe('chrome');
+        expect(source?.instances).toEqual(['amazon.fr', 'amazon.com']);
+    });
+
+    it('parses an `instances` list beside an explicit `auth:` block (source-level sibling)', () => {
+        const { config } = parseConfig({
+            sources: {
+                'amazon.fr': {
+                    auth: { browser: 'chrome', profile: 'Default' },
+                    instances: ['amazon.fr', 'amazon.com'],
+                },
+            },
+        });
+        expect(config.sources['amazon.fr']?.instances).toEqual(['amazon.fr', 'amazon.com']);
+    });
+
+    it('leaves `instances` undefined for a single-instance source (omitted = unchanged)', () => {
+        const { config } = parseConfig({ sources: { 'free.fr': { auth: { kind: 'password', ref: 'op://V/i' } } } });
+        expect(config.sources['free.fr']?.instances).toBeUndefined();
+    });
+
+    it('allows `instances` on a non-session source too (orthogonal to the credential shape)', () => {
+        const { config } = parseConfig({
+            sources: { 'shop.example': { auth: { kind: 'password', ref: 'op://V/i' }, instances: ['shop.example'] } },
+        });
+        expect(config.sources['shop.example']?.instances).toEqual(['shop.example']);
+    });
+
+    it('rejects a non-array `instances`', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { browser: 'chrome', profile: 'P', instances: 'amazon.com' } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.instances');
+    });
+
+    it('rejects an empty `instances` list (omit it instead)', () => {
+        expect(() => parseConfig({ sources: { x: { browser: 'chrome', profile: 'P', instances: [] } } })).toThrow(
+            ConfigError,
+        );
+    });
+
+    it('rejects a non-string / empty `instances` entry, pinpointing the index', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { browser: 'chrome', profile: 'P', instances: ['amazon.fr', ''] } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.instances[1]');
+    });
+});

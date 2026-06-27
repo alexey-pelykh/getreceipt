@@ -12,6 +12,8 @@ import { effectiveVerificationState } from './verification.js';
 export interface SourceListing {
     readonly canonicalDomain: string;
     readonly aliasDomains: readonly string[];
+    /** The instance domains this source serves as separate data instances (#190), or `[]` for a single-instance source. */
+    readonly instanceDomains: readonly string[];
     readonly authKind: AuthKind;
     readonly transportTier: TransportTier;
     readonly artifactMode: ArtifactMode;
@@ -56,11 +58,12 @@ export function listSources(
 ): readonly SourceListing[] {
     const now = options.now ?? new Date();
     return registry.all().map((adapter) => {
-        const { canonicalDomain, aliasDomains, authKind, transportTier, artifactMode } = adapter.descriptor;
+        const { canonicalDomain, aliasDomains, instances, authKind, transportTier, artifactMode } = adapter.descriptor;
         const recorded: SourceVerification = verification?.(canonicalDomain) ?? { state: 'unverified' };
         return {
             canonicalDomain,
             aliasDomains,
+            instanceDomains: (instances ?? []).map((instance) => instance.domain),
             authKind,
             transportTier,
             artifactMode,

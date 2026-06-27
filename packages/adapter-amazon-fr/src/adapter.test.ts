@@ -20,7 +20,7 @@ import {
     Secret,
     storedSessionToBrowserSession,
 } from '@getreceipt/auth';
-import type { BrowserSession, SessionStore, StoredSession } from '@getreceipt/auth';
+import type { BrowserCookie, BrowserSession, SessionStore, StoredSession } from '@getreceipt/auth';
 import {
     asReceiptArtifact,
     collect,
@@ -36,7 +36,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AmazonFrAdapter, amazonFrAdapter } from './index.js';
 import type { InvoiceRenderer, Transport } from './index.js';
-import { ENDPOINTS, LISTING, LOCALE, orderSchema, ORDER_QUERY, parseFrenchDate, parseOrders } from './wire.js';
+import {
+    ENDPOINTS,
+    INSTANCES as WIRE_INSTANCES,
+    LISTING,
+    LOCALE,
+    orderSchema,
+    ORDER_QUERY,
+    parseEnglishDate,
+    parseFrenchDate,
+    parseOrderDate,
+    parseOrders,
+} from './wire.js';
 import type { OrderDto } from './wire.js';
 
 // Everything below runs against MSW-mocked HTTP — there is no live amazon.fr in CI — over a SYNTHETIC Chrome
@@ -216,7 +227,7 @@ function noopWriter(): ReceiptWriter {
 }
 
 describe('AmazonFrAdapter — AC1: registration + resolution', () => {
-    it('registers under its canonical domain and resolves canonically + case-insensitively (no subdomain aliases)', () => {
+    it('resolves its canonical case-insensitively and resolves amazon.com as a SEPARATE instance of the same adapter (#190)', () => {
         const registry = new SourceAdapterRegistry();
         registry.register(amazonFrAdapter);
         const resolver = new SourceResolver(registry);
@@ -224,12 +235,23 @@ describe('AmazonFrAdapter — AC1: registration + resolution', () => {
         expect(resolver.resolve('amazon.fr')).toBe(amazonFrAdapter);
         expect(resolver.resolve('AMAZON.FR')).toBe(amazonFrAdapter);
         expect(registry.get('amazon.fr')).toBe(amazonFrAdapter);
-        // www. is a flow subdomain of the one canonical source, not an alias; amazon.com is a separate source (#190).
+        // www. is a flow subdomain of the one canonical source, not an alias — it does NOT resolve.
         expect(resolver.tryResolve('www.amazon.fr')).toBeUndefined();
-        expect(resolver.tryResolve('amazon.com')).toBeUndefined();
+        // amazon.com is now a SEPARATE data INSTANCE of the SAME adapter (#190): it resolves to the adapter
+        // carrying its instance context (host / locale / cookie scope), case-insensitively. The expected
+        // context is read from the descriptor (derived from the wire contract), never re-authored here (#88).
+        const comInstance = amazonFrAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.com');
+        expect(comInstance).toBeDefined();
+        const com = resolver.resolveInstance('amazon.com');
+        expect(com.adapter).toBe(amazonFrAdapter);
+        expect(com.instance).toEqual(comInstance);
+        expect(com.instance).toMatchObject({ domain: 'amazon.com', cookieDomain: 'amazon.com', locale: 'en-US' });
+        expect(resolver.resolveInstance('AMAZON.COM').adapter).toBe(amazonFrAdapter);
+        // The canonical resolves as its OWN instance too, so the collection path routes uniformly.
+        expect(resolver.resolveInstance('amazon.fr').instance).toMatchObject({ domain: 'amazon.fr', locale: 'fr-FR' });
     });
 
-    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, and no aliases', () => {
+    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.fr+amazon.com instances, and no aliases', () => {
         const descriptor = amazonFrAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
@@ -246,6 +268,11 @@ describe('AmazonFrAdapter — AC1: registration + resolution', () => {
             requiresImpersonation: true,
         });
         expect(descriptor.aliasDomains).toEqual([]);
+        // The two instances this ONE adapter serves under ONE sign-in (#190); the canonical is listed as its own
+        // instance. The instances ARE the wire contract's (#88: derived, never re-authored beside the adapter) —
+        // hosts pass through the #103 publication gate, identity for this discovery-only source.
+        expect(descriptor.instances?.map((i) => i.domain)).toEqual(['amazon.fr', 'amazon.com']);
+        expect(descriptor.instances).toEqual(WIRE_INSTANCES.map((i) => ({ ...i })));
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
     });
 });
@@ -596,6 +623,26 @@ describe('wire.ts — the in-repo contract (schema-derived orders, French date p
         expect(parseFrenchDate('31 février 2026')).toBeUndefined(); // overflow is not a date
         expect(parseFrenchDate('not a date')).toBeUndefined();
     });
+
+    it('parses US-English dates (amazon.com instance, #190) and rejects non-dates', () => {
+        expect(parseEnglishDate('June 26, 2026')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        expect(parseEnglishDate('December 1, 2026')?.toISOString()).toBe('2026-12-01T00:00:00.000Z');
+        expect(parseEnglishDate('February 31, 2026')).toBeUndefined(); // overflow is not a date
+        expect(parseEnglishDate('26 juin 2026')).toBeUndefined(); // a French date is not an English one
+    });
+
+    it('parseOrderDate routes by instance locale, and accepts EITHER format when locale is absent (#190)', () => {
+        // The instance locale picks the format: en → English, anything else → French.
+        expect(parseOrderDate('June 26, 2026', 'en-US')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        expect(parseOrderDate('26 juin 2026', 'fr-FR')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        // A locale rejects the OTHER locale's format (so a drifted page surfaces at the boundary).
+        expect(parseOrderDate('June 26, 2026', 'fr-FR')).toBeUndefined();
+        expect(parseOrderDate('26 juin 2026', 'en-US')).toBeUndefined();
+        // No locale (the wire-schema boundary) accepts either real date.
+        expect(parseOrderDate('26 juin 2026')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        expect(parseOrderDate('June 26, 2026')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        expect(parseOrderDate('not a date')).toBeUndefined();
+    });
 });
 
 describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest', () => {
@@ -705,5 +752,107 @@ describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest
         expect(session.cookies.map((c) => c.name)).toEqual(['at-acbfr', 'sess-at-acbfr', 'session-id']); // browser read
         expect(saves).toBe(1); // the absent branch attempted a persist — which the NULL store discards
         expect(await nullStore.load(AMAZON)).toBeUndefined(); // nothing at rest: persistence stayed opt-in
+    });
+});
+
+describe('AmazonFrAdapter — AC8: multi-instance fan-out over synthetic data (#190)', () => {
+    // The instance contexts come from the SHIPPED descriptor (the contract), never re-authored here (#88).
+    const INSTANCES = amazonFrAdapter.descriptor.instances ?? [];
+    const FR_CTX = INSTANCES.find((i) => i.domain === 'amazon.fr');
+    const COM_CTX = INSTANCES.find((i) => i.domain === 'amazon.com');
+    if (FR_CTX === undefined || COM_CTX === undefined) {
+        throw new Error('amazon adapter must declare amazon.fr + amazon.com instances (#190)');
+    }
+
+    // Leak-sentinel cookie values, one per marketplace, in the SHARED jar imported once (#190 auth-once).
+    const FR_AT = 'amazon-fr-at-LEAK-SENTINEL';
+    const COM_AT = 'amazon-com-at-LEAK-SENTINEL';
+
+    /** One shared session jar holding BOTH marketplaces' cookies — the auth-once handle each instance filters (#190). */
+    function sharedSession(): AuthHandle {
+        const cookie = (name: string, value: string, domain: string): BrowserCookie => ({
+            name,
+            value: new Secret(value),
+            domain,
+            path: '/',
+            secure: true,
+            httpOnly: true,
+            expires: null,
+        });
+        const session: BrowserSession = {
+            browser: 'chrome',
+            domain: 'amazon.fr',
+            cookies: [cookie('at-acbfr', FR_AT, '.amazon.fr'), cookie('at-acbus', COM_AT, '.amazon.com')],
+        };
+        // The opaque handle's inverse of fromBrowserSession (white-box: the adapter casts it straight back).
+        return session as unknown as AuthHandle;
+    }
+
+    /** Serve an instance's order history from ITS host, capturing the request so host/locale/cookie threading is assertable. */
+    function ordersFor(host: string, orders: readonly OrderDto[], sink: { request?: Request }) {
+        return http.get(`${host}${ENDPOINTS.orderHistory}`, ({ request }) => {
+            sink.request = request;
+            return html(renderOrdersPage(orders));
+        });
+    }
+
+    it('lists each instance against ITS host, locale, and cookie scope, parsing the locale-specific date (AC8)', async () => {
+        const frReq: { request?: Request } = {};
+        const comReq: { request?: Request } = {};
+        // Same page STRUCTURE for both marketplaces (the shared-structure assumption #191 validates); only the
+        // date FORMAT differs (French `DD mois YYYY` vs US-English `Month DD, YYYY`).
+        server.use(
+            ordersFor(FR_CTX.host, [order('404-FR-0000001', '26 juin 2026')], frReq),
+            ordersFor(COM_CTX.host, [order('111-COM-0000002', 'June 26, 2026')], comReq),
+        );
+        const auth = sharedSession();
+        const adapter = new AmazonFrAdapter({ render: stubRender });
+
+        const fr = await adapter.list(auth, WIDE, FR_CTX);
+        const com = await adapter.list(auth, WIDE, COM_CTX);
+
+        // SEPARATE data per instance: each returned only its own order, both dated to the same instant from
+        // different locale formats (proving locale-aware parsing).
+        expect(fr.map((r) => r.id)).toEqual(['404-FR-0000001']);
+        expect(com.map((r) => r.id)).toEqual(['111-COM-0000002']);
+        expect(fr[0]?.issuedAt.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        expect(com[0]?.issuedAt.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        // The locale also drives the reference title word.
+        expect(fr[0]?.title).toBe('Commande 404-FR-0000001');
+        expect(com[0]?.title).toBe('Order 111-COM-0000002');
+
+        // amazon.fr request: addressed its own host, sent fr-FR, and carried ONLY the .fr cookie.
+        expect(new URL(frReq.request?.url ?? '').host).toBe('www.amazon.fr');
+        expect(frReq.request?.headers.get('accept-language')).toBe('fr-FR');
+        expect(frReq.request?.headers.get('cookie')).toContain(FR_AT);
+        expect(frReq.request?.headers.get('cookie')).not.toContain(COM_AT);
+
+        // amazon.com request: its own host, en-US, and ONLY the .com cookie — the .fr cookie never travels to .com.
+        expect(new URL(comReq.request?.url ?? '').host).toBe('www.amazon.com');
+        expect(comReq.request?.headers.get('accept-language')).toBe('en-US');
+        expect(comReq.request?.headers.get('cookie')).toContain(COM_AT);
+        expect(comReq.request?.headers.get('cookie')).not.toContain(FR_AT);
+    });
+
+    it('fetches an invoice from the addressed instance host (AC8)', async () => {
+        let invoiceReq: Request | undefined;
+        server.use(
+            http.get(`${COM_CTX.host}${ENDPOINTS.invoicePrint}`, ({ request }) => {
+                invoiceReq = request;
+                const orderId = new URL(request.url).searchParams.get(ORDER_QUERY.orderId) ?? '';
+                return html(renderInvoice(orderId));
+            }),
+        );
+        const adapter = new AmazonFrAdapter({ render: stubRender });
+        const ref = { id: '111-COM-0000002', issuedAt: new Date('2026-06-26T00:00:00.000Z') };
+
+        const artifact = asReceiptArtifact(await adapter.fetch(sharedSession(), ref, COM_CTX));
+
+        // The fetch addressed amazon.com (not the canonical .fr) with the .com cookie, and produced the PDF artifact.
+        expect(new URL(invoiceReq?.url ?? '').host).toBe('www.amazon.com');
+        expect(invoiceReq?.headers.get('cookie')).toContain(COM_AT);
+        expect(invoiceReq?.headers.get('cookie')).not.toContain(FR_AT);
+        expect(artifact.contentType).toBe('application/pdf');
+        expect(artifact.filename).toBe('111-COM-0000002.pdf');
     });
 });

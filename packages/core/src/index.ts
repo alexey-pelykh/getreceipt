@@ -17,6 +17,7 @@ export type {
     DateFilter,
     DateFilterBasis,
     DateRange,
+    InstanceContext,
     Opaque,
     PaginationKind,
     ReceiptMetadatum,
@@ -42,6 +43,7 @@ export type {
 } from './challenge-observer.js';
 export { SourceAdapterRegistry } from './registry.js';
 export { SourceResolver } from './resolver.js';
+export type { ResolvedSource } from './resolver.js';
 export {
     DuplicateSourceError,
     ReauthRequiredError,
@@ -49,11 +51,12 @@ export {
     UnsupportedCredentialShapeError,
 } from './errors.js';
 
-export { collect } from './collect.js';
+export { collect, collectInstances } from './collect.js';
 export { isWithinDateFilter } from './date-filter.js';
 export { hostTimeZone, zonedDayEnd, zonedDayStart } from './zoned-window.js';
 export type {
     CollectFailed,
+    CollectInstancesRequest,
     CollectReauthRequired,
     CollectRequest,
     CollectResult,

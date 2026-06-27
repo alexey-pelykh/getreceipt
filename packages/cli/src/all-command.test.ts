@@ -10,6 +10,8 @@ import type {
     CollectRequest,
     CollectResult,
     DateRange,
+    InstanceContext,
+    ReceiptRef,
     SourceAdapter,
 } from '@getreceipt/core';
 import { describe, expect, it, vi } from 'vitest';
@@ -361,5 +363,72 @@ describe('all — usage errors', () => {
         const { err, error } = await runAll(['--profile', 'absent']);
         expect(error).toMatchObject({ exitCode: 1 });
         expect(err).toContain('config file could not be read');
+    });
+});
+
+describe('all — fans a multi-instance source into one entry per instance (#190)', () => {
+    const FR: InstanceContext = {
+        domain: 'shop.example',
+        host: 'www.shop.example',
+        cookieDomain: '.shop.example',
+        locale: 'fr-FR',
+    };
+    const DE: InstanceContext = { domain: 'shop.de', host: 'www.shop.de', cookieDomain: '.shop.de', locale: 'de-DE' };
+
+    /** A multi-instance source whose `list` returns one receipt per instance, under a single sign-in. */
+    function multiInstanceAdapter(authCount: { n: number }): SourceAdapter {
+        return {
+            descriptor: {
+                canonicalDomain: 'shop.example',
+                aliasDomains: [],
+                instances: [FR, DE],
+                authKind: 'password',
+                credentialShapes: ['password'],
+                transportTier: 'http-api',
+                artifactMode: 'pdf-download',
+                dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+                timezone: 'UTC',
+                defaultWindow: { days: 30 },
+                pagination: 'none',
+            },
+            authenticate: async () => {
+                authCount.n += 1;
+                return {} as unknown as AuthHandle;
+            },
+            list: async (_auth, _range, instance): Promise<readonly ReceiptRef[]> => [
+                { id: `${instance?.domain ?? 'none'}-1`, issuedAt: NOW },
+            ],
+            fetch: async () =>
+                ({ bytes: new Uint8Array([1]), contentType: 'application/pdf' }) as unknown as ArtifactHandle,
+        };
+    }
+
+    it('reports one succeeded entry per configured instance under a single shared sign-in', async () => {
+        const authCount = { n: 0 };
+        const registry = new SourceAdapterRegistry();
+        registry.register(multiInstanceAdapter(authCount));
+
+        const { out, error } = await runAll([], {
+            resolver: new SourceResolver(registry),
+            loadConfig: () => ({
+                config: {
+                    sources: {
+                        'shop.example': {
+                            kind: 'password',
+                            secret: 'x-not-real',
+                            instances: ['shop.example', 'shop.de'],
+                        },
+                    },
+                },
+                warnings: [],
+            }),
+        });
+
+        expect(error).toBeUndefined();
+        // The ONE configured source fanned out into two per-instance entries (the #190 axis), both succeeded.
+        expect(out).toMatch(/shop\.example — succeeded/);
+        expect(out).toMatch(/shop\.de — succeeded/);
+        // ONE authentication shared across both instances — auth-once, not once-per-instance (AC4).
+        expect(authCount.n).toBe(1);
     });
 });

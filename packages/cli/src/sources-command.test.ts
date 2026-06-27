@@ -10,6 +10,7 @@ import type {
     ArtifactMode,
     AuthHandle,
     AuthKind,
+    InstanceContext,
     SourceAdapter,
     SourceVerification,
     TransportTier,
@@ -40,12 +41,14 @@ function fakeAdapter(
         authKind?: AuthKind;
         transport?: TransportTier;
         artifact?: ArtifactMode;
+        instances?: readonly InstanceContext[];
     } = {},
 ): SourceAdapter {
     return {
         descriptor: {
             canonicalDomain,
             aliasDomains: options.aliases ?? [],
+            ...(options.instances === undefined ? {} : { instances: options.instances }),
             authKind: options.authKind ?? 'password',
             credentialShapes: ['password'],
             transportTier: options.transport ?? 'http-api',
@@ -134,6 +137,34 @@ describe('sources — lists available sources with verification + configured sta
         const byDomain = Object.fromEntries(report.sources.map((s) => [s.canonicalDomain, s]));
         expect(byDomain['shop.example']?.configured).toBe(true);
         expect(byDomain['store.example']?.configured).toBe(false);
+    });
+
+    it("surfaces a multi-instance source's instance domains and counts an instance key as configured (#190)", async () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(
+            fakeAdapter('amazon.fr', {
+                instances: [
+                    { domain: 'amazon.fr', host: 'www.amazon.fr', cookieDomain: '.amazon.fr', locale: 'fr-FR' },
+                    { domain: 'amazon.com', host: 'www.amazon.com', cookieDomain: '.amazon.com', locale: 'en-US' },
+                ],
+            }),
+        );
+        // Configured by an INSTANCE domain key (amazon.com), NOT the canonical — exercises the isConfigured
+        // instance-domain branch (#190): a source addressed by any of its instances counts as configured.
+        const config: ConfigParseResult = {
+            config: { sources: { 'amazon.com': { kind: 'password', secret: 'x-not-real' } } },
+            warnings: [],
+        };
+
+        const { out } = await runSources(['--json'], { registry, loadConfig: () => config });
+        const report = JSON.parse(out) as SourcesReport;
+        const amazon = report.sources.find((s) => s.canonicalDomain === 'amazon.fr');
+        expect(amazon?.instanceDomains).toEqual(['amazon.fr', 'amazon.com']);
+        expect(amazon?.configured).toBe(true);
+
+        // The human surface lists the instances on a sub-line.
+        const text = await runSources([], { registry, loadConfig: () => config });
+        expect(text.out).toContain('instances: amazon.fr, amazon.com');
     });
 
     it('drives the verification-state surface from an injected lookup (AC #2)', async () => {

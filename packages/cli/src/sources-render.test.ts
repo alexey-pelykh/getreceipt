@@ -10,10 +10,12 @@ function view(
     verificationState: AdapterVerificationState = 'unverified',
     aliasDomains: readonly string[] = [],
     lastVerifiedAt?: string,
+    instanceDomains: readonly string[] = [],
 ): SourceView {
     return {
         canonicalDomain,
         aliasDomains,
+        instanceDomains,
         authKind: 'password',
         transportTier: 'http-api',
         artifactMode: 'pdf-download',
@@ -40,6 +42,14 @@ describe('renderSourcesText', () => {
             sources: [view('shop.example', true, 'unverified', ['www.shop.example'])],
         });
         expect(text).toContain('aliases: www.shop.example');
+    });
+
+    it('renders declared instances on a sub-line (#190)', () => {
+        const text = renderSourcesText({
+            profile: 'default',
+            sources: [view('amazon.fr', true, 'unverified', [], undefined, ['amazon.fr', 'amazon.com'])],
+        });
+        expect(text).toContain('instances: amazon.fr, amazon.com');
     });
 
     it('renders the last-verified date on a sub-line when shipped, and omits it otherwise (#90)', () => {

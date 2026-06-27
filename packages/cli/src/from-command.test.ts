@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createConsentStore, scanForSecrets, Secret } from '@getreceipt/auth';
+import type { ConfigParseResult } from '@getreceipt/auth';
 import {
     FilesystemReceiptWriter,
     ReauthRequiredError,
@@ -18,6 +19,7 @@ import type {
     CollectResult,
     CredentialContext,
     DateRange,
+    InstanceContext,
     ReceiptRef,
     SourceAdapter,
 } from '@getreceipt/core';
@@ -633,6 +635,119 @@ describe('from --verbose/--debug — secret-fenced diagnostics (AC #5)', () => {
             expect(err).toContain('challenge degraded source=shop.example reason=no-resolver type=otp-sms');
             // The human-facing prompt is NOT a closed enum — it must never reach a diagnostic line (AC2).
             expect(err).not.toContain('Enter the SMS code');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('from <canonical> --all-instances — one sign-in, data per instance (#190)', () => {
+    const FR: InstanceContext = {
+        domain: 'shop.example',
+        host: 'www.shop.example',
+        cookieDomain: '.shop.example',
+        locale: 'fr-FR',
+    };
+    const DE: InstanceContext = { domain: 'shop.de', host: 'www.shop.de', cookieDomain: '.shop.de', locale: 'de-DE' };
+
+    /** A multi-instance source: ONE sign-in, but `list`/`fetch` return DIFFERENT data per instance domain. */
+    function multiInstanceAdapter(authCount: { n: number }): SourceAdapter {
+        return {
+            descriptor: {
+                canonicalDomain: 'shop.example',
+                aliasDomains: [],
+                instances: [FR, DE],
+                authKind: 'password',
+                credentialShapes: ['password'],
+                transportTier: 'http-api',
+                artifactMode: 'pdf-download',
+                dateFilter: { basis: 'issued', fromInclusive: true, toInclusive: true },
+                timezone: 'UTC',
+                defaultWindow: { days: 30 },
+                pagination: 'none',
+            },
+            authenticate: async () => {
+                authCount.n += 1;
+                return {} as unknown as AuthHandle;
+            },
+            // Separate data per instance — the orders on .de are NOT the orders on .example (#190).
+            list: async (_auth, _range, instance) =>
+                instance?.domain === 'shop.de' ? [ref('de-1', 7)] : [ref('fr-1', 5), ref('fr-2', 6)],
+            fetch: async (_auth, receipt, instance) =>
+                ({
+                    bytes: PDF_BYTES,
+                    contentType: 'application/pdf',
+                    filename: `${receipt.id}@${instance?.locale ?? 'none'}.pdf`,
+                }) as unknown as ArtifactHandle,
+        };
+    }
+
+    /** Config for the ONE source, fanning out to both instances under a single credential (#190). */
+    function multiConfig(): ConfigParseResult {
+        return {
+            config: {
+                sources: {
+                    'shop.example': {
+                        kind: 'password',
+                        username: 'alice@shop.example',
+                        secret: 'pw-not-real',
+                        instances: ['shop.example', 'shop.de'],
+                    },
+                },
+            },
+            warnings: [],
+        };
+    }
+
+    it('authenticates ONCE and writes each instance under its own output namespace (AC2/AC4)', async () => {
+        const authCount = { n: 0 };
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-instances-'));
+        try {
+            const { out, error } = await runFrom(['shop.example', '--all-instances', '--out', dir], {
+                resolver: resolverWith(multiInstanceAdapter(authCount)),
+                loadConfig: () => multiConfig(),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+
+            expect(error).toBeUndefined();
+            // ONE sign-in shared across both instances — not one per instance.
+            expect(authCount.n).toBe(1);
+            // Per-instance output namespace: .example's two invoices and .de's one, each under its domain.
+            expect(existsSync(join(dir, 'shop.example', 'fr-1.pdf'))).toBe(true);
+            expect(existsSync(join(dir, 'shop.example', 'fr-2.pdf'))).toBe(true);
+            expect(existsSync(join(dir, 'shop.de', 'de-1.pdf'))).toBe(true);
+            // The .de invoice is NOT visible under .example (separate data, not aliased).
+            expect(existsSync(join(dir, 'shop.example', 'de-1.pdf'))).toBe(false);
+            // The batch report names both instances as succeeded.
+            expect(out).toMatch(/shop\.example — succeeded/);
+            expect(out).toMatch(/shop\.de — succeeded/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('fails closed when config lists an instance the adapter does not serve (AC2)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'gr-from-instances-bad-'));
+        try {
+            const { err, error } = await runFrom(['shop.example', '--all-instances', '--out', dir], {
+                resolver: resolverWith(multiInstanceAdapter({ n: 0 })),
+                loadConfig: () => ({
+                    config: {
+                        sources: {
+                            'shop.example': {
+                                kind: 'password',
+                                secret: 'pw-not-real',
+                                instances: ['shop.example', 'shop.it'],
+                            },
+                        },
+                    },
+                    warnings: [],
+                }),
+                createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
+            });
+            // An unserved configured instance is a usage error, not a silent skip.
+            expect(err).toContain('shop.it');
+            expect(error).toMatchObject({ exitCode: 1 });
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
