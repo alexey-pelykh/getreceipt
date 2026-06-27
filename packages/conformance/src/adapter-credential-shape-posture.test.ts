@@ -118,14 +118,23 @@ describe('#152 — alpiq + monoprix are password sources (oauth2 → password re
 
 /**
  * #169 — every shipped adapter declares its supported credential shape(s), and the core fail-closed
- * gate accepts a representative good config while rejecting a bad one. The five sources are named
- * EXPLICITLY (not filtered from BUNDLED_ADAPTERS) so a dropped or misdeclared adapter FAILS here rather
- * than silently leaving a filtered set (degenerate subject); a coverage guard asserts the bundle is
- * exactly these five. Each good/bad pair drives the REAL descriptor through the REAL projection
+ * gate accepts a representative good config while rejecting a bad one. Sources are named EXPLICITLY (not
+ * filtered from BUNDLED_ADAPTERS) so a dropped or misdeclared adapter FAILS here rather than silently
+ * leaving a filtered set (degenerate subject); a coverage guard asserts the bundle is exactly the union
+ * below. The password sources each drive a good/bad pair through the REAL descriptor projection
  * (`configuredCredentialShapes`) and the REAL gate (`resolveCredentialShape`) — the cross-package
  * linkage no single package owns.
+ *
+ * #181 splits out the FIRST session-kind source (amazon.fr): it imports a browser session and supplies
+ * NO credential, so it declares `credentialShapes: ['none']` and the operation-runner bypasses the #169
+ * password gate for it. The password-shape assertions below therefore run over {@link PASSWORD_SOURCES}
+ * only; {@link SESSION_SOURCES} get their own posture assertion. Both are named explicitly so a revert
+ * (a session source regaining a password shape, or vice versa) FAILS here rather than slipping through.
  */
-const SHIPPED_SOURCES = ['free.fr', 'grandfrais.com', 'monoprix.fr', 'particuliers.alpiq.fr', 'pro.free.fr'] as const;
+const PASSWORD_SOURCES = ['free.fr', 'grandfrais.com', 'monoprix.fr', 'particuliers.alpiq.fr', 'pro.free.fr'] as const;
+const SESSION_SOURCES = ['amazon.fr'] as const;
+/** Every shipped source — the bundle must be EXACTLY this union (the coverage guard below). */
+const SHIPPED_SOURCES = [...PASSWORD_SOURCES, ...SESSION_SOURCES] as const;
 
 /** Parse one source's `auth` block into its typed config (the domain was just inserted, so it resolves). */
 function shippedSourceConfig(domain: string, auth: unknown): DomainAuthConfig {
@@ -137,30 +146,40 @@ function shippedSourceConfig(domain: string, auth: unknown): DomainAuthConfig {
 }
 
 describe('#169 — shipped adapters declare a credential shape the fail-closed gate enforces', () => {
-    it('the bundled set is exactly the five shipped sources (no adapter silently dropped)', () => {
+    it('the bundled set is exactly the shipped sources (no adapter silently dropped)', () => {
         const bundled = BUNDLED_ADAPTERS.map((adapter) => adapter.descriptor.canonicalDomain).sort();
         expect(bundled).toEqual([...SHIPPED_SOURCES].sort());
     });
 
-    it.each(SHIPPED_SOURCES)('%s declares a non-empty credentialShapes set that includes password', (domain) => {
+    it.each(PASSWORD_SOURCES)('%s declares a non-empty credentialShapes set that includes password', (domain) => {
         const { credentialShapes } = bundledAdapterFor(domain).descriptor;
         expect(credentialShapes.length).toBeGreaterThan(0);
         expect(credentialShapes).toContain('password');
     });
 
     // Good: a single-item password login resolves to `password` through the real descriptor + gate.
-    it.each(SHIPPED_SOURCES)('%s: a representative password config passes the shape gate', (domain) => {
+    it.each(PASSWORD_SOURCES)('%s: a representative password config passes the shape gate', (domain) => {
         const adapter = bundledAdapterFor(domain);
         const config = shippedSourceConfig(domain, { ref: 'op://Vault/Item' });
         expect(resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(config))).toBe('password');
     });
 
     // Bad: an explicit api-token config against a password-only adapter is rejected fail-closed.
-    it.each(SHIPPED_SOURCES)('%s: an api-token config is rejected fail-closed', (domain) => {
+    it.each(PASSWORD_SOURCES)('%s: an api-token config is rejected fail-closed', (domain) => {
         const adapter = bundledAdapterFor(domain);
         const config = shippedSourceConfig(domain, { kind: 'api-token', secret: { ref: 'op://Vault/Item' } });
         expect(() => resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(config))).toThrow(
             UnsupportedCredentialShapeError,
         );
+    });
+});
+
+describe('#181 — the session source declares no credential shape (bypasses the #169 password gate)', () => {
+    // amazon.fr imports a browser session and supplies no credential; the field is required + non-empty, so
+    // it declares exactly ['none']. A revert to a password shape (or an added api-token shape) FAILS here.
+    it.each(SESSION_SOURCES)('%s declares authKind: session with credentialShapes ["none"]', (domain) => {
+        const { authKind, credentialShapes } = bundledAdapterFor(domain).descriptor;
+        expect(authKind).toBe('session');
+        expect(credentialShapes).toEqual(['none']);
     });
 });
