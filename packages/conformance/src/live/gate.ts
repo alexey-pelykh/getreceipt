@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { loadConfig as authLoadConfig, resolveConfigFilePath } from '@getreceipt/auth';
-import type { CredentialValue } from '@getreceipt/auth';
+import type { BrowserKind, CredentialValue } from '@getreceipt/auth';
 
 /**
  * The RUN-vs-SKIP decision for the live e2e harness, driven by the environment plus — on the
@@ -49,14 +49,40 @@ export const CONFIG_ENV = 'GETRECEIPT_E2E_CONFIG';
 /** Which profile to verify — selects `~/.getreceipt/<profile>.yaml`. Unset → the home-default file (`~/.getreceipt.yaml`). */
 export const PROFILE_ENV = 'GETRECEIPT_E2E_PROFILE';
 
-/** A fully specified live run: which source, and the credentials to authenticate it (username and secret each carried as a reference-or-literal, never a resolved value). */
-export interface LivePlan {
+/** A `password` source's live run: a username + secret, each a reference-or-literal the harness resolves at call-time (never a value at rest). */
+export interface PasswordLivePlan {
+    readonly kind: 'password';
     readonly source: string;
     /** Resolved to its value at call-time by the harness; a `{ ref }` for `op://` / `encrypted-file:`, else an inline literal. */
     readonly username: CredentialValue;
     /** Resolved to its value at call-time by the harness; a `{ ref }` for `op://` / `encrypted-file:`, else an inline literal. */
     readonly secret: CredentialValue;
+    readonly browser?: never;
+    readonly profile?: never;
 }
+
+/**
+ * A browser-`session` source's live run (#180): the `{ browser, profile }` pair the adapter imports. There
+ * is NO credential to resolve — the already-authenticated login lives in the browser's cookie store — so the
+ * harness lifts the pair via {@link @getreceipt/auth!resolveBrowserSession} rather than dereferencing a secret.
+ */
+export interface SessionLivePlan {
+    readonly kind: 'session';
+    readonly source: string;
+    /** Which browser's cookie store the session is imported from. */
+    readonly browser: BrowserKind;
+    /** The browser profile to read — a profile directory name OR an account email (resolved at import time). */
+    readonly profile: string;
+    readonly username?: never;
+    readonly secret?: never;
+}
+
+/**
+ * A fully specified live run — a discriminated union on `kind` mirroring the config's own
+ * {@link @getreceipt/auth!AuthShape}: a {@link PasswordLivePlan} carries credentials to resolve, a
+ * {@link SessionLivePlan} carries the `{ browser, profile }` pair a session source imports.
+ */
+export type LivePlan = PasswordLivePlan | SessionLivePlan;
 
 /**
  * The gate's verdict: run a non-empty LIST of {@link LivePlan}s (the harness sweeps them and
@@ -103,7 +129,11 @@ function toCredentialValue(secret: string): CredentialValue {
     return secret.startsWith('op://') || secret.startsWith('encrypted-file:') ? { ref: secret } : secret;
 }
 
-/** The env triple, when ALL three parts are present, as a single-source override plan. Else undefined (fall through to config). */
+/**
+ * The env triple, when ALL three parts are present, as a single-source `password` override plan. Else
+ * undefined (fall through to config). The triple is inherently username+secret-shaped, so it serves only
+ * `password` sources; a `session` source (no credential) is declared in the config and picked up there.
+ */
 function overridePlan(env: GateEnv): LivePlan | undefined {
     const source = nonEmpty(env[SOURCE_ENV]);
     const username = nonEmpty(env[USERNAME_ENV]);
@@ -112,15 +142,16 @@ function overridePlan(env: GateEnv): LivePlan | undefined {
         return undefined;
     }
     // The username may itself be an `op://` / `encrypted-file:` reference — wrapped like the secret so it resolves at call-time.
-    return { source, username: toCredentialValue(username), secret: toCredentialValue(secret) };
+    return { kind: 'password', source, username: toCredentialValue(username), secret: toCredentialValue(secret) };
 }
 
 /**
  * Build the live plans from the selected config file's sources. The file is chosen by the product's
  * own precedence ({@link resolveConfigFilePath}): an explicit {@link CONFIG_ENV} path wins, else the
  * {@link PROFILE_ENV} profile selects `~/.getreceipt/<profile>.yaml`, else the home default. Each
- * file is one flat profile, so sources are read directly from its `sources`. A source with BOTH a
- * username and a secret yields a plan; one missing either is skipped with a noted reason (not a hard
+ * file is one flat profile, so sources are read directly from its `sources`. A `session` source yields a
+ * plan from its `{ browser, profile }` pair (no credential to check); a `password` source with BOTH a
+ * username and a secret yields a plan, one missing either is skipped with a noted reason (not a hard
  * error — a half-configured source shouldn't sink the whole sweep). Returns the plans plus any
  * per-source skip notes, all secret-free.
  */
@@ -147,6 +178,13 @@ function plansFromConfig(
     const plans: LivePlan[] = [];
     const notes: string[] = [];
     for (const [source, auth] of Object.entries(config.config.sources)) {
+        // A browser-`session` source supplies no credential to resolve (the login lives in the cookie store),
+        // so a configured `{ browser, profile }` pair IS a usable plan (#180) — it never reaches the
+        // username/secret check below. `kind` is validated by loadConfig, so both fields are present here.
+        if (auth.kind === 'session') {
+            plans.push({ kind: 'session', source, browser: auth.browser, profile: auth.profile });
+            continue;
+        }
         // Both are CredentialValues now (a `{ ref }` or literal), resolved at call-time — so usability is
         // just "configured at all", not a non-empty-string check; the harness dereferences each.
         if (auth.username === undefined || auth.secret === undefined) {
@@ -159,7 +197,7 @@ function plansFromConfig(
             notes.push(`skipped "${source}" (missing ${missing})`);
             continue;
         }
-        plans.push({ source, username: auth.username, secret: auth.secret });
+        plans.push({ kind: 'password', source, username: auth.username, secret: auth.secret });
     }
 
     return { plans, notes };

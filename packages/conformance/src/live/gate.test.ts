@@ -296,6 +296,47 @@ describe('resolveLiveGate — config-sourced (dogfood) multi-source', () => {
     });
 });
 
+describe('resolveLiveGate — session sources (no credential to resolve)', () => {
+    const SESSION_ONLY = configWith({
+        'amazon.fr': { kind: 'session', browser: 'chrome', profile: 'Default' },
+    });
+
+    it('maps a configured session source to a session plan carrying its { browser, profile } (no username/secret)', () => {
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(SESSION_ONLY) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans).toHaveLength(1);
+            // A bare session source carries no username/secret — it must NOT be dropped by the password
+            // "missing creds" skip; the { browser, profile } pair IS the whole plan (#180).
+            expect(decision.plans[0]).toEqual({
+                kind: 'session',
+                source: 'amazon.fr',
+                browser: 'chrome',
+                profile: 'Default',
+            });
+        }
+    });
+
+    it('maps a mixed profile (password + session) to one plan each, in config order', () => {
+        const mixed = configWith({
+            'grandfrais.com': { kind: 'password', username: 'a@example.com', secret: { ref: 'op://Private/gf/pw' } },
+            'amazon.fr': { kind: 'session', browser: 'chrome', profile: 'shopper@example.com' },
+        });
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(mixed) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans.map((p) => p.kind)).toEqual(['password', 'session']);
+            expect(decision.plans.map((p) => p.source)).toEqual(['grandfrais.com', 'amazon.fr']);
+            // The session plan carries the profile (an account email is a valid profile value), no secret.
+            expect(decision.plans[1]).toMatchObject({
+                kind: 'session',
+                browser: 'chrome',
+                profile: 'shopper@example.com',
+            });
+        }
+    });
+});
+
 describe('resolveLiveGate — clean skip (never a failure) when config yields nothing usable', () => {
     it('skips with a secret-free reason when the config file cannot be loaded', () => {
         const decision = resolveLiveGate(

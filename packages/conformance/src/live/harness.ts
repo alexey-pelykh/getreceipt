@@ -9,11 +9,12 @@ import {
     CredentialBackendUnavailableError,
     CredentialResolutionError,
     CredentialResolver,
+    resolveBrowserSession,
 } from '@getreceipt/auth';
 import type { CredentialValue, DomainAuthConfig, ResolvedCredentials, Secret } from '@getreceipt/auth';
 import { createDefaultResolver } from '@getreceipt/cli';
 import { resolveCredentialShape, collect, FilesystemReceiptWriter } from '@getreceipt/core';
-import type { CollectRequest, CollectResult, SourceResolver } from '@getreceipt/core';
+import type { CollectRequest, CollectResult, CredentialContext, SourceAdapter, SourceResolver } from '@getreceipt/core';
 
 import type { LivePlan } from './gate.js';
 import { verdictFor } from './verdict.js';
@@ -70,10 +71,9 @@ function defaultDeps(): LiveHarnessDeps {
 
 /**
  * Run ONE real collection against a live source and report the trust-state it justifies —
- * the actual end-to-end exercise #19 AC1 asks for. The flow mirrors the production CLI path:
- * resolve the adapter, run the same fail-closed credential-shape gate the resolve path runs (#169),
- * resolve its credential at call-time, pack it into the opaque credential context, then drive
- * `collect()`.
+ * the actual end-to-end exercise #19 AC1 asks for. The flow mirrors the production CLI path
+ * (`operation-runner.ts`): resolve the adapter, resolve its credential the way that source's `kind`
+ * demands, pack it into the opaque credential context, then drive `collect()`.
  *
  * Honesty / safety properties:
  *  - credentials are resolved at the point of use, never held in the {@link LivePlan} (#19 AC1);
@@ -87,10 +87,33 @@ function defaultDeps(): LiveHarnessDeps {
 export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveHarnessDeps> = {}): Promise<LiveRun> {
     const deps: LiveHarnessDeps = { ...defaultDeps(), ...overrides };
     const adapter = deps.resolver.resolve(plan.source);
+    const credentials = await resolvePlanCredentials(plan, adapter, deps);
+    return collectInThrowawayDir(plan.source, adapter, credentials, deps);
+}
 
-    // A LivePlan supplies a username+secret (a per-field password); run the SAME fail-closed shape gate
-    // the production resolve path runs (#169) so a plan whose shape the adapter rejects fails here at
-    // setup, not deep inside `authenticate()` — keeping the oracle a true mirror of production.
+/**
+ * Resolve a plan's {@link CredentialContext} the SAME way the production resolve path does
+ * (`operation-runner.ts`), so the oracle stays a true mirror of production:
+ *  - a `session` source is EXEMPT from the #169 shape gate (it supplies no credential to validate); resolving
+ *    it is lifting its `{ browser, profile }` pair via {@link resolveBrowserSession} (#180) — no `op`, no
+ *    secret. A stale imported session surfaces LATER, at list/fetch, as the usual `reauth-required` outcome.
+ *  - a `password` source runs the SAME fail-closed shape gate (#169) — so a plan whose shape the adapter
+ *    rejects fails here at setup, not deep inside `authenticate()` — then resolves username+secret at
+ *    call-time; a missing credential BACKEND becomes a {@link LiveBackendUnavailable} the caller skips on.
+ */
+async function resolvePlanCredentials(
+    plan: LivePlan,
+    adapter: SourceAdapter,
+    deps: LiveHarnessDeps,
+): Promise<CredentialContext> {
+    if (plan.kind === 'session') {
+        const resolved: ResolvedCredentials = {
+            kind: 'session',
+            session: resolveBrowserSession({ kind: 'session', browser: plan.browser, profile: plan.profile }),
+        };
+        return asCredentialContext(resolved);
+    }
+
     const planConfig: DomainAuthConfig = { kind: 'password', username: plan.username, secret: plan.secret };
     resolveCredentialShape(adapter.descriptor, configuredCredentialShapes(planConfig));
 
@@ -108,15 +131,26 @@ export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveH
     }
 
     const resolved: ResolvedCredentials = { kind: adapter.descriptor.authKind, username, secret };
-    const credentials = asCredentialContext(resolved);
+    return asCredentialContext(resolved);
+}
 
+/**
+ * Drive one collection into a throwaway `os.tmpdir()` directory and report the trust-state it justifies. The
+ * directory is purged in a `finally` — even on a thrown error — so nothing the live service returns can ever
+ * land in the repo (#19 AC3).
+ */
+async function collectInThrowawayDir(
+    source: string,
+    adapter: SourceAdapter,
+    credentials: CredentialContext,
+    deps: LiveHarnessDeps,
+): Promise<LiveRun> {
     const outDir = await deps.createOutDir();
     try {
         const writer = new FilesystemReceiptWriter({ outDir });
         const result = await deps.collect({ adapter, credentials, writer });
-        return { source: plan.source, result, verdict: verdictFor(result, deps.now) };
+        return { source, result, verdict: verdictFor(result, deps.now) };
     } finally {
-        // Always purge the throwaway dir — even on a thrown error — so no fetched receipt survives the run (#19 AC3).
         await rm(outDir, { recursive: true, force: true });
     }
 }
