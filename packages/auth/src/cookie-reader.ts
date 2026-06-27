@@ -434,8 +434,12 @@ function withCookieSnapshot<T>(dbPath: string, tmpDir: string | undefined, use: 
     }
 }
 
-/** Whether a stored host key is in scope for `domain` — an exact match or a subdomain (the leading `.` of a domain cookie is ignored). */
-function domainMatches(hostKey: string, domain: string): boolean {
+/**
+ * Whether a stored host key is in scope for `domain` — an exact match or a subdomain (the leading `.` of a
+ * domain cookie is ignored). The security-critical domain-scoping predicate, shared by the cookie-store readers
+ * and the manual-paste session parser (#188) so both enforce scoping the same way.
+ */
+export function domainMatches(hostKey: string, domain: string): boolean {
     const normalized = hostKey.startsWith('.') ? hostKey.slice(1) : hostKey;
     return normalized === domain || normalized.endsWith(`.${domain}`);
 }

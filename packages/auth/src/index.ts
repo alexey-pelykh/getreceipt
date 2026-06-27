@@ -76,6 +76,7 @@ export {
     CookieReadError,
     CredentialBackendUnavailableError,
     CredentialResolutionError,
+    PastedSessionError,
     ProfileResolutionError,
     SessionStoreError,
     TotpError,
@@ -85,6 +86,7 @@ export type {
     BrowserCookieStoreReason,
     CookieReadReason,
     CredentialResolutionReason,
+    PastedSessionReason,
     ProfileResolutionReason,
     SessionStoreFailureReason,
     TotpFailureReason,
@@ -105,6 +107,7 @@ export {
     resolveBrowserSession,
 } from './browser-session.js';
 export type { BrowserSession, BrowserSessionDescriptor, ImportBrowserSessionOptions } from './browser-session.js';
+export { importPastedSession } from './pasted-session.js';
 export { decodeBase32, generateTotp } from './totp.js';
 export type { TotpParams } from './totp.js';
 export { createMfaChallengeResolver, mfaSurfaceResolvers, TotpChallengeResolver } from './totp-resolver.js';

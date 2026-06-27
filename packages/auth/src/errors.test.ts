@@ -5,6 +5,7 @@ import {
     BrowserCookieStoreError,
     CookieReadError,
     decryptChromeCookie,
+    PastedSessionError,
     ProfileResolutionError,
     resolveProfile,
 } from './index.js';
@@ -13,9 +14,10 @@ import type { BrowserCookieStoreReason } from './index.js';
 /**
  * One representative error per DISTINCT reason in the unified taxonomy. Typing it as a
  * `Record<BrowserCookieStoreReason, …>` is the compile-time exhaustiveness mirror of the source guidance
- * map: add a reason to either union (`ProfileResolutionReason` / `CookieReadReason`) without a line here and
- * this test stops compiling — so "a test per reason" (AC #4) can never silently fall behind the taxonomy.
- * `unsupported-browser` is the member shared by both halves; the union collapses it to one key.
+ * map: add a reason to any union (`ProfileResolutionReason` / `CookieReadReason` / `PastedSessionReason`)
+ * without a line here and this test stops compiling — so "a test per reason" (AC #4) can never silently fall
+ * behind the taxonomy. `unsupported-browser` and `invalid-domain` are members shared across halves; the union
+ * collapses each to one key.
  */
 const ERROR_BY_REASON: Record<BrowserCookieStoreReason, BrowserCookieStoreError> = {
     // ProfileResolutionError half (#176).
@@ -33,6 +35,10 @@ const ERROR_BY_REASON: Record<BrowserCookieStoreReason, BrowserCookieStoreError>
     'cookie-store-unreadable': new CookieReadError('no store', 'cookie-store-unreadable'),
     'app-bound-encryption': new CookieReadError('v20 scheme', 'app-bound-encryption'),
     'decryption-failed': new CookieReadError('bad padding', 'decryption-failed'),
+    // PastedSessionError half (#188) — `invalid-domain` is shared with the reader half above.
+    'empty-paste': new PastedSessionError('empty paste', 'empty-paste'),
+    'malformed-paste': new PastedSessionError('not a cookie header', 'malformed-paste'),
+    'no-cookies-in-scope': new PastedSessionError('nothing in scope', 'no-cookies-in-scope'),
 };
 
 const ALL_REASONS = Object.keys(ERROR_BY_REASON) as BrowserCookieStoreReason[];

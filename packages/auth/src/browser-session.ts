@@ -47,7 +47,11 @@ export function resolveBrowserSession(config: BrowserSessionAuthShape): BrowserS
  * only via {@link Secret.expose} at the point of use. Reached from a handle via {@link fromBrowserSession}.
  */
 export interface BrowserSession {
-    readonly browser: BrowserKind;
+    /**
+     * Which browser the session was imported FROM. Absent for a manually-pasted session (#188), which has no
+     * originating browser; present for a cookie-store import. No consumer branches on it — it is informational.
+     */
+    readonly browser?: BrowserKind;
     /** The target domain the import was scoped to (the cookies are this domain and its subdomains, nothing else). */
     readonly domain: string;
     readonly cookies: readonly BrowserCookie[];
