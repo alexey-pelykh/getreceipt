@@ -19,6 +19,8 @@ import type {
     SourceDescriptor,
 } from '@getreceipt/core';
 
+import { renderInvoicePdf } from './render.js';
+import type { InvoiceRenderer } from './render.js';
 import {
     ENDPOINTS,
     hasNextPage,
@@ -53,8 +55,8 @@ const DESCRIPTOR: SourceDescriptor = {
     credentialShapes: ['none'],
     // The order history + invoice are server-rendered HTML scraped in-process (no JSON API, no browser).
     transportTier: 'html-scrape',
-    // `fetch` returns the invoice print page SOURCE (HTML); rendering it to PDF is a separate concern (#182).
-    artifactMode: 'html-capture',
+    // `fetch` renders the invoice print page to a faithful print-layout PDF via @getreceipt/browser (#172/#182).
+    artifactMode: 'rendered',
     // The listing is "your-orders", dated by the ORDER date.
     dateFilter: { basis: 'ordered', fromInclusive: true, toInclusive: true },
     timezone: 'Europe/Paris', // orderedAt + the user's calendar window are Paris-local (#127)
@@ -81,11 +83,14 @@ const defaultTransport: Transport = (input, init) => fetch(input, init);
 /**
  * Construction options. `transport` defaults to a unit-testable platform `fetch`; `importOptions` are
  * threaded into {@link importBrowserSession} so the cookie-store seams (profile dir, AES key, …) are
- * injectable for hermetic tests, defaulting to the real macOS profile + Keychain in production (#176/#177).
+ * injectable for hermetic tests, defaulting to the real macOS profile + Keychain in production (#176/#177);
+ * `render` defaults to the real headless port and is injectable so unit tests skip launching a browser.
  */
 export interface AmazonFrAdapterOptions {
     readonly transport?: Transport;
     readonly importOptions?: ImportBrowserSessionOptions;
+    /** Renders a fetched invoice page to the PDF artifact; defaults to the @getreceipt/browser port ({@link renderInvoicePdf}). */
+    readonly render?: InvoiceRenderer;
 }
 
 /**
@@ -96,7 +101,8 @@ export interface AmazonFrAdapterOptions {
  * `authenticate` IMPORTS the user's already-authenticated amazon.fr browser session (the yt-dlp
  * `--cookies-from-browser` model, #179) — it drives no login and launches no browser. `list` scrapes the
  * "your-orders" history (paginating by `startIndex`) into one {@link ReceiptRef} per order; `fetch` retrieves
- * that order's printable invoice page SOURCE (HTML) over the impersonating transport. A session that the
+ * that order's printable invoice page over the impersonating transport and renders it to a faithful
+ * print-layout PDF artifact (#182) via the `@getreceipt/browser` headless port (#172). A session that the
  * source no longer accepts surfaces, at `list`/`fetch`, as the SAME `reauth-required` outcome every source
  * uses ({@link browserSessionReauthRequired}, #180) — pointing the user at their browser to sign in again.
  */
@@ -104,10 +110,12 @@ export class AmazonFrAdapter implements SourceAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
     readonly #transport: Transport;
     readonly #importOptions: ImportBrowserSessionOptions;
+    readonly #render: InvoiceRenderer;
 
     constructor(options: AmazonFrAdapterOptions = {}) {
         this.#transport = options.transport ?? defaultTransport;
         this.#importOptions = options.importOptions ?? {};
+        this.#render = options.render ?? renderInvoicePdf;
     }
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
@@ -135,13 +143,16 @@ export class AmazonFrAdapter implements SourceAdapter {
         const session = fromBrowserSession(auth);
         const url = invoiceUrl(ref.id);
         const response = await requestSession(this.#transport, session, url);
-        const bytes = new Uint8Array(await response.arrayBuffer());
+        const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
         // The print page is about the requested order, so it must carry the order id; a 200 without it is drift
-        // (a stale session is already mapped to reauth by requestSession's redirect handling) — the drift detector.
-        if (!new TextDecoder().decode(bytes).includes(ref.id)) {
+        // (a stale session is already mapped to reauth by requestSession's redirect handling). Validate the
+        // SOURCE before rendering, so a drifted page never reaches the engine.
+        if (!html.includes(ref.id)) {
             throw new TrustBoundaryError('amazon.fr:fetch', [{ path: '<root>', code: 'not_an_invoice' }]);
         }
-        const artifact: ReceiptArtifact = { bytes, contentType: 'text/html', filename: `${ref.id}.html` };
+        // Render the validated print page to the canonical PDF artifact via the #172 port (marketplace-agnostic).
+        const pdf = await this.#render(html);
+        const artifact: ReceiptArtifact = { bytes: pdf, contentType: 'application/pdf', filename: `${ref.id}.pdf` };
         return artifact as unknown as ArtifactHandle;
     }
 }

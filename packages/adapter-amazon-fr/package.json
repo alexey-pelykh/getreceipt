@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@getreceipt/auth": "workspace:^",
+    "@getreceipt/browser": "workspace:^",
     "@getreceipt/core": "workspace:^",
     "zod": "catalog:"
   },

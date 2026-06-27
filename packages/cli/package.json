@@ -35,6 +35,7 @@
   "dependencies": {
     "commander": "catalog:",
     "node-wreq": "catalog:",
+    "playwright": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

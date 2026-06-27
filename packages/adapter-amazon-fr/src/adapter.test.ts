@@ -27,7 +27,7 @@ import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AmazonFrAdapter, amazonFrAdapter } from './index.js';
-import type { Transport } from './index.js';
+import type { InvoiceRenderer, Transport } from './index.js';
 import { ENDPOINTS, LISTING, LOCALE, orderSchema, ORDER_QUERY, parseFrenchDate, parseOrders } from './wire.js';
 import type { OrderDto } from './wire.js';
 
@@ -182,9 +182,17 @@ function invoiceOk() {
 
 // --- adapter + credential helpers -------------------------------------------------------------------------
 
+/**
+ * A stub renderer: returns minimal valid-PDF-shaped bytes WITHOUT launching a browser, so a `fetch`/`collect`
+ * test exercises the source→artifact pipeline hermetically. The REAL headless engine — for both marketplaces
+ * — is covered by render.test.ts.
+ */
+const stubRender: InvoiceRenderer = (invoiceHtml) =>
+    Promise.resolve(new TextEncoder().encode(`%PDF-1.4\n% rendered ${String(invoiceHtml.length)} bytes\n%%EOF\n`));
+
 /** An adapter wired to a synthetic cookie store (platform `fetch` transport → MSW intercepts every request). */
-function adapter(userDataDir: string): AmazonFrAdapter {
-    return new AmazonFrAdapter({ importOptions: { userDataDir, key: KEY } });
+function adapter(userDataDir: string, render?: InvoiceRenderer): AmazonFrAdapter {
+    return new AmazonFrAdapter({ importOptions: { userDataDir, key: KEY }, ...(render ? { render } : {}) });
 }
 
 /** The credential context a front-end resolves for a session source — via the real {@link resolveBrowserSession}. */
@@ -213,7 +221,7 @@ describe('AmazonFrAdapter — AC1: registration + resolution', () => {
         expect(resolver.tryResolve('amazon.com')).toBeUndefined();
     });
 
-    it('declares a session / html-scrape / html-capture descriptor with an inclusive ordered-date window, impersonation, and no aliases', () => {
+    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, and no aliases', () => {
         const descriptor = amazonFrAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
@@ -221,7 +229,7 @@ describe('AmazonFrAdapter — AC1: registration + resolution', () => {
             authKind: 'session',
             credentialShapes: ['none'],
             transportTier: 'html-scrape',
-            artifactMode: 'html-capture',
+            artifactMode: 'rendered',
             pagination: 'page',
             dateFilter: { basis: 'ordered', fromInclusive: true, toInclusive: true },
             timezone: 'Europe/Paris',
@@ -354,28 +362,39 @@ describe('AmazonFrAdapter — AC2/AC3: list (your-orders scrape + locale + windo
     });
 });
 
-describe('AmazonFrAdapter — AC2: fetch (invoice print page source)', () => {
-    it('retrieves the invoice print HTML addressed by orderID and returns it as an html-capture artifact', async () => {
+describe('AmazonFrAdapter — AC2: fetch (invoice print page → rendered PDF)', () => {
+    it('renders the invoice print page (addressed by orderID) to a faithful application/pdf artifact', async () => {
         server.use(ordersOk([order('404-9-1', '4 mai 2026')]), invoiceOk());
-        const a = adapter(makeUserDataDir(AMAZON_COOKIES));
+        let renderedHtml: string | undefined;
+        const render: InvoiceRenderer = (invoiceHtml) => {
+            renderedHtml = invoiceHtml;
+            return stubRender(invoiceHtml);
+        };
+        const a = adapter(makeUserDataDir(AMAZON_COOKIES), render);
         const auth = await a.authenticate(creds());
         const ref = (await a.list(auth, WIDE))[0];
 
         const artifact = asReceiptArtifact(await a.fetch(auth, ref!));
 
-        expect(artifact.contentType).toBe('text/html');
-        expect(artifact.filename).toBe('404-9-1.html');
-        const decoded = new TextDecoder().decode(artifact.bytes);
-        expect(decoded).toContain('Facture');
-        expect(decoded).toContain('404-9-1'); // proves fetch addressed the print page with the right orderID
+        expect(artifact.contentType).toBe('application/pdf');
+        expect(artifact.filename).toBe('404-9-1.pdf');
+        expect(new TextDecoder().decode(artifact.bytes).startsWith('%PDF-')).toBe(true);
+        // fetch handed the validated invoice SOURCE — which carries 'Facture' + the orderID — to the engine,
+        // proving the source→render wiring (the print page is fetched, drift-checked, THEN rendered).
+        expect(renderedHtml).toContain('Facture');
+        expect(renderedHtml).toContain('404-9-1');
     });
 
-    it('rejects a fetched page that is not the requested invoice at the trust boundary', async () => {
+    it('rejects a fetched page that is not the requested invoice at the trust boundary, before rendering', async () => {
         server.use(
             ordersOk([order('404-9-2', '4 mai 2026')]),
             http.get(INVOICE_PRINT, () => html('<html><body>some other page</body></html>')),
         );
-        const a = adapter(makeUserDataDir(AMAZON_COOKIES));
+        let rendered = false;
+        const a = adapter(makeUserDataDir(AMAZON_COOKIES), (invoiceHtml) => {
+            rendered = true;
+            return stubRender(invoiceHtml);
+        });
         const auth = await a.authenticate(creds());
         const ref = (await a.list(auth, WIDE))[0];
 
@@ -383,6 +402,7 @@ describe('AmazonFrAdapter — AC2: fetch (invoice print page source)', () => {
 
         expect(error).toBeInstanceOf(TrustBoundaryError);
         expect((error as TrustBoundaryError).boundary).toBe('amazon.fr:fetch');
+        expect(rendered).toBe(false); // drift is caught on the SOURCE — the engine never runs on a wrong page
     });
 });
 
@@ -474,7 +494,7 @@ describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => 
         try {
             const writer = new FilesystemReceiptWriter({ outDir: dir });
             const result = await collect({
-                adapter: adapter(makeUserDataDir(AMAZON_COOKIES)),
+                adapter: adapter(makeUserDataDir(AMAZON_COOKIES), stubRender),
                 credentials: creds(),
                 writer,
                 window: WIDE,
@@ -487,7 +507,7 @@ describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => 
 
             const files = (await readdirP(join(dir, 'amazon.fr'))).sort();
             expect(files).toHaveLength(2);
-            expect(files.every((name) => name.endsWith('.html'))).toBe(true);
+            expect(files.every((name) => name.endsWith('.pdf'))).toBe(true);
 
             const surfaces = [
                 JSON.stringify(result),
@@ -505,7 +525,7 @@ describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => 
 
             // Idempotent re-run: a fresh writer over the same directory skips everything, fetching nothing new.
             const rerun = await collect({
-                adapter: adapter(makeUserDataDir(AMAZON_COOKIES)),
+                adapter: adapter(makeUserDataDir(AMAZON_COOKIES), stubRender),
                 credentials: creds(),
                 writer: new FilesystemReceiptWriter({ outDir: dir }),
                 window: WIDE,
