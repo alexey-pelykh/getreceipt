@@ -167,7 +167,7 @@ already established in your own browser.
 ```yaml
 sources:
   amazon.fr:
-    browser: chrome # one of: chrome, brave, edge, chromium, firefox
+    browser: chrome # chrome, brave, edge, chromium (firefox: not yet selectable)
     profile: 'Profile 1' # the browser profile: a profile directory name, or the account email
 ```
 
@@ -182,8 +182,10 @@ sources:
       profile: 'Profile 1'
 ```
 
-- **`browser`** — which browser's cookie store to read: one of `chrome`, `brave`, `edge`, `chromium`,
-  `firefox`.
+- **`browser`** — which browser's cookie store to read: one of `chrome`, `brave`, `edge`, `chromium`, or
+  `firefox`. `firefox` is **accepted in config but not yet selectable as a session source** (the Firefox
+  cookie reader ships, but wiring its profile lookup is tracked separately) — use a Chromium-family browser
+  for now.
 - **`profile`** — which of that browser's profiles to import (a profile directory name, or the account
   email). How that name maps to a concrete profile is resolved when the source runs.
 
