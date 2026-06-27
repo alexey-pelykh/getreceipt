@@ -32,6 +32,10 @@ catalog:
   # Chrome TLS/HTTP-2 browser impersonation (napi-rs Rust + BoringSSL) for Cloudflare-gated sources (#101).
   # napi prebuilt binaries via optionalDependencies — ABI-stable across Node 24/26, no from-source compile.
   node-wreq: 2.4.1
+  # Headless-Chromium render engine for @getreceipt/browser (#172): HTML/URL -> PDF. The browser BINARY is
+  # not pulled by install (pnpm blocks build scripts; see allowBuilds) — it is fetched explicitly via
+  # `playwright install chromium` (CI wires this per leg), keeping installs hermetic and lightweight.
+  playwright: 1.61.1
 
 # Packages newer than pnpm's default minimum-release-age window; vetted + allowed so fresh clones (and the
 # frozen-lockfile CI matrix) install deterministically without a prompt. node-wreq ships one prebuilt
@@ -42,6 +46,8 @@ minimumReleaseAgeExclude:
   - 'yaml@2.9.0'
   - 'zod@4.4.3'
   - 'node-wreq@2.4.1'
+  - 'playwright@1.61.1'
+  - 'playwright-core@1.61.1'
   - '@node-wreq/darwin-arm64@2.4.1'
   - '@node-wreq/darwin-x64@2.4.1'
   - '@node-wreq/linux-arm64-gnu@2.4.1'

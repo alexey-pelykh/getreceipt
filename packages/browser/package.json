@@ -1,0 +1,42 @@
+{
+  "name": "@getreceipt/browser",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "@getreceipt headless-render port — turn an HTML receipt/invoice (or an authenticated URL) into a PDF artifact via headless Chromium (Playwright).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
+    "directory": "packages/browser"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@getreceipt/auth": "workspace:^",
+    "@getreceipt/core": "workspace:^",
+    "playwright": "catalog:"
+  },
+  "devDependencies": {
+    "@getreceipt/testing": "workspace:^",
+    "@types/node": "catalog:"
+  },
+  "license": "AGPL-3.0-only"
+}
