@@ -72,6 +72,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # @getreceipt/browser's test renders via headless Chromium (Playwright); install the browser before
+      # `pnpm test` exercises it. Cached by lockfile (which pins the Playwright version); `--with-deps`
+      # adds the apt system libraries Chromium needs (this job is ubuntu-only).
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright Chromium (with system deps)
+        run: pnpm --filter @getreceipt/browser exec playwright install --with-deps chromium
+
       - name: Typecheck
         run: pnpm typecheck
 
