@@ -32,6 +32,25 @@ export const ENDPOINTS = {
     signIn: '/ap/signin',
 } as const;
 
+/**
+ * The instance contract (#190): amazon.fr (canonical) and amazon.com are SEPARATE data instances served by
+ * ONE adapter under ONE sign-in — orders placed on `.com` are not visible on `.fr`. Each instance shares
+ * Amazon's global page STRUCTURE (the {@link LISTING} tokens + {@link ENDPOINTS} paths) and differs only in
+ * `host`, `Accept-Language`, the date FORMAT (`fr` → `DD mois YYYY`, `en` → `Month DD, YYYY`), and which of the
+ * shared session's cookies travel (`cookieDomain`). The hosts are baked public constants (no runtime discovery)
+ * → publishable under the host-publication gate (#103), like {@link ENDPOINTS.origin}.
+ *
+ * SCOPE NOTE: amazon.com's LIVE page structure and cookie/auth model are NOT yet validated against the real
+ * site — that is the #191 recon spike (out of scope here). This contract ASSUMES the shared-structure model and
+ * is proven over SYNTHETIC fixtures; #191 confirms or corrects it before any live amazon.com collection. The
+ * fields are structurally an {@link @getreceipt/core!InstanceContext} (the adapter routes each `host` through
+ * the #103 gate when building the descriptor's `instances`).
+ */
+export const INSTANCES = [
+    { domain: 'amazon.fr', host: ENDPOINTS.origin, cookieDomain: 'amazon.fr', locale: 'fr-FR' },
+    { domain: 'amazon.com', host: 'https://www.amazon.com', cookieDomain: 'amazon.com', locale: 'en-US' },
+] as const;
+
 /** Query-parameter names the listing pagination and the invoice page address. */
 export const ORDER_QUERY = {
     /** Item-based pagination offset on the order-history page. */
@@ -105,6 +124,61 @@ export function parseFrenchDate(text: string): Date | undefined {
     return instant.getUTCMonth() === month - 1 && instant.getUTCDate() === day ? instant : undefined;
 }
 
+/** US-English month names (lower-cased) → 1-12, for parsing the order date off an amazon.com card (#190). */
+const ENGLISH_MONTHS: Readonly<Record<string, number>> = {
+    january: 1,
+    february: 2,
+    march: 3,
+    april: 4,
+    may: 5,
+    june: 6,
+    july: 7,
+    august: 8,
+    september: 9,
+    october: 10,
+    november: 11,
+    december: 12,
+};
+
+/** A US-English calendar date as amazon.com renders it: `Month DD, YYYY` (e.g. `June 26, 2026`). */
+const ENGLISH_DATE_RE = /([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})/g;
+
+/**
+ * Parse a US-English `Month DD, YYYY` date to the UTC instant at that day's midnight (the amazon.com sibling of
+ * {@link parseFrenchDate}, #190). Returns `undefined` when the shape or month name is not a real English date,
+ * so the wire schema can reject it as drift.
+ */
+export function parseEnglishDate(text: string): Date | undefined {
+    const match = /^\s*([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\s*$/.exec(text);
+    if (match === null) {
+        return undefined;
+    }
+    const month = ENGLISH_MONTHS[(match[1] ?? '').toLowerCase()];
+    const day = Number(match[2]);
+    const year = Number(match[3]);
+    if (month === undefined || day < 1 || day > 31) {
+        return undefined;
+    }
+    const instant = new Date(Date.UTC(year, month - 1, day));
+    return instant.getUTCMonth() === month - 1 && instant.getUTCDate() === day ? instant : undefined;
+}
+
+/**
+ * Parse an order date in the instance's locale format (#190): an `en…` locale → English `Month DD, YYYY`, an
+ * `fr…` (or any other) locale → French `DD mois YYYY`. With NO locale (the wire-schema boundary, which does not
+ * know the instance) it accepts EITHER format — strictly more permissive than the old French-only check, so
+ * every previously-valid amazon.fr date still parses. The adapter passes the instance locale when projecting.
+ */
+export function parseOrderDate(text: string, locale?: string): Date | undefined {
+    if (locale?.toLowerCase().startsWith('en') === true) {
+        return parseEnglishDate(text);
+    }
+    if (locale !== undefined) {
+        return parseFrenchDate(text);
+    }
+    return parseFrenchDate(text) ?? parseEnglishDate(text);
+}
+
 /**
  * An Amazon order id as it rides in the invoice link's `orderID` param (e.g. `404-1234567-1234567`):
  * alphanumeric with hyphens, no slashes or other path/url metacharacters — so it is safe to thread back onto
@@ -123,7 +197,9 @@ const orderIdSchema = z
  */
 export const orderSchema = z.object({
     orderId: orderIdSchema,
-    orderDate: z.string().refine((value) => parseFrenchDate(value) !== undefined),
+    // Locale-agnostic at the boundary (#190): accept a real French OR English date — the adapter projects it
+    // with the instance's locale ({@link parseOrderDate}). A non-date in either format is drift.
+    orderDate: z.string().refine((value) => parseOrderDate(value) !== undefined),
 });
 
 /** The whole listing: every order the page renders. (Pagination is handled by the adapter across pages.) */
@@ -146,10 +222,15 @@ const INVOICE_ANCHOR_RE = new RegExp(
     'gi',
 );
 
-/** The last French date appearing in `region` (the one closest to the invoice link = that card's order date). */
-function lastFrenchDate(region: string): string {
+/**
+ * The last date appearing in `region` (the one closest to the invoice link = that card's order date), read in
+ * the instance's locale format (#190): an `en…` locale scans for an English `Month DD, YYYY`, anything else for
+ * a French `DD mois YYYY`. Locale defaults to French (amazon.fr, the canonical instance).
+ */
+function lastDateInRegion(region: string, locale?: string): string {
+    const dateRe = locale?.toLowerCase().startsWith('en') === true ? ENGLISH_DATE_RE : FRENCH_DATE_RE;
     let date = '';
-    for (const match of region.matchAll(FRENCH_DATE_RE)) {
+    for (const match of region.matchAll(dateRe)) {
         date = match[0];
     }
     return date;
@@ -162,14 +243,15 @@ function lastFrenchDate(region: string): string {
  * malformed order id) throws a secret-safe `TrustBoundaryError`. A page with no invoice links yields `[]`
  * (an empty order history is a success, not drift — the caller has already confirmed it is the signed-in page).
  */
-export function parseOrders(html: string, boundary: string): readonly OrderDto[] {
+export function parseOrders(html: string, boundary: string, locale?: string): readonly OrderDto[] {
     const rows: unknown[] = [];
     let regionStart = 0;
     for (const match of html.matchAll(INVOICE_ANCHOR_RE)) {
         const anchorStart = match.index ?? 0;
         const region = html.slice(regionStart, anchorStart);
         regionStart = anchorStart + match[0].length;
-        rows.push({ orderId: decodeURIComponent(match[1] ?? ''), orderDate: lastFrenchDate(region) });
+        // The card date is read in the instance's locale (#190); absent locale defaults to French (amazon.fr).
+        rows.push({ orderId: decodeURIComponent(match[1] ?? ''), orderDate: lastDateInRegion(region, locale) });
     }
     return parseAtBoundary(orderArraySchema, rows, boundary);
 }

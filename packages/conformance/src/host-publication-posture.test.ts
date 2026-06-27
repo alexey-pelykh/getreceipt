@@ -8,7 +8,7 @@ import { scanForPublicationLeaks } from '@getreceipt/auth';
 import type { ScannableFile } from '@getreceipt/auth';
 import { BUNDLED_ADAPTERS } from '@getreceipt/cli';
 import { FilesystemReceiptWriter, findUnpublishableHostLiterals } from '@getreceipt/core';
-import type { ArtifactHandle, HostLiteralEntry, ReceiptRef } from '@getreceipt/core';
+import type { ArtifactHandle, HostLiteralEntry, InstanceContext, ReceiptRef } from '@getreceipt/core';
 import { findHandAuthoredEndpointLiterals } from '@getreceipt/testing';
 import { describe, expect, it } from 'vitest';
 
@@ -75,17 +75,33 @@ function hostsInLiteral(literal: string): string[] {
     return hosts;
 }
 
+/** Every domain a source answers to — its canonical PLUS each multi-instance domain (#190), lower-cased. */
+function sourceDomains(adapter: (typeof BUNDLED_ADAPTERS)[number]): string[] {
+    return [
+        adapter.descriptor.canonicalDomain,
+        ...(adapter.descriptor.instances ?? []).map((instance: InstanceContext) => instance.domain),
+    ].map((domain) => domain.toLowerCase());
+}
+
+/** The length of the longest of `adapter`'s domains that `host` is (or is a subdomain of); 0 when none match. */
+function matchSpecificity(adapter: (typeof BUNDLED_ADAPTERS)[number], host: string): number {
+    return sourceDomains(adapter)
+        .filter((domain) => host === domain || host.endsWith(`.${domain}`))
+        .reduce((longest, domain) => Math.max(longest, domain.length), 0);
+}
+
 /**
- * A host literal belongs to a source when its hostname IS, or is a subdomain of, that source's canonical
- * domain. Most-specific (longest) match wins so nested domains can't let a host inherit a less-specific
- * (possibly promoted) source's finding. An orphan host (no match) → undefined → default-deny.
+ * A host literal belongs to a source when its hostname IS, or is a subdomain of, ANY of that source's
+ * domains — its canonical OR a multi-instance domain (#190: amazon.com is the amazon source's instance, so
+ * `www.amazon.com` inherits that source's finding). Most-specific (longest matching domain) wins so nested
+ * domains can't let a host inherit a less-specific (possibly promoted) source's finding. An orphan host (no
+ * match) → undefined → default-deny.
  */
 function findingForHost(host: string): boolean | undefined {
-    const matches = BUNDLED_ADAPTERS.filter((adapter) => {
-        const domain = adapter.descriptor.canonicalDomain.toLowerCase();
-        return host === domain || host.endsWith(`.${domain}`);
-    }).sort((a, b) => b.descriptor.canonicalDomain.length - a.descriptor.canonicalDomain.length);
-    return matches[0]?.descriptor.discoveryOnly;
+    const matches = BUNDLED_ADAPTERS.map((adapter) => ({ adapter, specificity: matchSpecificity(adapter, host) }))
+        .filter((match) => match.specificity > 0)
+        .sort((a, b) => b.specificity - a.specificity);
+    return matches[0]?.adapter.descriptor.discoveryOnly;
 }
 
 /**

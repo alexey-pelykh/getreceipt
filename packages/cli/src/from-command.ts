@@ -1,14 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { ConfigParseResult, CredentialValue, LoginSecrets, Secret } from '@getreceipt/auth';
-import type { CollectRequest, CollectResult, OperationResult, ReceiptWriter, SourceResolver } from '@getreceipt/core';
+import type {
+    CollectInstancesRequest,
+    CollectRequest,
+    CollectResult,
+    OperationResult,
+    ReceiptWriter,
+    SourceResolver,
+} from '@getreceipt/core';
 import { Command, CommanderError } from 'commander';
 
+import { batchExitCode, renderAllJson, renderAllText, type BatchReport } from './all-render.js';
 import { DEFAULT_PROFILE } from './config-render.js';
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError } from './operation-runner.js';
-import { defaultCollectionDeps, runCollect, type CollectionDeps, type CollectParams } from './operations.js';
+import {
+    defaultCollectionDeps,
+    runCollect,
+    runCollectAllInstances,
+    type CollectionDeps,
+    type CollectParams,
+} from './operations.js';
 import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 import { traceAdapter, traceChallengeObserver } from './verbose-trace.js';
 import { parseWindow } from './window.js';
@@ -33,6 +47,8 @@ export interface FromCommandEnv {
     /** Builds the receipt writer for a target directory. */
     readonly createWriter: (outDir: string) => ReceiptWriter;
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
+    /** Auth-once / data-per-instance collection for `--all-instances` (#190). */
+    readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
 }
 
@@ -44,6 +60,8 @@ interface FromOptions {
     readonly verbose?: boolean;
     readonly debug?: boolean;
     readonly acceptConsent?: boolean;
+    /** Collect every configured instance of a multi-instance source under one shared auth (#190). */
+    readonly allInstances?: boolean;
 }
 
 function defaultEnv(): FromCommandEnv {
@@ -76,6 +94,10 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
         .option('--verbose', 'stream secret-fenced stage diagnostics to stderr')
         .option('--debug', 'alias for --verbose')
         .option('--accept-consent', 'record the one-time consent acknowledgment non-interactively (for CI / piped use)')
+        .option(
+            '--all-instances',
+            'collect every configured instance of a multi-instance source (e.g. amazon.fr and amazon.com) under one shared sign-in',
+        )
         .action(async (domain: string, options: FromOptions, command: Command) => {
             // Consent gate FIRST — before any service is touched with the user's credentials (#32).
             try {
@@ -110,6 +132,27 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
                       challengeObserver: traceChallengeObserver(env.io.writeErr),
                   }
                 : env;
+
+            // --all-instances (#190): collect every configured instance of the source under ONE shared auth,
+            // reporting a per-instance batch (same shape `all` emits) rather than a single result.
+            if (options.allInstances === true) {
+                let report: BatchReport;
+                try {
+                    report = await runCollectAllInstances(params, deps);
+                } catch (error) {
+                    if (error instanceof OperationError) {
+                        env.io.writeErr(`✗ ${error.message}\n`);
+                        throw exitWith(EXIT_CODES.usage, `getreceipt.from.${error.kind}`);
+                    }
+                    throw error;
+                }
+                env.io.writeOut(options.json === true ? renderAllJson(report) : renderAllText(report));
+                const code = batchExitCode(report.outcome);
+                if (code !== EXIT_CODES.success) {
+                    throw exitWith(code, `getreceipt.from.${report.outcome}`);
+                }
+                return;
+            }
 
             let result: OperationResult;
             try {

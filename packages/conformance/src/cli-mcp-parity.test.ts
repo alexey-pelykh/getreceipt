@@ -133,6 +133,7 @@ const collection: CollectionDeps = {
         Promise.resolve({ username: new Secret('resolved-user'), secret: new Secret('resolved-secret') }),
     createWriter: () => NOOP_WRITER,
     collect: () => Promise.resolve(COLLECT_RESULT),
+    collectInstances: () => Promise.resolve([COLLECT_RESULT]),
     now: FIXED_NOW,
 };
 

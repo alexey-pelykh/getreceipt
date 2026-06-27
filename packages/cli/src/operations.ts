@@ -14,10 +14,17 @@ import type {
     SessionStore,
     StoredSession,
 } from '@getreceipt/auth';
-import { FilesystemReceiptWriter, Semaphore, collect as coreCollect, listSources } from '@getreceipt/core';
+import {
+    FilesystemReceiptWriter,
+    Semaphore,
+    collect as coreCollect,
+    collectInstances as coreCollectInstances,
+    listSources,
+} from '@getreceipt/core';
 import type {
     ChallengeObserver,
     ChallengeResolver,
+    CollectInstancesRequest,
     CollectRequest,
     CollectResult,
     OperationResult,
@@ -33,7 +40,7 @@ import type {
 import { deriveBatchOutcome } from './all-render.js';
 import type { BatchReport, BatchSourceResult } from './all-render.js';
 import { createDefaultRegistry, createDefaultResolver } from './default-sources.js';
-import { OperationError, runOperation } from './operation-runner.js';
+import { OperationError, runInstancesOperation, runOperation } from './operation-runner.js';
 import type { OperationRunnerDeps, ResolveSourceDeps } from './operation-runner.js';
 import { defaultReadableSessionStore } from './sessions.js';
 import type { SourceView, SourcesReport } from './sources-render.js';
@@ -72,6 +79,8 @@ export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandR
     /** Builds the receipt writer bound to a target directory. */
     readonly createWriter: (outDir: string) => ReceiptWriter;
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
+    /** Multi-instance collection (#190): authenticate once for the source, list/fetch per instance. */
+    readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
@@ -142,10 +151,43 @@ function toRunnerDeps(deps: McpCollectionDeps, outDir: string): OperationRunnerD
         resolveLogin: deps.resolveLogin,
         createWriter: () => deps.createWriter(outDir),
         collect: deps.collect,
+        collectInstances: deps.collectInstances,
         now: deps.now,
         ...(deps.instrument === undefined ? {} : { instrument: deps.instrument }),
         ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
         ...(deps.buildOutOfBandResolver === undefined ? {} : { buildOutOfBandResolver: deps.buildOutOfBandResolver }),
+    };
+}
+
+/**
+ * Collect EVERY configured instance of ONE source under a shared authentication (#190) — the engine behind
+ * `from <canonical> --all-instances`. `authenticate()` runs once; each instance is collected as a separate
+ * data instance and reported as its own {@link BatchSourceResult} (keyed by its instance domain). Instances
+ * are sequential (no fan-out), so the report's concurrency is 1. Pre-flight problems (unknown source, not
+ * configured, an instance the adapter does not serve) throw {@link OperationError}; per-instance failures
+ * are continue-on-error DATA in the report. A source with no `instances:` configured degrades to a single
+ * entry (the addressed/canonical instance).
+ */
+export async function runCollectAllInstances(params: CollectParams, deps: McpCollectionDeps): Promise<BatchReport> {
+    const spec: OperationSpec =
+        params.window === undefined
+            ? { source: params.source, profile: params.profile }
+            : { source: params.source, profile: params.profile, window: params.window };
+    const results = await runInstancesOperation(spec, params.selection, toRunnerDeps(deps, params.outDir));
+    const sources: BatchSourceResult[] = results.map((result) => ({ source: result.source, ok: true, result }));
+    return {
+        profile: params.profile,
+        outcome: deriveBatchOutcome(sources),
+        concurrency: 1,
+        ...(params.window === undefined
+            ? {}
+            : {
+                  window: {
+                      from: params.window.since,
+                      to: params.window.until ?? deps.now().toISOString().slice(0, 10),
+                  },
+              }),
+        sources,
     };
 }
 
@@ -183,13 +225,15 @@ export async function runCollectAll(params: CollectAllParams, deps: McpCollectio
     const runnerDeps = toRunnerDeps(deps, params.outDir);
 
     const semaphore = new Semaphore(params.concurrency);
-    // Promise.all preserves positional (config-key) order regardless of completion order,
-    // so the report's source order is deterministic — load-bearing for CLI↔MCP parity.
-    const sources = await Promise.all(
+    // Promise.all preserves positional (config-key) order regardless of completion order, so the report's
+    // source order is deterministic — load-bearing for CLI↔MCP parity. A multi-instance source expands to
+    // one entry per instance (#190), keeping that positional order; `.flat()` merges the per-source groups.
+    const grouped = await Promise.all(
         Object.keys(parsed.config.sources).map((source) =>
             semaphore.run(() => runOneSource(source, params.profile, params.selection, params.window, runnerDeps)),
         ),
     );
+    const sources = grouped.flat();
 
     return {
         profile: params.profile,
@@ -221,20 +265,24 @@ async function runOneSource(
     selection: ConfigSelection | undefined,
     window: OperationWindow | undefined,
     deps: OperationRunnerDeps,
-): Promise<BatchSourceResult> {
+): Promise<readonly BatchSourceResult[]> {
     const spec: OperationSpec = window === undefined ? { source, profile } : { source, profile, window };
     try {
-        const result = await runOperation(spec, selection, deps);
-        return { source, ok: true, result };
+        // One source may expand to several instances (#190); each becomes its own slot keyed by instance domain.
+        // A single-instance source returns exactly one result, preserving today's one-slot-per-source shape.
+        const results = await runInstancesOperation(spec, selection, deps);
+        return results.map((result) => ({ source: result.source, ok: true, result }));
     } catch (error) {
         if (error instanceof OperationError) {
-            return { source, ok: false, error: { kind: error.kind, message: error.message } };
+            return [{ source, ok: false, error: { kind: error.kind, message: error.message } }];
         }
-        return {
-            source,
-            ok: false,
-            error: { kind: 'unexpected', message: error instanceof Error ? error.message : String(error) },
-        };
+        return [
+            {
+                source,
+                ok: false,
+                error: { kind: 'unexpected', message: error instanceof Error ? error.message : String(error) },
+            },
+        ];
     }
 }
 
@@ -268,7 +316,12 @@ export function runListSources(params: ListSourcesParams, deps: ListSourcesDeps)
     const configuredKeys = loadConfiguredKeys(deps, params.selection);
     const sources: SourceView[] = listSources(deps.registry, deps.verification).map((listing) => ({
         ...listing,
-        configured: isConfigured(listing.canonicalDomain, listing.aliasDomains, configuredKeys),
+        configured: isConfigured(
+            listing.canonicalDomain,
+            listing.aliasDomains,
+            listing.instanceDomains,
+            configuredKeys,
+        ),
     }));
     return { profile: params.profile, sources };
 }
@@ -292,16 +345,20 @@ function loadConfiguredKeys(deps: ListSourcesDeps, selection: ConfigSelection | 
     return new Set(Object.keys(parsed.config.sources).map((key) => key.toLowerCase()));
 }
 
-/** Whether a source is configured: its canonical domain or any alias appears among the configured keys (case-insensitive). */
+/** Whether a source is configured: its canonical domain, any alias, or any instance domain (#190) appears among the configured keys (case-insensitive). */
 function isConfigured(
     canonicalDomain: string,
     aliasDomains: readonly string[],
+    instanceDomains: readonly string[],
     configuredKeys: ReadonlySet<string>,
 ): boolean {
     if (configuredKeys.has(canonicalDomain.toLowerCase())) {
         return true;
     }
-    return aliasDomains.some((alias) => configuredKeys.has(alias.toLowerCase()));
+    return (
+        aliasDomains.some((alias) => configuredKeys.has(alias.toLowerCase())) ||
+        instanceDomains.some((instance) => configuredKeys.has(instance.toLowerCase()))
+    );
 }
 
 /** Inputs for an auth-status report. */
@@ -412,6 +469,7 @@ export function defaultCollectionDeps(): CollectionDeps {
         resolveLogin: (ref) => credentialResolver.resolveLogin(ref),
         createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
         collect: coreCollect,
+        collectInstances: coreCollectInstances,
         now: () => new Date(),
     };
 }

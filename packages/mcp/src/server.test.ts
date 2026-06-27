@@ -8,6 +8,7 @@ import { loadConfig as authLoadConfig, Secret } from '@getreceipt/auth';
 import type { SessionStore } from '@getreceipt/auth';
 import {
     collect as coreCollect,
+    collectInstances as coreCollectInstances,
     FilesystemReceiptWriter,
     ReauthRequiredError,
     SourceAdapterRegistry,
@@ -132,6 +133,7 @@ function baseCollection(): CollectionDeps {
             Promise.resolve({ username: new Secret('resolved-user'), secret: new Secret('resolved-secret') }),
         createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
         collect: coreCollect,
+        collectInstances: coreCollectInstances,
         now: FIXED_NOW,
     };
 }

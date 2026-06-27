@@ -155,10 +155,21 @@ export type AuthShape =
     | BrowserSessionAuthShape;
 
 /**
- * Per-domain authentication configuration: a credential {@link AuthShape} plus an orthogonal optional
- * {@link MfaConfig}. `mfa` is an intersection sibling — it may accompany ANY shape — not a union arm.
+ * Per-domain authentication configuration: a credential {@link AuthShape} plus orthogonal optional
+ * siblings — an {@link MfaConfig} and the multi-instance {@link instances} list (#190). Each may
+ * accompany ANY shape — they are intersection siblings, not union arms.
  */
-export type DomainAuthConfig = AuthShape & { readonly mfa?: MfaConfig };
+export type DomainAuthConfig = AuthShape & {
+    readonly mfa?: MfaConfig;
+    /**
+     * The data instances to collect under this ONE configured source (#190) — e.g. `[amazon.fr, amazon.com]`.
+     * The credential block is configured ONCE; each instance is collected as a SEPARATE data instance with
+     * the SAME shared session. Optional: omit for a single-instance source (collected exactly as before).
+     * Shape-validated here (non-empty domain strings); whether the adapter SERVES each listed instance is
+     * checked downstream, fail-closed.
+     */
+    readonly instances?: readonly string[];
+};
 
 /**
  * One profile: per-domain auth config keyed by domain. In the per-file model each config file IS
@@ -351,7 +362,36 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     // `mfa` is orthogonal to the credential choice — parse it once, then attach to whichever arm.
     const mfa = auth.mfa !== undefined ? parseMfa(auth.mfa, `${authPath}.mfa`, warnings) : undefined;
 
-    return buildAuthShape(kind, auth, flags, mfa, authPath, warnings);
+    const shape = buildAuthShape(kind, auth, flags, mfa, authPath, warnings);
+    // `instances` is a SOURCE-level sibling (a collection concern, not auth) — read from the source mapping,
+    // not the auth block, so it sits beside an `auth:` block AND beside the session shorthand alike (#190).
+    const instances = parseInstances(raw.instances, `${path}.instances`);
+    return instances === undefined ? shape : { ...shape, instances };
+}
+
+/**
+ * Parse the optional source-level `instances` list (#190): the data instances to collect under this one
+ * configured source (e.g. `[amazon.fr, amazon.com]`). Each entry must be a non-empty domain string, and a
+ * present list must be non-empty. This validates only the SHAPE — whether the resolved adapter actually
+ * SERVES a listed instance is enforced downstream, fail-closed. Throws {@link ConfigError}, which never
+ * echoes a configured value.
+ */
+function parseInstances(raw: unknown, path: string): readonly string[] | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    if (!Array.isArray(raw)) {
+        throw new ConfigError('`instances` must be a list of instance domains', path);
+    }
+    if (raw.length === 0) {
+        throw new ConfigError('`instances` must list at least one instance domain, or be omitted', path);
+    }
+    return raw.map((entry, index) => {
+        if (typeof entry !== 'string' || entry.length === 0) {
+            throw new ConfigError('each `instances` entry must be a non-empty domain string', `${path}[${index}]`);
+        }
+        return entry;
+    });
 }
 
 /** Which credential / session fields a source's `auth` block carries — the input to kind derivation and arm selection. */

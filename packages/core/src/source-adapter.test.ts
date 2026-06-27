@@ -180,3 +180,82 @@ describe('SourceResolver', () => {
         expect(resolver.resolve('adsl.free.fr')).toBe(adapter);
     });
 });
+
+describe('SourceResolver — multi-instance fan-out (#190)', () => {
+    const amazon = (): SourceAdapter =>
+        fakeAdapter('amazon.fr', [], {
+            instances: [
+                { domain: 'amazon.fr', host: 'https://www.amazon.fr', cookieDomain: 'amazon.fr', locale: 'fr-FR' },
+                { domain: 'amazon.com', host: 'https://www.amazon.com', cookieDomain: 'amazon.com', locale: 'en-US' },
+            ],
+        });
+
+    it('resolves each instance domain to the same adapter paired with its own context', () => {
+        const registry = new SourceAdapterRegistry();
+        const adapter = amazon();
+        registry.register(adapter);
+        const resolver = new SourceResolver(registry);
+
+        const fr = resolver.resolveInstance('amazon.fr');
+        const com = resolver.resolveInstance('amazon.com');
+
+        expect(fr.adapter).toBe(adapter);
+        expect(com.adapter).toBe(adapter);
+        expect(fr.instance?.host).toBe('https://www.amazon.fr');
+        expect(fr.instance?.locale).toBe('fr-FR');
+        expect(com.instance?.host).toBe('https://www.amazon.com');
+        expect(com.instance?.locale).toBe('en-US');
+    });
+
+    it('resolves a canonical domain that is itself an instance to its own context (not a bare entry)', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(amazon());
+        const resolver = new SourceResolver(registry);
+
+        // amazon.fr is BOTH the canonical and an instance; the instance context must win over the bare entry.
+        expect(resolver.resolveInstance('amazon.fr').instance?.cookieDomain).toBe('amazon.fr');
+    });
+
+    it('resolves an instance domain case-insensitively', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(amazon());
+        const resolver = new SourceResolver(registry);
+
+        expect(resolver.resolveInstance('AMAZON.COM').instance?.domain).toBe('amazon.com');
+    });
+
+    it('returns no instance for a single-instance source (canonical resolves bare)', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(fakeAdapter('free.fr', ['adsl.free.fr']));
+        const resolver = new SourceResolver(registry);
+
+        expect(resolver.resolveInstance('free.fr').instance).toBeUndefined();
+        expect(resolver.resolveInstance('adsl.free.fr').instance).toBeUndefined();
+    });
+
+    it('keeps resolve()/tryResolve() returning just the adapter (backward-compatible)', () => {
+        const registry = new SourceAdapterRegistry();
+        const adapter = amazon();
+        registry.register(adapter);
+        const resolver = new SourceResolver(registry);
+
+        expect(resolver.resolve('amazon.com')).toBe(adapter);
+        expect(resolver.tryResolve('amazon.com')).toBe(adapter);
+    });
+
+    it('tryResolveInstance returns undefined for an unknown domain', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(amazon());
+        const resolver = new SourceResolver(registry);
+
+        expect(resolver.tryResolveInstance('amazon.de')).toBeUndefined();
+    });
+
+    it('rejects construction when an instance domain collides with another adapter', () => {
+        const registry = new SourceAdapterRegistry();
+        registry.register(amazon());
+        registry.register(fakeAdapter('shop.test', ['amazon.com']));
+
+        expect(() => new SourceResolver(registry)).toThrow(DuplicateSourceError);
+    });
+});

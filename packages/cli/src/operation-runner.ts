@@ -28,10 +28,12 @@ import {
 import type {
     ChallengeObserver,
     ChallengeResolver,
+    CollectInstancesRequest,
     CollectRequest,
     CollectResult,
     CredentialContext,
     DateRange,
+    InstanceContext,
     OperationResult,
     OperationSpec,
     OperationWindow,
@@ -46,6 +48,7 @@ export type OperationErrorKind =
     | 'config'
     | 'not-configured'
     | 'unsupported-shape'
+    | 'unsupported-instance'
     | 'credentials'
     | 'window';
 
@@ -102,6 +105,8 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
     /** Mints the writer for this run (already bound to the target directory). */
     readonly createWriter: () => ReceiptWriter;
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
+    /** Multi-instance collection (#190): authenticate once, list/fetch per instance. Used by `--all-instances` / `all`. */
+    readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
@@ -122,13 +127,50 @@ export async function runOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<OperationResult> {
-    const { adapter, credentials, challengeResolver } = await resolveSourceContext(
+    const { adapter, credentials, challengeResolver, instance } = await resolveSourceContext(
         { source: spec.source, ...(selection ? { selection } : {}) },
         deps,
     );
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
-    const request = buildRequest(spec.window, runAdapter, credentials, challengeResolver, deps);
+    // `instance` is set when `spec.source` addresses a specific instance of a multi-instance source (#190);
+    // collect() keys its output by the instance domain. Single-instance sources resolve `instance` undefined.
+    const request = buildRequest(spec.window, runAdapter, credentials, challengeResolver, deps, instance);
     return toOperationResult(await deps.collect(request));
+}
+
+/**
+ * Run a source across ITS CONFIGURED INSTANCES under one shared authentication (#190) — the engine behind
+ * `from <canonical> --all-instances` and the per-source expansion of `all`. Resolves the source ONCE, then
+ * drives `collectInstances` (authenticate once, list/fetch per instance) and maps each per-instance
+ * {@link CollectResult} to an {@link OperationResult}. When the source configures no `instances:` list it
+ * degrades to a single run (the addressed/canonical instance), so callers can use this uniformly. Pre-flight
+ * problems throw {@link OperationError} (including a configured instance the adapter does not serve,
+ * fail-closed); per-instance failures are DATA in the returned results, never thrown.
+ */
+export async function runInstancesOperation(
+    spec: OperationSpec,
+    selection: ConfigSelection | undefined,
+    deps: OperationRunnerDeps,
+): Promise<readonly OperationResult[]> {
+    const { adapter, credentials, challengeResolver, instance, configuredInstances } = await resolveSourceContext(
+        { source: spec.source, ...(selection ? { selection } : {}) },
+        deps,
+    );
+    const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
+    if (configuredInstances.length === 0) {
+        // No multi-instance config: one run for the addressed/canonical instance (single-instance behavior).
+        const request = buildRequest(spec.window, runAdapter, credentials, challengeResolver, deps, instance);
+        return [toOperationResult(await deps.collect(request))];
+    }
+    const request = buildInstancesRequest(
+        spec.window,
+        runAdapter,
+        credentials,
+        challengeResolver,
+        configuredInstances,
+        deps,
+    );
+    return (await deps.collectInstances(request)).map(toOperationResult);
 }
 
 /**
@@ -146,11 +188,18 @@ export async function resolveSourceContext(
     readonly adapter: SourceAdapter;
     readonly credentials: CredentialContext;
     readonly challengeResolver?: ChallengeResolver;
+    /** The {@link InstanceContext} when `spec.source` addresses a specific instance of a multi-instance source (#190). */
+    readonly instance?: InstanceContext;
+    /** The configured `instances:` list resolved + validated against what the adapter serves (#190); `[]` when none. */
+    readonly configuredInstances: readonly InstanceContext[];
 }> {
-    const adapter = resolveAdapter(deps.resolver, spec.source);
+    const { adapter, instance } = resolveAddressed(deps.resolver, spec.source);
     const path = deps.resolveConfigPath(spec.selection);
     const parsed = loadConfigOrThrow(deps.loadConfig, path);
     const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
+    // Validate the configured `instances:` against what the adapter serves, fail-closed (#190 AC2): a
+    // configured instance the adapter does not declare is a pre-flight config error, never a silent skip.
+    const configuredInstances = resolveConfiguredInstances(adapter, sourceConfig.instances, path);
     // Fail closed BEFORE resolving credentials / authenticate(): reject a source whose configured
     // credential shape the adapter does not accept (#169). Runs here, the one seam holding BOTH the
     // parsed config shape and the adapter descriptor, so a mis-shaped source surfaces as a pre-flight
@@ -173,18 +222,58 @@ export async function resolveSourceContext(
         surfaces['out-of-band'] = deps.buildOutOfBandResolver(sourceConfig.mfa?.trustDevice ?? false);
     }
     const challengeResolver = Object.keys(surfaces).length === 0 ? undefined : new RoutingChallengeResolver(surfaces);
-    return { adapter, credentials, ...(challengeResolver === undefined ? {} : { challengeResolver }) };
+    return {
+        adapter,
+        credentials,
+        configuredInstances,
+        ...(instance === undefined ? {} : { instance }),
+        ...(challengeResolver === undefined ? {} : { challengeResolver }),
+    };
 }
 
-function resolveAdapter(resolver: SourceResolver, source: string): SourceAdapter {
+/** Resolve the addressed domain to its adapter and any {@link InstanceContext} (#190), mapping an unknown domain to a pre-flight {@link OperationError}. */
+function resolveAddressed(
+    resolver: SourceResolver,
+    source: string,
+): { readonly adapter: SourceAdapter; readonly instance?: InstanceContext } {
     try {
-        return resolver.resolve(source);
+        const resolved = resolver.resolveInstance(source);
+        return resolved.instance === undefined
+            ? { adapter: resolved.adapter }
+            : { adapter: resolved.adapter, instance: resolved.instance };
     } catch (error) {
         if (error instanceof UnknownSourceError) {
             throw new OperationError('unknown-source', error.message);
         }
         throw error;
     }
+}
+
+/**
+ * Resolve a source's configured `instances:` list to the {@link InstanceContext}s the adapter serves,
+ * fail-closed (#190 AC2): every configured domain MUST be declared in the adapter's `instances`, else a
+ * pre-flight {@link OperationError}. An absent/empty list yields `[]` (a single-instance source). Matching
+ * is case-insensitive, mirroring domain resolution.
+ */
+function resolveConfiguredInstances(
+    adapter: SourceAdapter,
+    configured: readonly string[] | undefined,
+    path: string,
+): readonly InstanceContext[] {
+    if (configured === undefined || configured.length === 0) {
+        return [];
+    }
+    const served = new Map((adapter.descriptor.instances ?? []).map((ctx) => [ctx.domain.toLowerCase(), ctx]));
+    return configured.map((domain) => {
+        const ctx = served.get(domain.toLowerCase());
+        if (ctx === undefined) {
+            throw new OperationError(
+                'unsupported-instance',
+                `source "${adapter.descriptor.canonicalDomain}" does not serve the configured instance "${domain}" (in ${path})`,
+            );
+        }
+        return ctx;
+    });
 }
 
 function loadConfigOrThrow(loadConfig: (path: string) => ConfigParseResult, path: string): ConfigParseResult {
@@ -286,19 +375,60 @@ function buildRequest(
     credentials: CollectRequest['credentials'],
     challengeResolver: ChallengeResolver | undefined,
     deps: OperationRunnerDeps,
+    instance: InstanceContext | undefined,
 ): CollectRequest {
-    const writer = deps.createWriter();
     const now = deps.now();
-    const base: CollectRequest = {
+    const range = resolveWindow(window, adapter, now);
+    return {
         adapter,
         credentials,
-        writer,
+        writer: deps.createWriter(),
+        now,
+        ...(instance === undefined ? {} : { instance }),
+        ...(challengeResolver === undefined ? {} : { challengeResolver }),
+        ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
+        ...(range === undefined ? {} : { window: range }),
+    };
+}
+
+/** {@link buildRequest}'s multi-instance sibling (#190): one shared writer + window, the configured instances to fan list/fetch over. */
+function buildInstancesRequest(
+    window: OperationWindow | undefined,
+    adapter: SourceAdapter,
+    credentials: CollectRequest['credentials'],
+    challengeResolver: ChallengeResolver | undefined,
+    instances: readonly InstanceContext[],
+    deps: OperationRunnerDeps,
+): CollectInstancesRequest {
+    const now = deps.now();
+    const range = resolveWindow(window, adapter, now);
+    return {
+        adapter,
+        credentials,
+        writer: deps.createWriter(),
+        instances,
         now,
         ...(challengeResolver === undefined ? {} : { challengeResolver }),
         ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
+        ...(range === undefined ? {} : { window: range }),
     };
+}
+
+/**
+ * Resolve the calendar window to instants in the source's zone, shared by single- and multi-instance runs.
+ * Each `YYYY-MM-DD` bound is resolved to a day-boundary instant in the SOURCE's declared
+ * {@link @getreceipt/core!SourceDescriptor.timezone} (else the host zone) — `since` → start-of-day,
+ * `until` → end-of-day — so a month-aligned window returns that month's receipts even when the local
+ * month-start precedes UTC midnight (#127). An absent `until` makes the window open-ended to `now`.
+ *
+ * The host-zone branch is a defense-in-depth default, NOT a configurable seam (#146): every SHIPPED
+ * adapter declares an explicit zone (enforced by the conformance posture test), so in production the
+ * window always resolves in the source's own zone. The fallback only catches a hypothetical adapter
+ * that forgot the field — host zone beats a silent UTC, but the conformance gate is the real guarantee.
+ */
+function resolveWindow(window: OperationWindow | undefined, adapter: SourceAdapter, now: Date): DateRange | undefined {
     if (window === undefined) {
-        return base;
+        return undefined;
     }
     const zone = adapter.descriptor.timezone ?? hostTimeZone();
     const range: DateRange = {
@@ -314,5 +444,5 @@ function buildRequest(
             '--since is in the future: an open-ended window starting after now matches nothing',
         );
     }
-    return { ...base, window: range };
+    return range;
 }

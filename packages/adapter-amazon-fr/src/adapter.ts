@@ -22,6 +22,7 @@ import type {
     AuthHandle,
     CredentialContext,
     DateRange,
+    InstanceContext,
     ReceiptArtifact,
     ReceiptRef,
     SourceAdapter,
@@ -33,10 +34,11 @@ import type { InvoiceRenderer } from './render.js';
 import {
     ENDPOINTS,
     hasNextPage,
+    INSTANCES,
     isOrderHistoryPage,
     LOCALE,
     ORDER_QUERY,
-    parseFrenchDate,
+    parseOrderDate,
     parseOrders,
 } from './wire.js';
 import type { OrderDto } from './wire.js';
@@ -51,6 +53,20 @@ const DISCOVERY_ONLY = true;
 // runs over the impersonating {@link Transport} (#101); it routes through the publication gate (#103).
 const ORIGIN = resolvePublishableHost(DISCOVERY_ONLY, { bakedHost: ENDPOINTS.origin }).host;
 
+/**
+ * The instances this ONE adapter serves as SEPARATE data instances under ONE sign-in (#190): amazon.fr
+ * (canonical) + amazon.com. Built from the wire contract's {@link INSTANCES}, routing each baked host through
+ * the SAME publication gate (#103) as {@link ORIGIN} so every host the adapter addresses is provably
+ * publishable. `list`/`fetch` read the per-run {@link InstanceContext} (host, locale, cookie scope) rather than
+ * branching on the domain — adding a marketplace is adding a row, not a code path.
+ */
+const INSTANCE_CONTEXTS: readonly InstanceContext[] = INSTANCES.map((instance) => ({
+    domain: instance.domain,
+    host: resolvePublishableHost(DISCOVERY_ONLY, { bakedHost: instance.host }).host,
+    cookieDomain: instance.cookieDomain,
+    locale: instance.locale,
+}));
+
 /** Safety bound on the order-history pagination walk — a malformed "next" can never loop unbounded. */
 const MAX_PAGES = 50;
 
@@ -58,6 +74,9 @@ const DESCRIPTOR: SourceDescriptor = {
     canonicalDomain: CANONICAL_DOMAIN,
     // www. is a flow subdomain of the one canonical source, not an alternative name for it.
     aliasDomains: [],
+    // amazon.fr + amazon.com are SEPARATE data instances under ONE sign-in (#190) — the instance axis, sibling
+    // of aliasDomains (aliases are the same data under another name; instances are different data).
+    instances: INSTANCE_CONTEXTS,
     authKind: 'session',
     // A session source bypasses the #169 credential-shape gate (it supplies no credential — the login lives
     // in the browser's cookie store); the field is required + non-empty, so it declares "no credential shape".
@@ -181,22 +200,25 @@ export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter
         return browserSessionToStoredSession(auth);
     }
 
-    async list(auth: AuthHandle, range: DateRange): Promise<readonly ReceiptRef[]> {
+    async list(auth: AuthHandle, range: DateRange, instance?: InstanceContext): Promise<readonly ReceiptRef[]> {
         const session = fromBrowserSession(auth);
-        const orders = await listAllOrders(this.#transport, session);
-        return expandToRefs(orders, range);
+        // The instance (#190) supplies the host, locale, and cookie scope; absent → the canonical amazon.fr defaults.
+        const ctx = runContext(instance);
+        const orders = await listAllOrders(this.#transport, session, ctx);
+        return expandToRefs(orders, range, ctx.locale);
     }
 
-    async fetch(auth: AuthHandle, ref: ReceiptRef): Promise<ArtifactHandle> {
+    async fetch(auth: AuthHandle, ref: ReceiptRef, instance?: InstanceContext): Promise<ArtifactHandle> {
         const session = fromBrowserSession(auth);
-        const url = invoiceUrl(ref.id);
-        const response = await requestSession(this.#transport, session, url);
+        const ctx = runContext(instance);
+        const url = invoiceUrl(ctx.origin, ref.id);
+        const response = await requestSession(this.#transport, session, url, ctx);
         const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
         // The print page is about the requested order, so it must carry the order id; a 200 without it is drift
         // (a stale session is already mapped to reauth by requestSession's redirect handling). Validate the
         // SOURCE before rendering, so a drifted page never reaches the engine.
         if (!html.includes(ref.id)) {
-            throw new TrustBoundaryError('amazon.fr:fetch', [{ path: '<root>', code: 'not_an_invoice' }]);
+            throw new TrustBoundaryError(`${ctx.domain}:fetch`, [{ path: '<root>', code: 'not_an_invoice' }]);
         }
         // Render the validated print page to the canonical PDF artifact via the #172 port (marketplace-agnostic).
         const pdf = await this.#render(html);
@@ -209,12 +231,35 @@ export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter
 export const amazonFrAdapter: SourceAdapter = new AmazonFrAdapter();
 
 /**
+ * The per-run wire parameters an optional {@link InstanceContext} resolves to (#190): the request origin, the
+ * `Accept-Language` + date-parsing locale, the cookie scope that selects which of the shared session's cookies
+ * travel, and the domain (for diagnostics). Absent instance → the canonical amazon.fr defaults, so a
+ * single-instance run is byte-for-byte the pre-#190 behavior.
+ */
+interface RunContext {
+    readonly origin: string;
+    readonly locale: string;
+    readonly cookieDomain: string | undefined;
+    readonly domain: string;
+}
+
+function runContext(instance: InstanceContext | undefined): RunContext {
+    return {
+        origin: instance?.host ?? ORIGIN,
+        locale: instance?.locale ?? LOCALE.acceptLanguage,
+        cookieDomain: instance?.cookieDomain,
+        domain: instance?.domain ?? CANONICAL_DOMAIN,
+    };
+}
+
+/**
  * Walk the paginated order history, returning every order across all pages (un-filtered). Each page is the
  * signed-in order history (its absence of the orders marker means a stale-session bounce → re-auth); paging
  * advances `startIndex` past the orders seen, stopping at the last page, an empty page, or the safety bound.
- * The seen-`startIndex` guard breaks a malformed pagination cycle.
+ * The seen-`startIndex` guard breaks a malformed pagination cycle. Runs against the instance's host/locale/cookie
+ * scope ({@link RunContext}, #190).
  */
-async function listAllOrders(transport: Transport, session: BrowserSession): Promise<OrderDto[]> {
+async function listAllOrders(transport: Transport, session: BrowserSession, ctx: RunContext): Promise<OrderDto[]> {
     const all: OrderDto[] = [];
     const seen = new Set<number>();
     let startIndex = 0;
@@ -223,13 +268,13 @@ async function listAllOrders(transport: Transport, session: BrowserSession): Pro
             break;
         }
         seen.add(startIndex);
-        const response = await requestSession(transport, session, ordersUrl(startIndex));
+        const response = await requestSession(transport, session, ordersUrl(ctx.origin, startIndex), ctx);
         const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
         if (!isOrderHistoryPage(html)) {
             // A 200 that is not the order history is a stale-session bounce (an interstitial sign-in) → re-auth.
             throw browserSessionReauthRequired(CANONICAL_DOMAIN);
         }
-        const orders = parseOrders(html, 'amazon.fr:list');
+        const orders = parseOrders(html, `${ctx.domain}:list`, ctx.locale);
         all.push(...orders);
         if (orders.length === 0 || !hasNextPage(html)) {
             break;
@@ -242,18 +287,20 @@ async function listAllOrders(transport: Transport, session: BrowserSession): Pro
 /**
  * Project orders into references: keep only those whose order date falls inside the inclusive window (the
  * order date is dated by the day, mirroring free.fr's instant convention), de-duplicating by order id while
- * preserving listing order.
+ * preserving listing order. The date is parsed in the instance's `locale` ({@link parseOrderDate}, #190), and
+ * the reference title uses the locale's order-word.
  */
-function expandToRefs(orders: readonly OrderDto[], range: DateRange): ReceiptRef[] {
+function expandToRefs(orders: readonly OrderDto[], range: DateRange, locale: string): ReceiptRef[] {
+    const titlePrefix = locale.toLowerCase().startsWith('en') ? 'Order' : 'Commande';
     const byId = new Map<string, ReceiptRef>();
     for (const order of orders) {
         // Schema-validated to parse, but guard defensively — a non-date never reaches a ref.
-        const issuedAt = parseFrenchDate(order.orderDate);
+        const issuedAt = parseOrderDate(order.orderDate, locale);
         if (issuedAt === undefined || !isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
             continue; // honor the source's declared bound inclusivity (DateFilter), not a hardcoded both-ends
         }
         if (!byId.has(order.orderId)) {
-            byId.set(order.orderId, { id: order.orderId, issuedAt, title: `Commande ${order.orderId}` });
+            byId.set(order.orderId, { id: order.orderId, issuedAt, title: `${titlePrefix} ${order.orderId}` });
         }
     }
     return [...byId.values()];
@@ -265,12 +312,18 @@ function expandToRefs(orders: readonly OrderDto[], range: DateRange): ReceiptRef
  * session is no longer accepted → the re-auth seam ({@link browserSessionReauthRequired}); any other
  * non-OK status is a clean, detail-free error. The body is NOT consumed here — the caller reads it.
  */
-async function requestSession(transport: Transport, session: BrowserSession, url: URL): Promise<Response> {
+async function requestSession(
+    transport: Transport,
+    session: BrowserSession,
+    url: URL,
+    ctx: RunContext,
+): Promise<Response> {
     let response: Response;
     try {
         response = await transport(url, {
             // expose() ONLY here, at the point of use: the cookies go onto the wire, never into a log or error.
-            headers: { ...cookieHeader(session), accept: 'text/html', 'accept-language': LOCALE.acceptLanguage },
+            // Only THIS instance's cookies travel (#190), under THIS instance's locale.
+            headers: { ...cookieHeader(session, ctx.cookieDomain), accept: 'text/html', 'accept-language': ctx.locale },
             // Keep the 3xx in hand so a sign-in bounce is distinguishable from a real page.
             redirect: 'manual',
         });
@@ -293,27 +346,46 @@ async function requestSession(transport: Transport, session: BrowserSession, url
     return response;
 }
 
-/** The order-history page URL at a pagination offset. */
-function ordersUrl(startIndex: number): URL {
-    const url = new URL(ENDPOINTS.orderHistory, ORIGIN);
+/** The order-history page URL at a pagination offset, on the instance's origin (#190). */
+function ordersUrl(origin: string, startIndex: number): URL {
+    const url = new URL(ENDPOINTS.orderHistory, origin);
     if (startIndex > 0) {
         url.searchParams.set(ORDER_QUERY.startIndex, String(startIndex));
     }
     return url;
 }
 
-/** The printable-invoice URL for one order. */
-function invoiceUrl(orderId: string): URL {
-    const url = new URL(ENDPOINTS.invoicePrint, ORIGIN);
+/** The printable-invoice URL for one order, on the instance's origin (#190). */
+function invoiceUrl(origin: string, orderId: string): URL {
+    const url = new URL(ENDPOINTS.invoicePrint, origin);
     url.searchParams.set(ORDER_QUERY.orderId, orderId);
     return url;
 }
 
-/** A `{ cookie }` header from the imported session jar, or `{}` when it is empty (an empty `Cookie` header is omitted). */
-function cookieHeader(session: BrowserSession): Record<string, string> {
-    if (session.cookies.length === 0) {
+/**
+ * A `{ cookie }` header from the imported session jar, restricted to the instance's `cookieDomain` when one is
+ * given (#190) — only that instance's cookies travel (orders on `.com` are read with the `.com` cookies, never
+ * the `.fr` ones). An absent `cookieDomain` (single-instance run) sends the whole jar. Empty selection → `{}`
+ * (an empty `Cookie` header is omitted).
+ */
+function cookieHeader(session: BrowserSession, cookieDomain?: string): Record<string, string> {
+    const cookies =
+        cookieDomain === undefined
+            ? session.cookies
+            : session.cookies.filter((cookie) => cookieDomainMatches(cookie.domain, cookieDomain));
+    if (cookies.length === 0) {
         return {};
     }
     // expose() at the point of use: the imported cookie values go onto the wire, never into a log or error.
-    return { cookie: session.cookies.map((cookie) => `${cookie.name}=${cookie.value.expose()}`).join('; ') };
+    return { cookie: cookies.map((cookie) => `${cookie.name}=${cookie.value.expose()}`).join('; ') };
+}
+
+/**
+ * Standard cookie domain-match (#190): a session cookie's host-key (`.amazon.fr`, `www.amazon.fr`) belongs to
+ * the instance's cookie domain (`amazon.fr`) when it IS that domain or a sub-host of it — so a `.amazon.com`
+ * cookie never travels to amazon.fr, and vice versa. The leading dot on a domain cookie is normalized away.
+ */
+function cookieDomainMatches(cookieHost: string, cookieDomain: string): boolean {
+    const host = cookieHost.startsWith('.') ? cookieHost.slice(1) : cookieHost;
+    return host === cookieDomain || host.endsWith(`.${cookieDomain}`);
 }
