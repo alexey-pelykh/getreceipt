@@ -183,22 +183,51 @@ sources:
 ```
 
 - **`browser`** — which browser's cookie store to read: one of `chrome`, `brave`, `edge`, `chromium`, or
-  `firefox`. `firefox` is **accepted in config but not yet selectable as a session source** (the Firefox
-  cookie reader ships, but wiring its profile lookup is tracked separately) — use a Chromium-family browser
-  for now.
-- **`profile`** — which of that browser's profiles to import (a profile directory name, or the account
-  email). How that name maps to a concrete profile is resolved when the source runs.
+  `firefox`. All five are accepted by config validation; which are actually **usable** today differs by
+  platform (see [Platform support](#platform-support) below).
+- **`profile`** — which of that browser's profiles to import: a profile **directory name** (e.g. `Default`,
+  `Profile 1`), or the **account email** of the signed-in profile. The value is matched against the browser's
+  profile list when the source runs.
 
 `kind: session` is **derived** from the `browser`/`profile` pair, exactly as `password` is derived from a
 credential — you don't write it (and a literal `kind: session` without the pair is rejected). A session
 carries no credential, so pairing `browser`/`profile` with a `ref`/`username`/`secret` is also rejected.
 
-> **When the store can't be read.** On **Windows** (App-Bound Encryption / DPAPI) the cookie store fails
-> closed, so no `browser`/`profile` session can be imported. The fallback is a **manually-pasted session** —
-> a `Cookie:` request header or a `cookies.txt` export you copy from your already-signed-in browser, held in
-> memory for the run and domain-scoped just like an imported one (see
-> [Manual-paste session](../SECURITY.md#manual-paste-session)). The auth library provider for it ships today;
-> a configurable `session` source that uses it follows.
+#### Platform support
+
+A `session` source reads **Chromium-family** browsers — `chrome`, `brave`, `edge`, `chromium` — and whether
+one can be imported depends on how that browser seals its cookies on each platform:
+
+- **macOS** — supported. The decryption key is read from the **Keychain**; the first read raises a consent
+  prompt (choose _Always Allow_ and later runs read it without re-prompting).
+- **Linux** — supported. The key is read from the system **keyring** (libsecret / Secret Service), with
+  Chromium's no-keyring ("peanuts") fallback for a profile that uses the basic-text store.
+- **Windows** — **fails closed.** Chromium seals cookies with DPAPI / App-Bound Encryption, which getreceipt
+  **will not bypass** — supply the session by hand instead (see the manual-paste fallback below).
+
+**`firefox`** validates as a `browser` value but is **not yet selectable** as a `session` source: the Firefox
+cookie reader ships, yet wiring its profile lookup is tracked separately — use a Chromium-family browser for
+now. For the security posture behind every path — the read-only snapshot, domain scoping, value fencing, and
+the OS-secret-store consent gate — see
+[SECURITY.md § Browser-session auth](../SECURITY.md#browser-session-auth-cookies-from-your-browser).
+
+#### Freshness
+
+getreceipt **imports** a session but never refreshes it — it rides the login you already hold in your browser,
+which lives on the **service's** clock. When that session goes stale the service re-challenges, and an
+unattended run never hangs or fails silently: it surfaces the structured **`reauth-required`** outcome (the
+same signal an out-of-band 2FA challenge raises — see
+[The three resolution modes](#the-three-resolution-modes)). To recover, **re-establish the login in your own
+browser** — sign in there again — and the next run re-imports the now-fresh session. A persisted session (the
+optional reuse below) past its freshness window surfaces the same `reauth-required` and falls back to a fresh
+browser read.
+
+> **When the store can't be read.** Where the cookie store **fails closed** — most importantly **Windows**
+> (DPAPI / App-Bound Encryption) — supply the session by hand instead: a `Cookie:` request header or a
+> `cookies.txt` export you copy from your already-signed-in browser, held in memory for the run and
+> domain-scoped just like an imported one (see
+> [SECURITY.md § Manual-paste session](../SECURITY.md#manual-paste-session)). The auth library provider for it
+> ships today; surfacing it as a configurable `session` source follows.
 
 > **Reusing the imported session (optional).** Every run re-reads the browser cookie store by default. Run
 > `getreceipt login amazon.fr` once to import the session and **store it encrypted at rest** (an AES-256-GCM
