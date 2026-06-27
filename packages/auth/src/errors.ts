@@ -123,11 +123,12 @@ export class AuthenticationError extends Error {
 
 /**
  * The unified machine-readable taxonomy for the browser-cookie-store auth path — every cause either
- * {@link ProfileResolutionError} (locating the profile directory, #176) or {@link CookieReadError}
- * (reading and decrypting the store, #177) can fail with. A caller branches on the value without parsing
- * prose; `unsupported-browser`, shared by both halves, collapses to one member. (#178.)
+ * {@link ProfileResolutionError} (locating the profile directory, #176), {@link CookieReadError}
+ * (reading and decrypting the store, #177), or {@link PastedSessionError} (parsing a manually-pasted
+ * session, #188) can fail with. A caller branches on the value without parsing prose; `unsupported-browser`
+ * and `invalid-domain`, shared across halves, each collapse to one member. (#178.)
  */
-export type BrowserCookieStoreReason = ProfileResolutionReason | CookieReadReason;
+export type BrowserCookieStoreReason = ProfileResolutionReason | CookieReadReason | PastedSessionReason;
 
 /**
  * Stable, actionable, per-reason recovery guidance for the browser-cookie-store path: what the USER can DO
@@ -161,9 +162,15 @@ const BROWSER_COOKIE_STORE_GUIDANCE = {
     'cookie-store-unreadable':
         'The browser cookie store could not be opened; visit the site in that profile at least once, and confirm the browser is installed.',
     'app-bound-encryption':
-        "This browser's cookies are sealed with OS-level encryption (App-Bound Encryption, or Windows DPAPI) this tool will not bypass; supply the credentials another way, or use a browser profile whose cookies use the standard scheme.",
+        "This browser's cookies are sealed with OS-level encryption (App-Bound Encryption, or Windows DPAPI) this tool will not bypass; supply the session another way — paste a session exported from that browser (a `Cookie:` request header or a cookies.txt export) — or use a browser profile whose cookies use the standard scheme.",
     'decryption-failed':
         'The cookie value could not be decrypted (wrong key or a corrupt store); confirm the configured browser matches the profile, then retry.',
+    'empty-paste':
+        'Paste a non-empty session — a `Cookie:` request header copied from your browser developer tools, or a cookies.txt export for the target site.',
+    'malformed-paste':
+        'The pasted text was not recognized as a `Cookie:` request header (`name=value; …`) or a Netscape cookies.txt export; copy the Cookie header from your browser network inspector and paste it whole.',
+    'no-cookies-in-scope':
+        'None of the pasted cookies are for the target site; paste the session for the correct domain (the cookies must belong to that site or its subdomains).',
 } satisfies Record<BrowserCookieStoreReason, string>;
 
 /**
@@ -256,6 +263,36 @@ export class CookieReadError extends BrowserCookieStoreError {
         message: string,
         /** The machine-readable cause; see {@link CookieReadReason}. */
         readonly reason: CookieReadReason,
+    ) {
+        super(message);
+    }
+}
+
+/**
+ * Why a {@link PastedSessionError} happened — parsing a manually-pasted session (#188), the fallback when the
+ * browser cookie store can't be read (e.g. Windows App-Bound Encryption). Lets a caller branch without parsing
+ * the message:
+ *  - `empty-paste` — the pasted text was empty or whitespace-only;
+ *  - `malformed-paste` — the text was not a recognizable `Cookie:` request header or Netscape cookies.txt export;
+ *  - `no-cookies-in-scope` — the paste parsed, but no cookie belongs to the target domain (all out-of-scope);
+ *  - `invalid-domain` — the target domain to scope the paste to is empty (shared with {@link CookieReadReason}).
+ */
+export type PastedSessionReason = 'empty-paste' | 'malformed-paste' | 'no-cookies-in-scope' | 'invalid-domain';
+
+/**
+ * Thrown when a manually-pasted session cannot be parsed into a domain-scoped cookie set (#188). Like every
+ * error in this subsystem, it deliberately NEVER carries a cookie value or any of the pasted material — only a
+ * human-readable message and a machine-readable {@link reason}. Extends {@link BrowserCookieStoreError}, the
+ * unified browser-cookie-store taxonomy (#178), so a consumer catches the paste fallback in the same branch as
+ * the browser-store path.
+ */
+export class PastedSessionError extends BrowserCookieStoreError {
+    override readonly name = 'PastedSessionError';
+
+    constructor(
+        message: string,
+        /** The machine-readable cause; see {@link PastedSessionReason}. */
+        readonly reason: PastedSessionReason,
     ) {
         super(message);
     }

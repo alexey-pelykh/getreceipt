@@ -193,6 +193,13 @@ sources:
 credential — you don't write it (and a literal `kind: session` without the pair is rejected). A session
 carries no credential, so pairing `browser`/`profile` with a `ref`/`username`/`secret` is also rejected.
 
+> **When the store can't be read.** On **Windows** (App-Bound Encryption / DPAPI) the cookie store fails
+> closed, so no `browser`/`profile` session can be imported. The fallback is a **manually-pasted session** —
+> a `Cookie:` request header or a `cookies.txt` export you copy from your already-signed-in browser, held in
+> memory for the run and domain-scoped just like an imported one (see
+> [Manual-paste session](../SECURITY.md#manual-paste-session)). The auth library provider for it ships today;
+> a configurable `session` source that uses it follows.
+
 ### Bare-reference sugar
 
 When a source is one password backed by one 1Password login item, map the domain straight to the

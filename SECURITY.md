@@ -107,7 +107,8 @@ session lives in the browser's own cookie store. Today a `session` source reads 
 browsers (Chrome, Brave, Edge, Chromium) — on **macOS** via the Keychain and on **Linux** via the system
 keyring (libsecret / Secret Service), with Chromium's documented no-keyring fallback. On **Windows**,
 Chromium cookies are sealed with OS-level encryption (DPAPI / App-Bound Encryption) that `getreceipt`
-**will not bypass**: that path fails closed, and you supply the credentials another way. A reader for
+**will not bypass**: that path fails closed, and you supply the session another way — by
+[pasting it yourself](#manual-paste-session). A reader for
 **Firefox** (whose cookie store is **plaintext**) also ships, but Firefox is **not yet selectable as a
 `session` source** — wiring its profile lookup is tracked separately — so the configurable session path is
 Chromium on macOS/Linux for now.
@@ -141,8 +142,8 @@ sends it anywhere but the target service's own endpoints.
   decrypted, with a key derived from **your own** OS secret store (macOS Keychain / Linux keyring) or
   Chromium's no-keyring fallback. A value sealed with **App-Bound Encryption** (the `v20` scheme) — and
   **all** of Windows' DPAPI / App-Bound–protected Chromium cookies — is **refused, not circumvented**:
-  `getreceipt` reports that it will not bypass OS-level cookie encryption and points you to another
-  credential form. This is **fallback, not defeat**.
+  `getreceipt` reports that it will not bypass OS-level cookie encryption and points you to the
+  [manual-paste session](#manual-paste-session) fallback. This is **fallback, not defeat**.
 - **The Firefox reader needs no key — and has no consent prompt.** Firefox keeps cookie values in
   **plaintext** in `cookies.sqlite`, so the Firefox reader (shipped, though **not yet wired** to a
   `session` source) reads them with **no decryption and no OS prompt** — the file's protection is your
@@ -169,6 +170,32 @@ sends it anywhere but the target service's own endpoints.
 
 The full private threat-model analysis is out of scope for this public policy, consistent with the rest
 of this document.
+
+## Manual-paste session
+
+When the cookie store **can't be read** — most importantly the **Windows** App-Bound / DPAPI path above,
+which fails closed — `getreceipt` accepts a session you **paste yourself**: a `Cookie:` request header
+copied from your browser's network inspector, or a Netscape `cookies.txt` export. The auth library
+provides this as the manual-paste session provider
+([`packages/auth/src/pasted-session.ts`](packages/auth/src/pasted-session.ts)) — the `--cookies`
+counterpart to the cookie-store path's `--cookies-from-browser`. It mints the **same in-memory session
+handle** the store path does, so the **same posture holds**:
+
+- **In memory only.** The pasted session is parsed and held **for the run**; it is **never written to
+  disk** (persisting an imported session at rest is a separate, later optimization —
+  [#189](https://github.com/alexey-pelykh/getreceipt/issues/189)).
+- **Domain-scoped.** Only the **target site's** cookies enter the session. A `Cookie:` header is already
+  browser-scoped to the site it was copied from; a `cookies.txt` export carries per-cookie domains, so
+  out-of-scope cookies are **dropped** by the same domain match the cookie-store reader uses.
+- **Values are fenced.** Every pasted value is wrapped in the same `Secret` the store path uses —
+  redacted through logging, string interpolation, `JSON.stringify`, and `util.inspect`, and reachable
+  only by an explicit `expose()` when the request to the target service is built.
+- **Errors never carry the paste.** A malformed, empty, or out-of-scope paste raises a value-free
+  `PastedSessionError` — a sibling in the browser-cookie-store taxonomy — with a machine-readable reason
+  and static recovery guidance, **never** a cookie value or any of the pasted text.
+
+This is the library provider; surfacing it as a configurable `session` source follows the same staging the
+cookie-store path used (provider first, then the config/adapter wiring).
 
 ## MCP trust model
 
