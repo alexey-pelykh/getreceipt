@@ -200,6 +200,13 @@ carries no credential, so pairing `browser`/`profile` with a `ref`/`username`/`s
 > [Manual-paste session](../SECURITY.md#manual-paste-session)). The auth library provider for it ships today;
 > a configurable `session` source that uses it follows.
 
+> **Reusing the imported session (optional).** Every run re-reads the browser cookie store by default. Run
+> `getreceipt login amazon.fr` once to import the session and **store it encrypted at rest** (an AES-256-GCM
+> file under `~/.getreceipt/sessions`, sealed with your `GETRECEIPT_SECRET_PASSPHRASE` — never plaintext);
+> later runs **reuse** it while it stays fresh, falling back to a browser read only once it expires.
+> `getreceipt logout amazon.fr` clears it. It is an optimization — skip `login` and every run imports fresh.
+> See [SECURITY.md § Session reuse at rest](../SECURITY.md#session-reuse-at-rest-optional).
+
 ### Bare-reference sugar
 
 When a source is one password backed by one 1Password login item, map the domain straight to the

@@ -102,11 +102,20 @@ export {
 export type { BrowserCookie, ReadChromeCookiesOptions, ReadFirefoxCookiesOptions } from './cookie-reader.js';
 export {
     browserSessionReauthRequired,
+    browserSessionToStoredSession,
     fromBrowserSession,
     importBrowserSession,
     resolveBrowserSession,
+    reuseOrImportBrowserSession,
+    storedSessionToBrowserSession,
 } from './browser-session.js';
-export type { BrowserSession, BrowserSessionDescriptor, ImportBrowserSessionOptions } from './browser-session.js';
+export type {
+    BrowserSession,
+    BrowserSessionDescriptor,
+    BrowserSessionResolution,
+    ImportBrowserSessionOptions,
+    ReuseOrImportBrowserSessionRequest,
+} from './browser-session.js';
 export { importPastedSession } from './pasted-session.js';
 export { decodeBase32, generateTotp } from './totp.js';
 export type { TotpParams } from './totp.js';
