@@ -91,8 +91,13 @@ export type {
 } from './errors.js';
 export { browserUserDataDir, resolveProfile } from './profile-resolver.js';
 export type { ResolveProfileOptions } from './profile-resolver.js';
-export { decryptChromeCookie, deriveChromeSafeStorageKey, readChromeCookies } from './cookie-reader.js';
-export type { BrowserCookie, ReadChromeCookiesOptions } from './cookie-reader.js';
+export {
+    decryptChromeCookie,
+    deriveChromeSafeStorageKey,
+    readChromeCookies,
+    readFirefoxCookies,
+} from './cookie-reader.js';
+export type { BrowserCookie, ReadChromeCookiesOptions, ReadFirefoxCookiesOptions } from './cookie-reader.js';
 export {
     browserSessionReauthRequired,
     fromBrowserSession,

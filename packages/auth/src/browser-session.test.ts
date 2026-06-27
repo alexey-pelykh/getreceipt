@@ -281,15 +281,17 @@ describe('importBrowserSession — structured failures via BrowserCookieStoreErr
         );
     });
 
-    it('fails closed with unsupported-platform off macOS when no key is injected', () => {
+    it('fails closed with app-bound-encryption on Windows when no key is injected (App-Bound / DPAPI not bypassed)', () => {
+        // Windows seals Chromium cookies with OS-level encryption this reader will not bypass — it fails closed
+        // at key resolution, before the store is read (so the fixture content is irrelevant and no DPAPI is touched).
         const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: AMAZON_COOKIES });
         expectStoreError(
             () =>
                 importBrowserSession({ browser: 'chrome', profile: 'Default' }, 'amazon.fr', {
                     userDataDir,
-                    platform: 'linux',
+                    platform: 'win32',
                 }),
-            'unsupported-platform',
+            'app-bound-encryption',
         );
     });
 

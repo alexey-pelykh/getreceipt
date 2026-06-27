@@ -139,7 +139,7 @@ export type BrowserCookieStoreReason = ProfileResolutionReason | CookieReadReaso
  */
 const BROWSER_COOKIE_STORE_GUIDANCE = {
     'unsupported-browser':
-        'Use a Chromium-family browser (Chrome, Brave, Edge, or Chromium) for browser-session auth — Firefox keeps no compatible profile or cookie store.',
+        'Use a Chromium-family browser (Chrome, Brave, Edge, or Chromium) for browser-session auth — Firefox is not yet selectable as a session source.',
     'user-data-dir-unset':
         'The browser user-data location could not be determined; on Windows ensure %LOCALAPPDATA% is set, or pin the user-data directory explicitly.',
     'local-state-unreadable':
@@ -153,7 +153,7 @@ const BROWSER_COOKIE_STORE_GUIDANCE = {
     'invalid-profile-value':
         'Set the profile to a non-empty, single-segment directory name or an account — it must not contain path separators.',
     'unsupported-platform':
-        'Reading browser cookies is supported on macOS only right now; switch to macOS, or use a different auth method on this platform.',
+        'Reading a Chromium-family cookie store is supported on macOS and Linux; on another platform, use a different auth method.',
     'invalid-domain':
         'No target domain was set for the cookie read; configure the site domain the source authenticates against.',
     'keychain-unavailable':
@@ -161,7 +161,7 @@ const BROWSER_COOKIE_STORE_GUIDANCE = {
     'cookie-store-unreadable':
         'The browser cookie store could not be opened; visit the site in that profile at least once, and confirm the browser is installed.',
     'app-bound-encryption':
-        'This browser uses OS-level App-Bound cookie encryption this tool will not bypass; use a browser with the standard scheme, or supply credentials another way.',
+        "This browser's cookies are sealed with OS-level encryption (App-Bound Encryption, or Windows DPAPI) this tool will not bypass; supply the credentials another way, or use a browser profile whose cookies use the standard scheme.",
     'decryption-failed':
         'The cookie value could not be decrypted (wrong key or a corrupt store); confirm the configured browser matches the profile, then retry.',
 } satisfies Record<BrowserCookieStoreReason, string>;
@@ -226,13 +226,13 @@ export class ProfileResolutionError extends BrowserCookieStoreError {
 
 /**
  * Why a {@link CookieReadError} happened. Lets a caller branch on the cause without parsing the message:
- *  - `unsupported-browser` — the browser does not use the Chromium "Safe Storage" cookie scheme (Firefox);
- *  - `unsupported-platform` — cookie reading was attempted off macOS without an injected key (this reader is macOS-only);
+ *  - `unsupported-browser` — `readChromeCookies` was handed Firefox, which does not use the Chromium "Safe Storage" scheme (read it with `readFirefoxCookies`);
+ *  - `unsupported-platform` — Chromium cookie reading was attempted on a platform with no supported key source (supported: macOS Keychain, Linux libsecret/peanuts) without an injected key;
  *  - `invalid-domain` — the target domain to scope the read to is empty;
  *  - `keychain-unavailable` — the macOS Keychain "Safe Storage" key could not be read (access denied / browser absent);
  *  - `cookie-store-unreadable` — the `Cookies` SQLite store is missing, locked, or not a readable database;
- *  - `app-bound-encryption` — a value uses a non-`v10` scheme (e.g. OS-level App-Bound Encryption) this reader will not circumvent;
- *  - `decryption-failed` — a `v10` value did not decrypt under the derived key (wrong key or corrupt value).
+ *  - `app-bound-encryption` — a value's scheme is one this reader will not circumvent — a non-`v10`/`v11` tag (e.g. App-Bound `v20`), or any Chromium value on Windows (DPAPI / App-Bound, refused at key resolution);
+ *  - `decryption-failed` — a tagged value did not decrypt under the derived key (wrong key or corrupt value).
  */
 export type CookieReadReason =
     | 'unsupported-browser'

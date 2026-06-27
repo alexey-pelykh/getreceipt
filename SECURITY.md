@@ -103,9 +103,14 @@ write target. Until that lands, the operator guidance above is the load-bearing 
 A `session` source authenticates by **importing the login you already hold in your browser** — it reads
 that browser profile's cookies for the target site, the way `yt-dlp --cookies-from-browser` does,
 instead of taking a password. There is no separate secret to configure: the already-authenticated
-session lives in the browser's own cookie store. This path is **macOS-only** today (Linux/Windows is
-tracked separately) and reads **Chromium-family** browsers (Chrome, Brave, Edge, Chromium); Firefox is
-not supported.
+session lives in the browser's own cookie store. Today a `session` source reads **Chromium-family**
+browsers (Chrome, Brave, Edge, Chromium) — on **macOS** via the Keychain and on **Linux** via the system
+keyring (libsecret / Secret Service), with Chromium's documented no-keyring fallback. On **Windows**,
+Chromium cookies are sealed with OS-level encryption (DPAPI / App-Bound Encryption) that `getreceipt`
+**will not bypass**: that path fails closed, and you supply the credentials another way. A reader for
+**Firefox** (whose cookie store is **plaintext**) also ships, but Firefox is **not yet selectable as a
+`session` source** — wiring its profile lookup is tracked separately — so the configurable session path is
+Chromium on macOS/Linux for now.
 
 The imported session is held **in memory for the duration of the run** and used only to fetch your own
 documents. `getreceipt` never writes it to disk, and — consistent with [PRIVACY.md](PRIVACY.md) — never
@@ -124,16 +129,26 @@ sends it anywhere but the target service's own endpoints.
   explicit `expose()` at the point of use (handing it to the target service's own request). See
   [`packages/auth/src/secret.ts`](packages/auth/src/secret.ts). Only cookie **names, domains, paths,
   flags, and counts** ever reach a diagnostic surface — never a value.
-- **The OS keychain is the consent gate.** Decryption needs the `<Browser> Safe Storage` key, read from
-  the macOS Keychain via the system `security` tool. The **Keychain access prompt is your consent** —
-  deny it and the read fails closed, with nothing decrypted. Note this is a **first-access** gate: if you
-  tell macOS to _Always Allow_, later runs read the key without re-prompting, exactly as for any tool you
-  have granted that Keychain item to.
-- **No bypass of OS-level cookie encryption.** Only the **standard** macOS cookie scheme is decrypted,
-  with **your own** Keychain-derived key. A store protected by **App-Bound Encryption** (or any other
-  non-standard scheme) is **refused, not circumvented** — `getreceipt` reports that it will not bypass
-  OS-level cookie encryption and points you to a more-readable browser or another credential form. This
-  is **fallback, not defeat**.
+- **The OS secret store is the consent gate.** Chromium decryption needs the `<Browser> Safe Storage`
+  key, read from the **macOS Keychain** (via the system `security` tool) or the **Linux system keyring**
+  (libsecret / Secret Service — gnome-keyring or kwallet — via `secret-tool`). The store's **access prompt
+  is your consent** — deny it and the read fails closed, with nothing decrypted. On macOS this is a
+  **first-access** gate: tell it to _Always Allow_ and later runs read the key without re-prompting, exactly
+  as for any tool you have granted that item to. Where a Linux profile uses Chromium's **no-keyring**
+  (basic-text) store, the key is derived from Chromium's **well-known fixed password** — there is no secret
+  to gate because that store adds no protection beyond your OS user account (see the residual risks below).
+- **No bypass of OS-level cookie encryption.** Only the **standard** Chromium cookie schemes are
+  decrypted, with a key derived from **your own** OS secret store (macOS Keychain / Linux keyring) or
+  Chromium's no-keyring fallback. A value sealed with **App-Bound Encryption** (the `v20` scheme) — and
+  **all** of Windows' DPAPI / App-Bound–protected Chromium cookies — is **refused, not circumvented**:
+  `getreceipt` reports that it will not bypass OS-level cookie encryption and points you to another
+  credential form. This is **fallback, not defeat**.
+- **The Firefox reader needs no key — and has no consent prompt.** Firefox keeps cookie values in
+  **plaintext** in `cookies.sqlite`, so the Firefox reader (shipped, though **not yet wired** to a
+  `session` source) reads them with **no decryption and no OS prompt** — the file's protection is your
+  **OS user account** alone. The same safeguards still apply (the read is **domain-scoped**, uses a
+  **read-only snapshot**, and every value is **fenced**), but, unlike the Chromium path, there is no
+  keychain/keyring gate to approve.
 - **Errors never carry secrets.** The browser-cookie-store error taxonomy reports a machine-readable
   reason and static recovery guidance — **never** a cookie value, the decryption key, the Keychain
   password, a profile path, or an account email. See
@@ -141,14 +156,16 @@ sends it anywhere but the target service's own endpoints.
 
 ### Residual risks (this path)
 
-| Risk                                                                                                                                                                                                                                                                                                                        | Status                                                                                                                      |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| **Local process memory.** A decrypted cookie lives in process memory — and could reach swap or a core dump — for the run; JavaScript strings are immutable and cannot be zeroed.                                                                                                                                            | Accepted — inherent to the runtime; the local machine is trusted (see assumptions below).                                   |
-| **First-access Keychain consent.** macOS _Always Allow_ turns the per-prompt consent gate into a first-access one; subsequent runs decrypt without re-prompting.                                                                                                                                                            | Documented — OS-owned behavior, outside `getreceipt`'s control.                                                             |
-| **Snapshot window.** The cookie store is briefly copied to a `0700` temp directory and removed after the read.                                                                                                                                                                                                              | Mitigated — the copy is the **encrypted** store, in a private dir, deleted in a `finally`.                                  |
-| **Adapter error discipline (forward).** A future `session` adapter that threw a _raw_ error carrying a cookie value in its message would surface that message on a `failed` result's `reason` (CLI `--json` / MCP). Every shipped error in this subsystem is value-free by construction, and no session adapter exists yet. | Tracked — [#205](https://github.com/alexey-pelykh/getreceipt/issues/205); an invariant the session-adapter work must honor. |
-| **API injection seams.** The reader exposes test-only seams to inject the key or Keychain password directly, bypassing the prompt. They are not reachable from config, the CLI, or MCP — only from in-process code, which is already trusted.                                                                               | By design — trusted-caller surface only.                                                                                    |
-| **Pre-flight shape gate skipped for `session`.** A `session` source pointed at a non-session adapter is not rejected at the pre-flight credential-shape gate (a session carries no credential shape to check); it still **fails closed** at `authenticate()`, just later.                                                   | Tracked — [#205](https://github.com/alexey-pelykh/getreceipt/issues/205); lands with the first session adapter.             |
+| Risk                                                                                                                                                                                                                                                                                                                                          | Status                                                                                                                           |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Local process memory.** A decrypted cookie lives in process memory — and could reach swap or a core dump — for the run; JavaScript strings are immutable and cannot be zeroed.                                                                                                                                                              | Accepted — inherent to the runtime; the local machine is trusted (see assumptions below).                                        |
+| **First-access keyring consent.** macOS _Always Allow_ (and a Linux keyring left unlocked for the login session) turns the per-prompt consent gate into a first-access one; subsequent runs decrypt without re-prompting.                                                                                                                     | Documented — OS-owned behavior, outside `getreceipt`'s control.                                                                  |
+| **Linux no-keyring store (`v10`/"peanuts").** When a Chromium profile uses the basic-text store (no gnome-keyring / kwallet), its cookie key is Chromium's **public, fixed password** — the values are obfuscated, not sealed with a secret. `getreceipt` reads them, but on such a profile the only real protection is your OS user account. | Documented — Chromium's own design; the same data any local process running as you can already read.                             |
+| **Firefox plaintext store.** Firefox keeps cookie values unencrypted, so there is no key and no consent prompt — anything running as your user can read them. The Firefox reader (not yet wired to a session source) reads via a read-only snapshot and fences every value, but the store itself adds no protection beyond your OS account.   | Documented — Firefox's own design; protection is your OS user account, consistent with the trust assumptions here.               |
+| **Snapshot window.** The cookie store is briefly copied to a `0700` temp directory and removed after the read.                                                                                                                                                                                                                                | Mitigated — the copy is the **encrypted** store (the **plaintext** store for Firefox), in a private dir, deleted in a `finally`. |
+| **Adapter error discipline (forward).** A future `session` adapter that threw a _raw_ error carrying a cookie value in its message would surface that message on a `failed` result's `reason` (CLI `--json` / MCP). Every shipped error in this subsystem is value-free by construction, and no session adapter exists yet.                   | Tracked — [#205](https://github.com/alexey-pelykh/getreceipt/issues/205); an invariant the session-adapter work must honor.      |
+| **API injection seams.** The reader exposes test-only seams to inject the key or Keychain password directly, bypassing the prompt. They are not reachable from config, the CLI, or MCP — only from in-process code, which is already trusted.                                                                                                 | By design — trusted-caller surface only.                                                                                         |
+| **Pre-flight shape gate skipped for `session`.** A `session` source pointed at a non-session adapter is not rejected at the pre-flight credential-shape gate (a session carries no credential shape to check); it still **fails closed** at `authenticate()`, just later.                                                                     | Tracked — [#205](https://github.com/alexey-pelykh/getreceipt/issues/205); lands with the first session adapter.                  |
 
 The full private threat-model analysis is out of scope for this public policy, consistent with the rest
 of this document.
@@ -234,14 +251,14 @@ This section will be updated when they ship.
 
 ## Threat-model assumptions
 
-| Assumption                                                   | Rationale                                                                                                                                                                                                                                  |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The local machine is trusted                                 | Credentials are read from a file in your home directory; protection is filesystem-level only.                                                                                                                                              |
-| The credential backend is trusted                            | When `secret: { ref }` resolves via a password manager, OS keychain, or env var, `getreceipt` trusts that resolver (and any binary it shells out to).                                                                                      |
-| The browser cookie store and OS keychain are trusted         | A `session` source imports the login you already established in your browser; protection is your OS user account and the macOS Keychain ACL you approve. The imported session is held in memory only, for the run.                         |
-| Each target service is trusted over HTTPS                    | `getreceipt` authenticates to and fetches from each service's own endpoints over TLS.                                                                                                                                                      |
-| The MCP host is trusted                                      | The stdio MCP server is process-level; anyone who can spawn it gets full tool access.                                                                                                                                                      |
-| The dependency tree is trusted via hardening, not full audit | Build scripts are default-denied and releases are provenance-attested, but `getreceipt` does not vet every transitive dependency's source; a `pnpm audit` release gate is planned (see [Supply-chain hardening](#supply-chain-hardening)). |
+| Assumption                                                   | Rationale                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The local machine is trusted                                 | Credentials are read from a file in your home directory; protection is filesystem-level only.                                                                                                                                                                                                                                          |
+| The credential backend is trusted                            | When `secret: { ref }` resolves via a password manager, OS keychain, or env var, `getreceipt` trusts that resolver (and any binary it shells out to).                                                                                                                                                                                  |
+| The browser cookie store and OS secret store are trusted     | A `session` source imports the login you already established in your browser; protection is your OS user account plus the macOS Keychain / Linux keyring ACL you approve (and, for Firefox's plaintext store or Chromium's no-keyring fallback, your OS user account alone). The imported session is held in memory only, for the run. |
+| Each target service is trusted over HTTPS                    | `getreceipt` authenticates to and fetches from each service's own endpoints over TLS.                                                                                                                                                                                                                                                  |
+| The MCP host is trusted                                      | The stdio MCP server is process-level; anyone who can spawn it gets full tool access.                                                                                                                                                                                                                                                  |
+| The dependency tree is trusted via hardening, not full audit | Build scripts are default-denied and releases are provenance-attested, but `getreceipt` does not vet every transitive dependency's source; a `pnpm audit` release gate is planned (see [Supply-chain hardening](#supply-chain-hardening)).                                                                                             |
 
 The full private threat-model analysis is out of scope for this public policy.
 

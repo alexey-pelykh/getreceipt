@@ -27,7 +27,7 @@ const ERROR_BY_REASON: Record<BrowserCookieStoreReason, BrowserCookieStoreError>
     'profile-not-found': new ProfileResolutionError('no profile dir', 'profile-not-found', 'chrome'),
     'invalid-profile-value': new ProfileResolutionError('empty', 'invalid-profile-value', 'chrome'),
     // CookieReadError half (#177).
-    'unsupported-platform': new CookieReadError('off macOS', 'unsupported-platform'),
+    'unsupported-platform': new CookieReadError('unsupported platform', 'unsupported-platform'),
     'invalid-domain': new CookieReadError('empty domain', 'invalid-domain'),
     'keychain-unavailable': new CookieReadError('keychain denied', 'keychain-unavailable'),
     'cookie-store-unreadable': new CookieReadError('no store', 'cookie-store-unreadable'),
