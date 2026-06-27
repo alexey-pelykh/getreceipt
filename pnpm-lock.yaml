@@ -95,6 +95,9 @@ importers:
       '@getreceipt/auth':
         specifier: workspace:^
         version: link:../auth
+      '@getreceipt/browser':
+        specifier: workspace:^
+        version: link:../browser
       '@getreceipt/core':
         specifier: workspace:^
         version: link:../core
@@ -247,6 +250,9 @@ importers:
       node-wreq:
         specifier: 'catalog:'
         version: 2.4.1
+      playwright:
+        specifier: 'catalog:'
+        version: 1.61.1
       yaml:
         specifier: 'catalog:'
         version: 2.9.0
@@ -339,6 +345,9 @@ importers:
       node-wreq:
         specifier: 'catalog:'
         version: 2.4.1
+      playwright:
+        specifier: 'catalog:'
+        version: 1.61.1
     devDependencies:
       '@getreceipt/cli':
         specifier: workspace:^
@@ -367,6 +376,9 @@ importers:
       node-wreq:
         specifier: 'catalog:'
         version: 2.4.1
+      playwright:
+        specifier: 'catalog:'
+        version: 1.61.1
       yaml:
         specifier: 'catalog:'
         version: 2.9.0
