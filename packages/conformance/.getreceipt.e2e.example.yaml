@@ -8,9 +8,11 @@
 #   cp .getreceipt.e2e.example.yaml .getreceipt.e2e.local.yaml   # then edit the copy
 #   GETRECEIPT_E2E=1 pnpm --filter @getreceipt/conformance test:e2e
 #
-# Both username AND secret are credential references (`op://<vault>/<item>/<field>` or
-# `encrypted-file:<path>`) the harness resolves at call-time behind the Secret fence — never an
-# inline value at rest. A source missing its username or secret is skipped (not a failure).
+# A `password` source's username AND secret are credential references (`op://<vault>/<item>/<field>`
+# or `encrypted-file:<path>`) the harness resolves at call-time behind the Secret fence — never an
+# inline value at rest. A password source missing its username or secret is skipped (not a failure).
+# A `session` source (e.g. amazon.fr) carries NO credential — it imports your browser's
+# already-authenticated session — so it just names a `browser` + `profile` (resolved at run time).
 sources:
   grandfrais.com:
     auth:
@@ -27,3 +29,10 @@ sources:
         ref: op://Private/monoprix/username
       secret:
         ref: op://Private/monoprix/password
+  amazon.fr:
+    auth:
+      # No credential: getreceipt imports the already-authenticated session from your browser's cookie
+      # store (yt-dlp's --cookies-from-browser model). `kind: session` is DERIVED from the browser/profile
+      # pair — you don't write it. The live run reports the same pass/stale/unverified matrix line.
+      browser: chrome # one of: chrome, brave, edge, chromium, firefox
+      profile: 'Profile 1' # a browser profile directory name, OR the account email

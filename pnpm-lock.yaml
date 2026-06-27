@@ -299,6 +299,9 @@ importers:
 
   packages/conformance:
     devDependencies:
+      '@getreceipt/adapter-amazon-fr':
+        specifier: workspace:^
+        version: link:../adapter-amazon-fr
       '@getreceipt/auth':
         specifier: workspace:^
         version: link:../auth

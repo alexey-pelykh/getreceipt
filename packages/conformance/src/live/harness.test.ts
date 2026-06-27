@@ -28,6 +28,7 @@ import { LiveBackendUnavailable, runLiveCollection, runLiveCollections } from '.
  */
 
 const PLAN: LivePlan = {
+    kind: 'password',
     source: 'grandfrais.com',
     username: 'shopper@example.com',
     secret: { ref: 'op://Private/gf/pw' },
@@ -35,10 +36,14 @@ const PLAN: LivePlan = {
 
 /** A plan whose username is ALSO a reference — exercises call-time resolution of the username on the secret's path. */
 const REF_USERNAME_PLAN: LivePlan = {
+    kind: 'password',
     source: 'grandfrais.com',
     username: { ref: 'op://Private/gf/username' },
     secret: { ref: 'op://Private/gf/pw' },
 };
+
+/** A browser-session plan — no credential to resolve; the harness lifts its { browser, profile } pair (#180). */
+const SESSION_PLAN: LivePlan = { kind: 'session', source: 'amazon.fr', browser: 'chrome', profile: 'Default' };
 
 function fakeAdapter(canonicalDomain: string): SourceAdapter {
     const unusedStage = (): never => {
@@ -60,6 +65,15 @@ function fakeAdapter(canonicalDomain: string): SourceAdapter {
         list: unusedStage,
         fetch: unusedStage,
     };
+}
+
+/**
+ * A fake `session`-kind adapter — only `authKind`+`credentialShapes` differ from {@link fakeAdapter}; those
+ * are the fields the resolve-time gate reads, and the rest is inert in mechanics tests, so inherit the base.
+ */
+function fakeSessionAdapter(canonicalDomain: string): SourceAdapter {
+    const base = fakeAdapter(canonicalDomain);
+    return { ...base, descriptor: { ...base.descriptor, authKind: 'session', credentialShapes: ['none'] } };
 }
 
 function fakeResolver(adapter: SourceAdapter): SourceResolver {
@@ -249,6 +263,64 @@ describe('runLiveCollection — credential backend', () => {
     });
 });
 
+describe('runLiveCollection — session source (no credential to resolve)', () => {
+    it('packs a session credential context from { browser, profile } WITHOUT dereferencing any credential', async () => {
+        let resolveCalls = 0;
+        let seen: CollectRequest | undefined;
+
+        const run = await runLiveCollection(SESSION_PLAN, {
+            resolver: fakeResolver(fakeSessionAdapter(SESSION_PLAN.source)),
+            // A session lifts its descriptor out of the plan — there is no secret to unlock, so this never runs.
+            resolveCredential: async () => {
+                resolveCalls += 1;
+                return new Secret('must-not-resolve');
+            },
+            collect: async (request) => {
+                seen = request;
+                return succeededResult(SESSION_PLAN.source);
+            },
+            createOutDir: knownTempDir,
+        });
+
+        expect(resolveCalls).toBe(0);
+        const packed = fromCredentialContext(seen!.credentials);
+        expect(packed.kind).toBe('session');
+        expect(packed.session).toEqual({ browser: 'chrome', profile: 'Default' });
+        expect(packed.username).toBeUndefined();
+        expect(packed.secret).toBeUndefined();
+        expect(run.verdict.state).toBe('e2e-verified');
+    });
+
+    it('does NOT run the credential-shape gate for a session source (a ["none"] shape would fail it closed)', async () => {
+        // The session config maps to the EMPTY shape set, which the resolve-time gate rejects fail-closed (#169).
+        // A clean verified run proves the harness SKIPS the gate for `session`, mirroring production (#180).
+        const run = await runLiveCollection(SESSION_PLAN, {
+            resolver: fakeResolver(fakeSessionAdapter(SESSION_PLAN.source)),
+            resolveCredential: async () => new Secret('unused'),
+            collect: async () => succeededResult(SESSION_PLAN.source),
+            createOutDir: knownTempDir,
+        });
+
+        expect(run.verdict.signal).toBe('verified');
+    });
+
+    it('purges the throwaway output directory after a session run', async () => {
+        let used: string | undefined;
+        await runLiveCollection(SESSION_PLAN, {
+            resolver: fakeResolver(fakeSessionAdapter(SESSION_PLAN.source)),
+            resolveCredential: async () => new Secret('unused'),
+            collect: async () => succeededResult(SESSION_PLAN.source),
+            createOutDir: async () => {
+                used = await knownTempDir();
+                return used;
+            },
+        });
+
+        expect(used).toBeDefined();
+        expect(existsSync(used!)).toBe(false);
+    });
+});
+
 /** A resolver that knows BOTH e2e source domains, so a multi-source sweep can resolve each plan's adapter. */
 function multiResolver(...domains: string[]): SourceResolver {
     const registry = new SourceAdapterRegistry();
@@ -258,8 +330,18 @@ function multiResolver(...domains: string[]): SourceResolver {
     return new SourceResolver(registry);
 }
 
-const PLAN_A: LivePlan = { source: 'grandfrais.com', username: 'a@example.com', secret: { ref: 'op://Private/gf/pw' } };
-const PLAN_B: LivePlan = { source: 'monoprix.fr', username: 'b@example.com', secret: { ref: 'op://Private/mp/pw' } };
+const PLAN_A: LivePlan = {
+    kind: 'password',
+    source: 'grandfrais.com',
+    username: 'a@example.com',
+    secret: { ref: 'op://Private/gf/pw' },
+};
+const PLAN_B: LivePlan = {
+    kind: 'password',
+    source: 'monoprix.fr',
+    username: 'b@example.com',
+    secret: { ref: 'op://Private/mp/pw' },
+};
 
 describe('runLiveCollections — multi-source sweep', () => {
     it('returns a per-source verdict for every plan, in order', async () => {

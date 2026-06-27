@@ -86,6 +86,7 @@ describe('#152 — alpiq + monoprix are password sources (oauth2 → password re
         '%s: the live oracle labels the user-supplied username+password as `password`',
         async (domain) => {
             const plan: LivePlan = {
+                kind: 'password',
                 source: domain,
                 username: 'user@example.test',
                 secret: { ref: 'op://Vault/Item/password' },
