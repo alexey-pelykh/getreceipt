@@ -2,11 +2,20 @@
 import {
     AuthenticationError,
     browserSessionReauthRequired,
+    browserSessionToStoredSession,
     fromBrowserSession,
     fromCredentialContext,
     importBrowserSession,
+    ReauthDetector,
+    reuseOrImportBrowserSession,
 } from '@getreceipt/auth';
-import type { BrowserSession, ImportBrowserSessionOptions } from '@getreceipt/auth';
+import type {
+    BrowserSession,
+    ImportBrowserSessionOptions,
+    SessionPersistableAdapter,
+    SessionStore,
+    StoredSession,
+} from '@getreceipt/auth';
 import { isWithinDateFilter, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
@@ -91,6 +100,13 @@ export interface AmazonFrAdapterOptions {
     readonly importOptions?: ImportBrowserSessionOptions;
     /** Renders a fetched invoice page to the PDF artifact; defaults to the @getreceipt/browser port ({@link renderInvoicePdf}). */
     readonly render?: InvoiceRenderer;
+    /**
+     * Opt-in at-rest session reuse (#189): when a {@link SessionStore} is wired, `authenticate` reuses a
+     * still-fresh stored session (skipping the browser read) instead of importing every run, and persists a
+     * freshly-imported session for the next run. Omit it (the default) for the basic per-run import path. The
+     * detector defaults to a wall-clock {@link ReauthDetector}.
+     */
+    readonly sessionReuse?: { readonly store: SessionStore; readonly detector?: ReauthDetector };
 }
 
 /**
@@ -106,16 +122,24 @@ export interface AmazonFrAdapterOptions {
  * source no longer accepts surfaces, at `list`/`fetch`, as the SAME `reauth-required` outcome every source
  * uses ({@link browserSessionReauthRequired}, #180) — pointing the user at their browser to sign in again.
  */
-export class AmazonFrAdapter implements SourceAdapter {
+export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
     readonly #transport: Transport;
     readonly #importOptions: ImportBrowserSessionOptions;
     readonly #render: InvoiceRenderer;
+    readonly #sessionReuse: { readonly store: SessionStore; readonly detector: ReauthDetector } | undefined;
 
     constructor(options: AmazonFrAdapterOptions = {}) {
         this.#transport = options.transport ?? defaultTransport;
         this.#importOptions = options.importOptions ?? {};
         this.#render = options.render ?? renderInvoicePdf;
+        this.#sessionReuse =
+            options.sessionReuse === undefined
+                ? undefined
+                : {
+                      store: options.sessionReuse.store,
+                      detector: options.sessionReuse.detector ?? new ReauthDetector(),
+                  };
     }
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
@@ -128,9 +152,33 @@ export class AmazonFrAdapter implements SourceAdapter {
                 'invalid-credentials',
             );
         }
-        // Import-and-return the domain-scoped browser session: no credential exchange, no browser launch — just
-        // read the cookie store the user populated by signing in. A stale session surfaces LATER, at list/fetch.
-        return importBrowserSession(resolved.session, CANONICAL_DOMAIN, this.#importOptions);
+        const descriptor = resolved.session;
+        // Import the domain-scoped browser session: no credential exchange, no browser launch — just read the
+        // cookie store the user populated by signing in. A stale session surfaces LATER, at list/fetch.
+        const importFresh = (): AuthHandle => importBrowserSession(descriptor, CANONICAL_DOMAIN, this.#importOptions);
+        if (this.#sessionReuse === undefined) {
+            return importFresh(); // basic per-run path (#179): no at-rest store wired.
+        }
+        // Opt-in at-rest reuse (#189): reuse a still-fresh stored session (SKIP the browser read), import +
+        // persist a fresh one when nothing is stored, or surface re-auth for a session past its freshness
+        // window — the same `reauth-required` outcome a stale session hits at list/fetch ({@link browserSessionReauthRequired}).
+        const resolution = await reuseOrImportBrowserSession({
+            store: this.#sessionReuse.store,
+            detector: this.#sessionReuse.detector,
+            domain: CANONICAL_DOMAIN,
+            importFresh,
+        });
+        if (resolution.outcome === 'reauth-required') {
+            throw resolution.error;
+        }
+        return resolution.auth;
+    }
+
+    toStoredSession(auth: AuthHandle): StoredSession {
+        // Project the imported cookie jar into the persistable session via the shared auth bridge — the same
+        // packing `login` (#17) stores and the reuse path (#189) reconstructs; the token stays fenced. This is
+        // what makes a `session` source persistable, so `login amazon.fr` stores a reusable session.
+        return browserSessionToStoredSession(auth);
     }
 
     async list(auth: AuthHandle, range: DateRange): Promise<readonly ReceiptRef[]> {

@@ -7,6 +7,11 @@ import type { BrowserCookie, ReadChromeCookiesOptions } from './cookie-reader.js
 import { readChromeCookies } from './cookie-reader.js';
 import type { ResolveProfileOptions } from './profile-resolver.js';
 import { resolveProfile } from './profile-resolver.js';
+import type { ReauthDetector } from './reauth-detector.js';
+import { Secret } from './secret.js';
+import { reuseStoredSession, toReauthRequiredError } from './session-reuse.js';
+import type { SessionStore, StoredSession } from './session.js';
+import { SessionStoreError } from './errors.js';
 
 /**
  * The `{ browser, profile }` pair a `session` source points at — the essence of the config's
@@ -114,6 +119,224 @@ export function browserSessionReauthRequired(domain: string): ReauthRequiredErro
         domain,
         'the imported browser session is no longer signed in — sign in to this source again in your browser, then retry',
     );
+}
+
+/**
+ * The JSON-safe projection of a {@link BrowserSession}: each cookie's {@link Secret} value is exposed to a
+ * plain string. This is the inner shape packed into a {@link StoredSession.token} — exposed ONLY at the
+ * persistence boundary (the same place {@link serializeSession} exposes a token to hand to the encryptor /
+ * keyring), then re-fenced on the way back out.
+ */
+interface PersistedBrowserSession {
+    readonly browser?: BrowserKind;
+    readonly domain: string;
+    readonly cookies: readonly PersistedCookie[];
+}
+
+/** A {@link BrowserCookie} with its value exposed — the JSON-safe member of a {@link PersistedBrowserSession}. */
+interface PersistedCookie {
+    readonly name: string;
+    readonly value: string;
+    readonly domain: string;
+    readonly path: string;
+    readonly secure: boolean;
+    readonly httpOnly: boolean;
+    readonly expires: number | null;
+}
+
+/**
+ * Project an imported {@link BrowserSession} {@link AuthHandle} (from {@link importBrowserSession} #179 OR
+ * `importPastedSession` #188 — both mint the same handle) into a persistable {@link StoredSession}: the
+ * {@link @getreceipt/auth!SessionPersistableAdapter} bridge a `session`-kind adapter uses so `login` (#17)
+ * stores the imported session WITHOUT a parallel persistence path. The cookie jar is multi-part, but a
+ * {@link StoredSession} persists ONE token — so the jar is packed into a single fenced JSON token, exactly as
+ * the free.fr adapter packs its multi-part `id`+`idt`+cookie session. Each cookie value is exposed ONLY here,
+ * at the persistence boundary, into that token (itself a {@link Secret} that redacts on log / JSON); the store
+ * then encrypts the serialized token at rest (#189 AC3).
+ *
+ * The session's freshness window is its cookies': {@link StoredSession.expiresAt} is the EARLIEST cookie
+ * expiry (the jar is only as fresh as its soonest-expiring member), so a {@link ReauthDetector} can decide —
+ * before any network call — whether a stored jar is still worth reusing. A jar whose cookies are all session
+ * cookies (no expiry) carries no `expiresAt` and assesses valid until the runtime re-auth seam
+ * ({@link browserSessionReauthRequired}) catches a jar that is in fact dead.
+ */
+export function browserSessionToStoredSession(auth: AuthHandle): StoredSession {
+    const session = fromBrowserSession(auth);
+    const persisted: PersistedBrowserSession = {
+        ...(session.browser !== undefined ? { browser: session.browser } : {}),
+        domain: session.domain,
+        cookies: session.cookies.map((cookie) => ({
+            name: cookie.name,
+            value: cookie.value.expose(),
+            domain: cookie.domain,
+            path: cookie.path,
+            secure: cookie.secure,
+            httpOnly: cookie.httpOnly,
+            expires: cookie.expires,
+        })),
+    };
+    const expiresAt = earliestExpiry(session.cookies);
+    return {
+        token: new Secret(JSON.stringify(persisted)),
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+    };
+}
+
+/**
+ * Reconstruct the imported {@link BrowserSession} {@link AuthHandle} from a {@link StoredSession} that
+ * {@link browserSessionToStoredSession} produced — the reuse-side inverse, so a still-fresh stored session is
+ * handed to `list`/`fetch` WITHOUT re-reading the browser cookie store (#189). Each cookie value is re-fenced
+ * in a {@link Secret} as it is unpacked, restoring the same fence the import minted. A token whose inner shape
+ * is not a packed browser session is a {@link SessionStoreError} (`malformed`) — value-free.
+ */
+export function storedSessionToBrowserSession(stored: StoredSession): AuthHandle {
+    const persisted = parsePersistedBrowserSession(stored.token.expose());
+    if (persisted === undefined) {
+        throw new SessionStoreError('stored session is not a persisted browser session', 'malformed');
+    }
+    return asAuthHandle({
+        ...(persisted.browser !== undefined ? { browser: persisted.browser } : {}),
+        domain: persisted.domain,
+        cookies: persisted.cookies.map((cookie) => ({
+            name: cookie.name,
+            value: new Secret(cookie.value),
+            domain: cookie.domain,
+            path: cookie.path,
+            secure: cookie.secure,
+            httpOnly: cookie.httpOnly,
+            expires: cookie.expires,
+        })),
+    });
+}
+
+/**
+ * What {@link reuseOrImportBrowserSession} did — the three {@link @getreceipt/auth!SessionReuse} outcomes,
+ * re-expressed as actions over an imported browser session:
+ *  - `reused` — a still-fresh stored session was found; the browser read was SKIPPED (`reuse`);
+ *  - `imported` — nothing was stored, so a fresh session was imported and persisted (`absent`);
+ *  - `reauth-required` — a stored session was found but is past its freshness window (`reauth-required`);
+ *    carries the typed {@link ReauthRequiredError} for the caller to throw onto the shared re-auth seam.
+ */
+export type BrowserSessionResolution =
+    | { readonly outcome: 'reused'; readonly auth: AuthHandle }
+    | { readonly outcome: 'imported'; readonly auth: AuthHandle }
+    | { readonly outcome: 'reauth-required'; readonly error: ReauthRequiredError };
+
+/** Inputs to {@link reuseOrImportBrowserSession}. */
+export interface ReuseOrImportBrowserSessionRequest {
+    readonly store: SessionStore;
+    readonly detector: ReauthDetector;
+    /** Store key for the session — the canonical domain it is scoped to. */
+    readonly domain: string;
+    /**
+     * Imports a fresh session when nothing fresh is stored — typically
+     * `() => importBrowserSession(descriptor, domain, options)` or `() => importPastedSession(paste, domain)`.
+     * Called ONLY on the `absent` path, so a reused session never touches the browser.
+     */
+    readonly importFresh: () => AuthHandle;
+}
+
+/**
+ * Resolve an imported browser session THROUGH the session-reuse machinery (#189): reuse a still-fresh stored
+ * session (skipping the browser read), import + persist a fresh one when nothing is stored, or report that a
+ * stored-but-expired session needs re-auth. The opt-in optimization over importing every run — a `session`
+ * adapter calls this in `authenticate` when a {@link SessionStore} is wired, and imports directly otherwise.
+ *
+ * Composes {@link reuseStoredSession} (the verdict) with {@link storedSessionToBrowserSession} /
+ * {@link browserSessionToStoredSession} (the projection), so persistence reuses the audited store + envelope
+ * rather than a parallel path. Never throws for an expected condition — a `reauth-required` verdict is
+ * RETURNED (mapped via {@link toReauthRequiredError}) for the caller to surface, mirroring
+ * {@link reuseStoredSession}'s never-throw contract. The reused session stays domain-scoped: it is loaded by
+ * the same `domain` key it was stored under, so reuse never broadens scope.
+ */
+export async function reuseOrImportBrowserSession(
+    request: ReuseOrImportBrowserSessionRequest,
+): Promise<BrowserSessionResolution> {
+    const { store, detector, domain, importFresh } = request;
+    const reuse = await reuseStoredSession({ store, detector, key: domain });
+    if (reuse.outcome === 'reuse') {
+        return { outcome: 'reused', auth: storedSessionToBrowserSession(reuse.session) };
+    }
+    if (reuse.outcome === 'reauth-required') {
+        return { outcome: 'reauth-required', error: toReauthRequiredError(domain, reuse) };
+    }
+    // absent: nothing stored — import fresh and persist it so the next run can reuse it (skip the browser then).
+    const auth = importFresh();
+    await store.save(domain, browserSessionToStoredSession(auth));
+    return { outcome: 'imported', auth };
+}
+
+/** The earliest cookie expiry as epoch ms (cookie expiries are Unix seconds), or undefined when every cookie is a session cookie. */
+function earliestExpiry(cookies: readonly BrowserCookie[]): number | undefined {
+    let earliest: number | undefined;
+    for (const cookie of cookies) {
+        if (cookie.expires === null) {
+            continue; // a session cookie carries no expiry — it never bounds the freshness window
+        }
+        const ms = cookie.expires * 1000;
+        if (earliest === undefined || ms < earliest) {
+            earliest = ms;
+        }
+    }
+    return earliest;
+}
+
+/** Validate + narrow a packed token's inner JSON into a {@link PersistedBrowserSession}, or undefined if it is not one. */
+function parsePersistedBrowserSession(serialized: string): PersistedBrowserSession | undefined {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(serialized);
+    } catch {
+        return undefined;
+    }
+    if (typeof raw !== 'object' || raw === null) {
+        return undefined;
+    }
+    const candidate = raw as Record<string, unknown>;
+    if (typeof candidate.domain !== 'string' || !Array.isArray(candidate.cookies)) {
+        return undefined;
+    }
+    const cookies: PersistedCookie[] = [];
+    for (const entry of candidate.cookies) {
+        const cookie = parsePersistedCookie(entry);
+        if (cookie === undefined) {
+            return undefined;
+        }
+        cookies.push(cookie);
+    }
+    return {
+        ...(typeof candidate.browser === 'string' ? { browser: candidate.browser as BrowserKind } : {}),
+        domain: candidate.domain,
+        cookies,
+    };
+}
+
+/** Validate + narrow one packed cookie, or undefined if it is not the expected shape. */
+function parsePersistedCookie(entry: unknown): PersistedCookie | undefined {
+    if (typeof entry !== 'object' || entry === null) {
+        return undefined;
+    }
+    const c = entry as Record<string, unknown>;
+    if (
+        typeof c.name !== 'string' ||
+        typeof c.value !== 'string' ||
+        typeof c.domain !== 'string' ||
+        typeof c.path !== 'string' ||
+        typeof c.secure !== 'boolean' ||
+        typeof c.httpOnly !== 'boolean' ||
+        !(c.expires === null || typeof c.expires === 'number')
+    ) {
+        return undefined;
+    }
+    return {
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        expires: c.expires,
+    };
 }
 
 /** Pack a {@link BrowserSession} into the opaque {@link AuthHandle} the pipeline threads to `list`/`fetch`. */

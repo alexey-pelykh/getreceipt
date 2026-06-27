@@ -10,9 +10,17 @@ import { inspect } from 'node:util';
 import {
     asCredentialContext,
     AuthenticationError,
+    browserSessionToStoredSession,
     deriveChromeSafeStorageKey,
+    fromBrowserSession,
+    InMemoryKeyring,
+    isSessionPersistable,
+    KeyringSessionStore,
     resolveBrowserSession,
+    Secret,
+    storedSessionToBrowserSession,
 } from '@getreceipt/auth';
+import type { BrowserSession, SessionStore, StoredSession } from '@getreceipt/auth';
 import {
     asReceiptArtifact,
     collect,
@@ -22,7 +30,7 @@ import {
     SourceResolver,
     TrustBoundaryError,
 } from '@getreceipt/core';
-import type { CredentialContext, DateRange, ReceiptWriter } from '@getreceipt/core';
+import type { AuthHandle, CredentialContext, DateRange, ReceiptWriter } from '@getreceipt/core';
 import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -587,5 +595,115 @@ describe('wire.ts — the in-repo contract (schema-derived orders, French date p
         expect(parseFrenchDate('8 aout 2026')?.toISOString()).toBe('2026-08-08T00:00:00.000Z');
         expect(parseFrenchDate('31 février 2026')).toBeUndefined(); // overflow is not a date
         expect(parseFrenchDate('not a date')).toBeUndefined();
+    });
+});
+
+describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest', () => {
+    const AMAZON = 'amazon.fr';
+    /** A persisted amazon session with ONE distinctive sentinel cookie — provably the STORED one, not a fresh 3-cookie import. */
+    const STORED_VALUE = 'stored-session-SENTINEL-do-not-leak';
+    const FUTURE_SECONDS = Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000);
+    const PAST_SECONDS = Math.floor(Date.parse('2000-01-01T00:00:00.000Z') / 1000);
+
+    function storedAmazonSession(expiresSeconds: number | null): StoredSession {
+        const session: BrowserSession = {
+            domain: AMAZON,
+            cookies: [
+                {
+                    name: 'session-id',
+                    value: new Secret(STORED_VALUE),
+                    domain: `.${AMAZON}`,
+                    path: '/',
+                    secure: true,
+                    httpOnly: true,
+                    expires: expiresSeconds,
+                },
+            ],
+        };
+        return browserSessionToStoredSession(session as unknown as AuthHandle);
+    }
+
+    it('is session-persistable, so `login amazon.fr` can store a reusable session [AC1]', async () => {
+        const a = adapter(makeUserDataDir(AMAZON_COOKIES));
+        expect(isSessionPersistable(a)).toBe(true);
+
+        const stored = a.toStoredSession(await a.authenticate(creds()));
+        expect(String(stored.token)).toBe('[redacted]'); // the projected token stays fenced
+
+        // Faithful projection: reconstructs to exactly the domain-scoped imported cookies.
+        const reused = fromBrowserSession(storedSessionToBrowserSession(stored));
+        expect(reused.cookies.map((c) => [c.name, c.value.expose()])).toEqual(IMPORTED_COOKIES);
+    });
+
+    it('reuses a still-fresh stored session — SKIPS the browser read [AC1][reuse]', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        await store.save(AMAZON, storedAmazonSession(FUTURE_SECONDS));
+        // No importOptions: the reuse path must NOT read the browser (it would hit the real profile otherwise).
+        const a = new AmazonFrAdapter({ sessionReuse: { store } });
+
+        const session = fromBrowserSession(await a.authenticate(creds()));
+
+        // Got the ONE-cookie STORED session, not the THREE-cookie fresh import → the browser read was skipped.
+        expect(session.cookies.map((c) => [c.name, c.value.expose()])).toEqual([['session-id', STORED_VALUE]]);
+    });
+
+    it('imports + persists when nothing is stored, so the next run reuses it [absent]', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        const a = new AmazonFrAdapter({
+            importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
+            sessionReuse: { store },
+        });
+
+        const imported = fromBrowserSession(await a.authenticate(creds()));
+        expect(imported.cookies.map((c) => c.name)).toEqual(['at-acbfr', 'sess-at-acbfr', 'session-id']);
+
+        // It persisted the imported session; the store now reconstructs to the same cookies.
+        const stored = await store.load(AMAZON);
+        expect(stored).toBeDefined();
+        expect(
+            fromBrowserSession(storedSessionToBrowserSession(stored!)).cookies.map((c) => [c.name, c.value.expose()]),
+        ).toEqual(IMPORTED_COOKIES);
+    });
+
+    it('surfaces reauth-required for a stored session past its freshness window [reauth-required]', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        await store.save(AMAZON, storedAmazonSession(PAST_SECONDS));
+        const a = new AmazonFrAdapter({ sessionReuse: { store } });
+
+        // authenticate throws the typed re-auth signal (no browser read); collect() maps it to a structured result.
+        await expect(a.authenticate(creds())).rejects.toBeInstanceOf(ReauthRequiredError);
+        const result = await collect({ adapter: a, credentials: creds(), writer: noopWriter(), now: new Date() });
+        expect(result.outcome).toBe('reauth-required');
+    });
+
+    it('without a session store, imports fresh every run — the basic per-run path is unchanged [opt-in]', async () => {
+        const a = adapter(makeUserDataDir(AMAZON_COOKIES)); // no sessionReuse
+        const session = fromBrowserSession(await a.authenticate(creds()));
+        expect(session.cookies.map((c) => c.name)).toEqual(['at-acbfr', 'sess-at-acbfr', 'session-id']);
+    });
+
+    it('with a NULL store wired (the un-logged-in production path), imports fresh and persists nothing [opt-in]', async () => {
+        // Production always wires `sessionReuse` (default-sources.ts); an un-logged-in user gets the NULL store
+        // (no `~/.getreceipt/sessions` dir). The reuse helper still runs, but a NULL store loads nothing → fresh
+        // import, and its save discards → nothing lands at rest. Proves the routing widening stays opt-in-inert.
+        let saves = 0;
+        const nullStore: SessionStore = {
+            load: () => Promise.resolve(undefined),
+            save: () => {
+                saves += 1;
+                return Promise.resolve();
+            },
+            delete: () => Promise.resolve(),
+        };
+        const a = new AmazonFrAdapter({
+            importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
+            sessionReuse: { store: nullStore },
+        });
+
+        const session = fromBrowserSession(await a.authenticate(creds()));
+
+        expect(session.cookies.map((c) => c.name)).toEqual(['at-acbfr', 'sess-at-acbfr', 'session-id']); // browser read
+        expect(saves).toBe(1); // the absent branch attempted a persist — which the NULL store discards
+        expect(await nullStore.load(AMAZON)).toBeUndefined(); // nothing at rest: persistence stayed opt-in
     });
 });

@@ -114,8 +114,11 @@ Chromium cookies are sealed with OS-level encryption (DPAPI / App-Bound Encrypti
 Chromium on macOS/Linux for now.
 
 The imported session is held **in memory for the duration of the run** and used only to fetch your own
-documents. `getreceipt` never writes it to disk, and — consistent with [PRIVACY.md](PRIVACY.md) — never
-sends it anywhere but the target service's own endpoints.
+documents — and, consistent with [PRIVACY.md](PRIVACY.md), never sent anywhere but the target service's own
+endpoints. By default it is **never written to disk**; running `getreceipt login <source>` **optionally**
+persists it at rest — always **encrypted, never plaintext** — so later runs reuse it and skip the browser
+read, and `getreceipt logout <source>` clears it (see [_Session reuse at rest_](#session-reuse-at-rest-optional)
+below).
 
 ### Properties that hold
 
@@ -168,6 +171,26 @@ sends it anywhere but the target service's own endpoints.
 | **API injection seams.** The reader exposes test-only seams to inject the key or Keychain password directly, bypassing the prompt. They are not reachable from config, the CLI, or MCP — only from in-process code, which is already trusted.                                                                                                 | By design — trusted-caller surface only.                                                                                         |
 | **Pre-flight shape gate skipped for `session`.** A `session` source pointed at a non-session adapter is not rejected at the pre-flight credential-shape gate (a session carries no credential shape to check); it still **fails closed** at `authenticate()`, just later.                                                                     | Tracked — [#205](https://github.com/alexey-pelykh/getreceipt/issues/205); lands with the first session adapter.                  |
 
+### Session reuse at rest (optional)
+
+By default a `session` source imports the browser cookies fresh on every run. To skip that repeated read,
+`getreceipt login <source>` imports the session once and **persists it at rest**, and later runs **reuse**
+it until it expires (`getreceipt logout <source>` clears it). The path is **opt-in**: until you log in,
+nothing is stored and every run imports fresh.
+
+- **Encrypted at rest, never plaintext.** The stored session is sealed in an **AES-256-GCM** envelope (a
+  scrypt-stretched passphrase — the same `GETRECEIPT_SECRET_PASSPHRASE` the encrypted-file credential store
+  uses — with a random salt + IV and a GCM auth tag) and written `0600` under `~/.getreceipt/sessions`. No
+  cookie value reaches the disk in cleartext; without the passphrase the file cannot be read. See
+  [`packages/auth/src/secret-envelope.ts`](packages/auth/src/secret-envelope.ts) and
+  [`packages/auth/src/session-store.ts`](packages/auth/src/session-store.ts).
+- **Fenced end to end.** Cookie values stay wrapped in the same `Secret` across persist → load → reuse —
+  exposed only at the encryption boundary and the point of use — and a serialized stored session redacts to
+  `[redacted]`.
+- **Still domain-scoped.** A reused session carries exactly the domain-scoped cookies that were imported —
+  reuse never broadens scope — and a stored session past its freshness window surfaces the same
+  **`reauth-required`** signal a live stale session does, pointing you back to your browser.
+
 The full private threat-model analysis is out of scope for this public policy, consistent with the rest
 of this document.
 
@@ -181,9 +204,11 @@ provides this as the manual-paste session provider
 counterpart to the cookie-store path's `--cookies-from-browser`. It mints the **same in-memory session
 handle** the store path does, so the **same posture holds**:
 
-- **In memory only.** The pasted session is parsed and held **for the run**; it is **never written to
-  disk** (persisting an imported session at rest is a separate, later optimization —
-  [#189](https://github.com/alexey-pelykh/getreceipt/issues/189)).
+- **In memory only.** The pasted session is parsed and held **for the run**; this provider never writes it
+  to disk. (Opt-in at-rest persistence + reuse of an imported session — encrypted, established by
+  `getreceipt login` — shipped in
+  [#189](https://github.com/alexey-pelykh/getreceipt/issues/189) for the browser-cookie session; a
+  paste-backed `session` source would reuse the same path.)
 - **Domain-scoped.** Only the **target site's** cookies enter the session. A `Cookie:` header is already
   browser-scoped to the site it was copied from; a `cookies.txt` export carries per-cookie domains, so
   out-of-scope cookies are **dropped** by the same domain match the cookie-store reader uses.
@@ -278,14 +303,14 @@ This section will be updated when they ship.
 
 ## Threat-model assumptions
 
-| Assumption                                                   | Rationale                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The local machine is trusted                                 | Credentials are read from a file in your home directory; protection is filesystem-level only.                                                                                                                                                                                                                                          |
-| The credential backend is trusted                            | When `secret: { ref }` resolves via a password manager, OS keychain, or env var, `getreceipt` trusts that resolver (and any binary it shells out to).                                                                                                                                                                                  |
-| The browser cookie store and OS secret store are trusted     | A `session` source imports the login you already established in your browser; protection is your OS user account plus the macOS Keychain / Linux keyring ACL you approve (and, for Firefox's plaintext store or Chromium's no-keyring fallback, your OS user account alone). The imported session is held in memory only, for the run. |
-| Each target service is trusted over HTTPS                    | `getreceipt` authenticates to and fetches from each service's own endpoints over TLS.                                                                                                                                                                                                                                                  |
-| The MCP host is trusted                                      | The stdio MCP server is process-level; anyone who can spawn it gets full tool access.                                                                                                                                                                                                                                                  |
-| The dependency tree is trusted via hardening, not full audit | Build scripts are default-denied and releases are provenance-attested, but `getreceipt` does not vet every transitive dependency's source; a `pnpm audit` release gate is planned (see [Supply-chain hardening](#supply-chain-hardening)).                                                                                             |
+| Assumption                                                   | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The local machine is trusted                                 | Credentials are read from a file in your home directory; protection is filesystem-level only.                                                                                                                                                                                                                                                                                                                                                                                            |
+| The credential backend is trusted                            | When `secret: { ref }` resolves via a password manager, OS keychain, or env var, `getreceipt` trusts that resolver (and any binary it shells out to).                                                                                                                                                                                                                                                                                                                                    |
+| The browser cookie store and OS secret store are trusted     | A `session` source imports the login you already established in your browser; protection is your OS user account plus the macOS Keychain / Linux keyring ACL you approve (and, for Firefox's plaintext store or Chromium's no-keyring fallback, your OS user account alone). The imported session is held in memory for the run, and persisted at rest only on an explicit `getreceipt login` — then always encrypted ([AES-256-GCM](#session-reuse-at-rest-optional)), never plaintext. |
+| Each target service is trusted over HTTPS                    | `getreceipt` authenticates to and fetches from each service's own endpoints over TLS.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| The MCP host is trusted                                      | The stdio MCP server is process-level; anyone who can spawn it gets full tool access.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| The dependency tree is trusted via hardening, not full audit | Build scripts are default-denied and releases are provenance-attested, but `getreceipt` does not vet every transitive dependency's source; a `pnpm audit` release gate is planned (see [Supply-chain hardening](#supply-chain-hardening)).                                                                                                                                                                                                                                               |
 
 The full private threat-model analysis is out of scope for this public policy.
 

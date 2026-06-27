@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { existsSync } from 'node:fs';
-
 import {
     CredentialResolver,
     ReauthDetector,
     SessionStoreError,
-    createSessionStore,
     loadConfig as authLoadConfig,
     resolveConfigFilePath,
 } from '@getreceipt/auth';
@@ -38,7 +35,7 @@ import type { BatchReport, BatchSourceResult } from './all-render.js';
 import { createDefaultRegistry, createDefaultResolver } from './default-sources.js';
 import { OperationError, runOperation } from './operation-runner.js';
 import type { OperationRunnerDeps, ResolveSourceDeps } from './operation-runner.js';
-import { defaultSessionsDir } from './sessions.js';
+import { defaultReadableSessionStore } from './sessions.js';
 import type { SourceView, SourcesReport } from './sources-render.js';
 import type { SourceSessionView, StatusReport } from './status-render.js';
 
@@ -399,24 +396,6 @@ async function assessSession(store: SessionStore, detector: ReauthDetector, key:
     return expiresAt === undefined ? { session: 'valid' } : { session: 'valid', expiresAt };
 }
 
-/** A session store that holds nothing — every source reports `none`. Used before any session has been persisted. */
-const NULL_SESSION_STORE: SessionStore = {
-    load: () => Promise.resolve(undefined),
-    save: () => Promise.resolve(),
-    delete: () => Promise.resolve(),
-};
-
-/**
- * The production default session store: the encrypted-file store under {@link defaultSessionsDir}
- * once it exists, else a {@link NULL_SESSION_STORE}. The directory is created by the `login`
- * ceremony (#17); until a first login there are no sessions, so every source honestly reports
- * `none` rather than `unknown`.
- */
-function resolveDefaultSessionStore(): SessionStore {
-    const dir = defaultSessionsDir();
-    return existsSync(dir) ? createSessionStore({ dir }) : NULL_SESSION_STORE;
-}
-
 /**
  * Production wiring for the collection operations ({@link runOperation} / {@link runCollectAll}):
  * the bundled-adapter resolver, the real config loader + credential resolver, the filesystem
@@ -452,7 +431,7 @@ export function defaultAuthStatusDeps(): AuthStatusDeps {
         resolveConfigPath: resolveConfigFilePath,
         loadConfig: authLoadConfig,
         resolver: createDefaultResolver(),
-        sessionStore: resolveDefaultSessionStore(),
+        sessionStore: defaultReadableSessionStore(),
         now: () => new Date(),
     };
 }

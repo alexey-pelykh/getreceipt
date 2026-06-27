@@ -9,6 +9,8 @@ import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type { SourceAdapter } from '@getreceipt/core';
 import { createImpersonatingTransport } from '@getreceipt/transport-impersonate';
 
+import { defaultReadableSessionStore } from './sessions.js';
+
 /**
  * Construct the bundled adapters fresh, wiring each anti-bot-gated source with the transport its
  * descriptor demands. This is the production composition root — `createDefaultResolver()` (every
@@ -30,8 +32,12 @@ export function buildBundledAdapters(): readonly SourceAdapter[] {
     const monoprix = new MonoprixAdapter({
         transport: createImpersonatingTransport({ impersonateHosts: [new URL(ENDPOINTS.apiOrigin).host] }),
     });
+    // amazon is also wired with opt-in at-rest session reuse (#189): the readable session store skips the
+    // browser cookie read when a still-fresh session was stored by `login amazon.fr`. The store is NULL until
+    // that first login creates the sessions dir, so an un-logged-in run imports fresh (the basic per-run path).
     const amazon = new AmazonFrAdapter({
         transport: createImpersonatingTransport({ impersonateHosts: [new URL(amazonEndpoints.origin).host] }),
+        sessionReuse: { store: defaultReadableSessionStore() },
     });
     return [grandfraisAdapter, monoprix, freeFrAdapter, proFreeFrAdapter, particuliersAlpiqFrAdapter, amazon];
 }
