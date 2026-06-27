@@ -473,7 +473,7 @@ output) so a months-old or never-verified confirmation is self-evident. A `stale
 source still **warns but proceeds**: getreceipt fetches your own receipts with your own credentials,
 so staleness is a visible advisory, never a block on collection or on release.
 
-The five bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), and **`particuliers.alpiq.fr`** — are currently `unverified`.
+The six bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`particuliers.alpiq.fr`**, and **`amazon.fr`** (Amazon orders via an imported browser session) — are currently `unverified`.
 
 Verification is produced **only** by the project's live conformance oracle, **not** by your own
 collections: a successful `collect` does not mark a source verified. For what each state means, where
