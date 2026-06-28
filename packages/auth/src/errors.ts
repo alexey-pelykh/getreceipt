@@ -140,13 +140,17 @@ export type BrowserCookieStoreReason = ProfileResolutionReason | CookieReadReaso
  */
 const BROWSER_COOKIE_STORE_GUIDANCE = {
     'unsupported-browser':
-        'Use a Chromium-family browser (Chrome, Brave, Edge, or Chromium) for browser-session auth — Firefox is not yet selectable as a session source.',
+        'Set `browser` to a supported browser — Chrome, Brave, Edge, or Chromium (read via the OS "Safe Storage" scheme), or Firefox (read via its own plaintext cookie store).',
     'user-data-dir-unset':
-        'The browser user-data location could not be determined; on Windows ensure %LOCALAPPDATA% is set, or pin the user-data directory explicitly.',
+        'The browser user-data location could not be determined; on Windows ensure %LOCALAPPDATA% (Chromium) or %APPDATA% (Firefox) is set, or pin the directory explicitly.',
     'local-state-unreadable':
         'The browser profile cache could not be read; open the browser once to create it, and confirm the configured browser is the one installed.',
     'local-state-malformed':
         'The browser profile cache is corrupt or unrecognized; reopen the browser to rebuild it, or name the profile by its directory instead of an account.',
+    'profiles-ini-unreadable':
+        'The Firefox profiles.ini could not be read; open Firefox once to create your profile, and confirm Firefox is installed.',
+    'profiles-ini-malformed':
+        'The Firefox profiles.ini is corrupt or lists no usable profile; reopen Firefox to rebuild it, or name the profile by its directory.',
     'account-not-found':
         'No browser profile is signed into the configured account; sign into that account in the browser, or set the profile to its directory name.',
     'profile-not-found':
@@ -194,12 +198,14 @@ export abstract class BrowserCookieStoreError extends Error {
 /**
  * Why a {@link ProfileResolutionError} happened. Lets a caller branch on the cause without parsing
  * the message:
- *  - `unsupported-browser` — the browser keeps no Chromium-style `Local State` cache (Firefox);
- *  - `user-data-dir-unset` — the platform location of the user-data dir can't be determined (e.g. Windows `%LOCALAPPDATA%` is unset);
- *  - `local-state-unreadable` — the `Local State` file is missing or could not be read;
- *  - `local-state-malformed` — the `Local State` file is not valid JSON or lacks `profile.info_cache`;
+ *  - `unsupported-browser` — the Chromium resolver was handed a browser with no `Local State` cache (Firefox, which is resolved by `resolveFirefoxProfile` instead);
+ *  - `user-data-dir-unset` — the platform location of the profile root can't be determined (e.g. Windows `%LOCALAPPDATA%` (Chromium) or `%APPDATA%` (Firefox) is unset);
+ *  - `local-state-unreadable` — the Chromium `Local State` file is missing or could not be read;
+ *  - `local-state-malformed` — the Chromium `Local State` file is not valid JSON or lacks `profile.info_cache`;
+ *  - `profiles-ini-unreadable` — the Firefox `profiles.ini` file is missing or could not be read;
+ *  - `profiles-ini-malformed` — the Firefox `profiles.ini` could not be parsed or names no usable profile;
  *  - `account-not-found` — an `@` value matched no `info_cache` entry (by `user_name`/`name`);
- *  - `profile-not-found` — a directory-name value (or an account's resolved directory) does not exist on disk;
+ *  - `profile-not-found` — a directory-name value (or an account's / Firefox install's resolved directory) does not exist on disk;
  *  - `invalid-profile-value` — the value is empty or names something other than a single path segment.
  */
 export type ProfileResolutionReason =
@@ -207,6 +213,8 @@ export type ProfileResolutionReason =
     | 'user-data-dir-unset'
     | 'local-state-unreadable'
     | 'local-state-malformed'
+    | 'profiles-ini-unreadable'
+    | 'profiles-ini-malformed'
     | 'account-not-found'
     | 'profile-not-found'
     | 'invalid-profile-value';

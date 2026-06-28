@@ -25,6 +25,8 @@ const ERROR_BY_REASON: Record<BrowserCookieStoreReason, BrowserCookieStoreError>
     'user-data-dir-unset': new ProfileResolutionError('no user-data dir', 'user-data-dir-unset', 'chrome'),
     'local-state-unreadable': new ProfileResolutionError('unreadable', 'local-state-unreadable', 'chrome'),
     'local-state-malformed': new ProfileResolutionError('malformed', 'local-state-malformed', 'chrome'),
+    'profiles-ini-unreadable': new ProfileResolutionError('ini unreadable', 'profiles-ini-unreadable', 'firefox'),
+    'profiles-ini-malformed': new ProfileResolutionError('ini malformed', 'profiles-ini-malformed', 'firefox'),
     'account-not-found': new ProfileResolutionError('no account', 'account-not-found', 'chrome'),
     'profile-not-found': new ProfileResolutionError('no profile dir', 'profile-not-found', 'chrome'),
     'invalid-profile-value': new ProfileResolutionError('empty', 'invalid-profile-value', 'chrome'),

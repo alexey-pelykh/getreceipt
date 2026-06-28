@@ -167,7 +167,7 @@ already established in your own browser.
 ```yaml
 sources:
   amazon.fr:
-    browser: chrome # chrome, brave, edge, chromium (firefox: not yet selectable)
+    browser: chrome # chrome, brave, edge, chromium, or firefox
     profile: 'Profile 1' # the browser profile: a profile directory name, or the account email
 ```
 
@@ -185,9 +185,10 @@ sources:
 - **`browser`** — which browser's cookie store to read: one of `chrome`, `brave`, `edge`, `chromium`, or
   `firefox`. All five are accepted by config validation; which are actually **usable** today differs by
   platform (see [Platform support](#platform-support) below).
-- **`profile`** — which of that browser's profiles to import: a profile **directory name** (e.g. `Default`,
-  `Profile 1`), or the **account email** of the signed-in profile. The value is matched against the browser's
-  profile list when the source runs.
+- **`profile`** — which of that browser's profiles to import. For **Chromium-family** browsers: a profile
+  **directory name** (e.g. `Default`, `Profile 1`), or the **account email** of the signed-in profile. For
+  **Firefox**: a profile `Name` (e.g. `default-release`), its profile-directory name, or `default` for the
+  default profile. The value is matched against the browser's profile list when the source runs.
 
 `kind: session` is **derived** from the `browser`/`profile` pair, exactly as `password` is derived from a
 credential — you don't write it (and a literal `kind: session` without the pair is rejected). A session
@@ -195,8 +196,10 @@ carries no credential, so pairing `browser`/`profile` with a `ref`/`username`/`s
 
 #### Platform support
 
-A `session` source reads **Chromium-family** browsers — `chrome`, `brave`, `edge`, `chromium` — and whether
-one can be imported depends on how that browser seals its cookies on each platform:
+How a `session` source imports a profile depends on how that browser stores its cookies.
+
+**Chromium-family** (`chrome`, `brave`, `edge`, `chromium`) seal cookies with an OS-protected key, so whether
+one can be imported depends on the platform:
 
 - **macOS** — supported. The decryption key is read from the **Keychain**; the first read raises a consent
   prompt (choose _Always Allow_ and later runs read it without re-prompting).
@@ -205,10 +208,20 @@ one can be imported depends on how that browser seals its cookies on each platfo
 - **Windows** — **fails closed.** Chromium seals cookies with DPAPI / App-Bound Encryption, which getreceipt
   **will not bypass** — supply the session by hand instead (see the manual-paste fallback below).
 
-**`firefox`** validates as a `browser` value but is **not yet selectable** as a `session` source: the Firefox
-cookie reader ships, yet wiring its profile lookup is tracked separately — use a Chromium-family browser for
-now. For the security posture behind every path — the read-only snapshot, domain scoping, value fencing, and
-the OS-secret-store consent gate — see
+**`firefox`** is **selectable on every platform.** Firefox keeps its cookies in **plaintext** in
+`cookies.sqlite` (its profile located via `profiles.ini`), so there is **no key, keyring, or consent prompt**
+to negotiate — the store's only protection is your OS user account. Name the profile by its `Name`, its
+profile-directory name, or `default` for Firefox's default profile:
+
+```yaml
+sources:
+  amazon.fr:
+    browser: firefox
+    profile: default # or a profile Name (e.g. default-release) / its profile-directory name
+```
+
+For the security posture behind every path — the read-only snapshot, domain scoping, value fencing, and the
+OS-secret-store consent gate (Chromium only) — see
 [SECURITY.md § Browser-session auth](../SECURITY.md#browser-session-auth-cookies-from-your-browser).
 
 #### Freshness

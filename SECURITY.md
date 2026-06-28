@@ -103,15 +103,14 @@ write target. Until that lands, the operator guidance above is the load-bearing 
 A `session` source authenticates by **importing the login you already hold in your browser** — it reads
 that browser profile's cookies for the target site, the way `yt-dlp --cookies-from-browser` does,
 instead of taking a password. There is no separate secret to configure: the already-authenticated
-session lives in the browser's own cookie store. Today a `session` source reads **Chromium-family**
+session lives in the browser's own cookie store. A `session` source reads **Chromium-family**
 browsers (Chrome, Brave, Edge, Chromium) — on **macOS** via the Keychain and on **Linux** via the system
 keyring (libsecret / Secret Service), with Chromium's documented no-keyring fallback. On **Windows**,
 Chromium cookies are sealed with OS-level encryption (DPAPI / App-Bound Encryption) that `getreceipt`
 **will not bypass**: that path fails closed, and you supply the session another way — by
-[pasting it yourself](#manual-paste-session). A reader for
-**Firefox** (whose cookie store is **plaintext**) also ships, but Firefox is **not yet selectable as a
-`session` source** — wiring its profile lookup is tracked separately — so the configurable session path is
-Chromium on macOS/Linux for now.
+[pasting it yourself](#manual-paste-session). **Firefox** is also selectable, on **every platform**: its
+cookie store is **plaintext** (`cookies.sqlite`, the profile located via `profiles.ini`), so it needs no key,
+keyring, or consent prompt — its only protection is your OS user account (see the Firefox bullet below).
 
 The imported session is held **in memory for the duration of the run** and used only to fetch your own
 documents — and, consistent with [PRIVACY.md](PRIVACY.md), never sent anywhere but the target service's own
@@ -148,11 +147,10 @@ below).
   `getreceipt` reports that it will not bypass OS-level cookie encryption and points you to the
   [manual-paste session](#manual-paste-session) fallback. This is **fallback, not defeat**.
 - **The Firefox reader needs no key — and has no consent prompt.** Firefox keeps cookie values in
-  **plaintext** in `cookies.sqlite`, so the Firefox reader (shipped, though **not yet wired** to a
-  `session` source) reads them with **no decryption and no OS prompt** — the file's protection is your
-  **OS user account** alone. The same safeguards still apply (the read is **domain-scoped**, uses a
-  **read-only snapshot**, and every value is **fenced**), but, unlike the Chromium path, there is no
-  keychain/keyring gate to approve.
+  **plaintext** in `cookies.sqlite`, so the Firefox `session` path (its profile located via `profiles.ini`)
+  reads them with **no decryption and no OS prompt** — the file's protection is your **OS user account**
+  alone. The same safeguards still apply (the read is **domain-scoped**, uses a **read-only snapshot**, and
+  every value is **fenced**), but, unlike the Chromium path, there is no keychain/keyring gate to approve.
 - **Errors never carry secrets.** The browser-cookie-store error taxonomy reports a machine-readable
   reason and static recovery guidance — **never** a cookie value, the decryption key, the Keychain
   password, a profile path, or an account email. See
@@ -165,7 +163,7 @@ below).
 | **Local process memory.** A decrypted cookie lives in process memory — and could reach swap or a core dump — for the run; JavaScript strings are immutable and cannot be zeroed.                                                                                                                                                              | Accepted — inherent to the runtime; the local machine is trusted (see assumptions below).                                        |
 | **First-access keyring consent.** macOS _Always Allow_ (and a Linux keyring left unlocked for the login session) turns the per-prompt consent gate into a first-access one; subsequent runs decrypt without re-prompting.                                                                                                                     | Documented — OS-owned behavior, outside `getreceipt`'s control.                                                                  |
 | **Linux no-keyring store (`v10`/"peanuts").** When a Chromium profile uses the basic-text store (no gnome-keyring / kwallet), its cookie key is Chromium's **public, fixed password** — the values are obfuscated, not sealed with a secret. `getreceipt` reads them, but on such a profile the only real protection is your OS user account. | Documented — Chromium's own design; the same data any local process running as you can already read.                             |
-| **Firefox plaintext store.** Firefox keeps cookie values unencrypted, so there is no key and no consent prompt — anything running as your user can read them. The Firefox reader (not yet wired to a session source) reads via a read-only snapshot and fences every value, but the store itself adds no protection beyond your OS account.   | Documented — Firefox's own design; protection is your OS user account, consistent with the trust assumptions here.               |
+| **Firefox plaintext store.** Firefox keeps cookie values unencrypted, so there is no key and no consent prompt — anything running as your user can read them. The Firefox `session` path reads via a read-only snapshot and fences every value, but the store itself adds no protection beyond your OS account.                               | Documented — Firefox's own design; protection is your OS user account, consistent with the trust assumptions here.               |
 | **Snapshot window.** The cookie store is briefly copied to a `0700` temp directory and removed after the read.                                                                                                                                                                                                                                | Mitigated — the copy is the **encrypted** store (the **plaintext** store for Firefox), in a private dir, deleted in a `finally`. |
 | **Adapter error discipline (forward).** A future `session` adapter that threw a _raw_ error carrying a cookie value in its message would surface that message on a `failed` result's `reason` (CLI `--json` / MCP). Every shipped error in this subsystem is value-free by construction, and no session adapter exists yet.                   | Tracked — [#205](https://github.com/alexey-pelykh/getreceipt/issues/205); an invariant the session-adapter work must honor.      |
 | **API injection seams.** The reader exposes test-only seams to inject the key or Keychain password directly, bypassing the prompt. They are not reachable from config, the CLI, or MCP — only from in-process code, which is already trusted.                                                                                                 | By design — trusted-caller surface only.                                                                                         |
