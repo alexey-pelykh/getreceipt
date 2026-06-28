@@ -7,6 +7,19 @@ import { domainMatches } from './cookie-reader.js';
 import { PastedSessionError } from './errors.js';
 import { Secret } from './secret.js';
 
+/**
+ * The resolved descriptor a config-selectable manual-paste `session` source carries (#218) — the paste
+ * analogue of {@link BrowserSessionDescriptor}. Where the browser descriptor lifts a `{ browser, profile }`
+ * pair (the cookie store is read LATER, at import), the paste descriptor carries the ALREADY-RESOLVED pasted
+ * material, still {@link Secret}-fenced: the front-end dereferences the configured `paste` secret-ref through
+ * the secret-ref resolver (`op://` / env / `encrypted-file:` / file) and threads the fenced value here. The
+ * adapter's `authenticate()` exposes it ONLY at the point of use, handing it to {@link importPastedSession}.
+ */
+export interface PastedSessionDescriptor {
+    /** The resolved pasted session material (a `Cookie:` header or `cookies.txt` export), still fenced. */
+    readonly paste: Secret;
+}
+
 /** The `#HttpOnly_` line prefix the Netscape cookies.txt convention uses to mark an `HttpOnly` cookie. */
 const NETSCAPE_HTTP_ONLY_PREFIX = '#HttpOnly_';
 /** The fixed field count of a Netscape cookies.txt row: domain, includeSubdomains, path, secure, expiry, name, value. */

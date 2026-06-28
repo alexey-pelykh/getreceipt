@@ -318,17 +318,18 @@ function assertConfiguredShapeSupported(adapter: SourceAdapter, sourceConfig: Do
 }
 
 /**
- * The session counterpart to {@link assertConfiguredShapeSupported} (#205): a `session` source carries no
- * credential shape for the #169 gate, so it bypasses that check — but it must still target an adapter that
- * authenticates by browser session. Without this, a session pointed at a non-session adapter would fail
- * closed LATER and opaquely inside authenticate(); here it is a clean pre-flight {@link OperationError}.
- * Value-free: the message names only the source domain and the two authKinds, never the session descriptor.
+ * The session counterpart to {@link assertConfiguredShapeSupported} (#205): a `session` source — whether an
+ * imported browser session or a manual-paste one (#218) — carries no credential shape for the #169 gate, so
+ * it bypasses that check, but it must still target an adapter that authenticates by session. Without this, a
+ * session pointed at a non-session adapter would fail closed LATER and opaquely inside authenticate(); here it
+ * is a clean pre-flight {@link OperationError}. Value-free: the message names only the source domain and the
+ * two authKinds, never the session descriptor (no `browser`/`profile`, no pasted material).
  */
 function assertSessionAdapter(adapter: SourceAdapter): void {
     if (adapter.descriptor.authKind !== 'session') {
         throw new OperationError(
             'unsupported-shape',
-            `source "${adapter.descriptor.canonicalDomain}" is configured as a browser session but its adapter ` +
+            `source "${adapter.descriptor.canonicalDomain}" is configured as a session source but its adapter ` +
                 `authenticates by "${adapter.descriptor.authKind}", not "session"`,
         );
     }
@@ -338,11 +339,27 @@ async function resolveCredentials(
     deps: ResolveSourceDeps,
     sourceConfig: DomainAuthConfig,
 ): Promise<ResolvedCredentials> {
-    // A browser `session` carries no secret to dereference — the already-authenticated login lives in the
-    // browser's cookie store — so resolving it is lifting the `{ browser, profile }` pair out of config
-    // (#180). The adapter's authenticate() hands this descriptor to importBrowserSession. The shape gate is
-    // skipped for session upstream, so this branch is the one credential path a session source takes.
+    // A `session` source resolves to a descriptor the adapter's authenticate() hands to importSession; the
+    // shape gate is skipped for session upstream (#205), so this branch is the one credential path it takes.
     if (sourceConfig.kind === 'session') {
+        // Manual-paste session (#218): the pasted material IS a live credential, so it is supplied as a
+        // secret-ref and resolved through the SAME resolver as any other (op:// / env / encrypted-file: /
+        // file) — never an inline config value or a CLI flag. The resolved value stays fenced in the
+        // descriptor; only the adapter's authenticate() exposes it, at the point of use.
+        if (sourceConfig.paste !== undefined) {
+            try {
+                const paste = await deps.resolveCredential(sourceConfig.paste);
+                return { kind: 'session', session: { paste } };
+            } catch (error) {
+                // The credential errors (#22) never carry the resolved value in their message.
+                throw new OperationError(
+                    'credentials',
+                    error instanceof Error ? error.message : 'pasted session could not be resolved',
+                );
+            }
+        }
+        // A browser `session` carries no secret to dereference — the already-authenticated login lives in the
+        // browser's cookie store — so resolving it is lifting the `{ browser, profile }` pair out of config (#180).
         return { kind: 'session', session: resolveBrowserSession(sourceConfig) };
     }
     const resolved: { kind: ResolvedCredentials['kind']; username?: string; secret?: Secret } = {

@@ -222,12 +222,45 @@ browser** — sign in there again — and the next run re-imports the now-fresh 
 optional reuse below) past its freshness window surfaces the same `reauth-required` and falls back to a fresh
 browser read.
 
-> **When the store can't be read.** Where the cookie store **fails closed** — most importantly **Windows**
-> (DPAPI / App-Bound Encryption) — supply the session by hand instead: a `Cookie:` request header or a
-> `cookies.txt` export you copy from your already-signed-in browser, held in memory for the run and
-> domain-scoped just like an imported one (see
-> [SECURITY.md § Manual-paste session](../SECURITY.md#manual-paste-session)). The auth library provider for it
-> ships today; surfacing it as a configurable `session` source follows.
+#### Manual-paste session
+
+Where the cookie store **fails closed** — most importantly **Windows** (DPAPI / App-Bound Encryption) — you
+supply the session **by hand** instead of naming a browser. Copy a `Cookie:` request header from your browser's
+network inspector, or export a Netscape `cookies.txt`, store it in your secret backend, and point the source at
+it with `paste`:
+
+```yaml
+sources:
+  amazon.fr:
+    auth:
+      paste:
+        ref: op://Private/amazon-session # the pasted Cookie header / cookies.txt, by secret reference
+```
+
+or the one-key shorthand (no `auth:` block, mirroring `browser`/`profile`):
+
+```yaml
+sources:
+  amazon.fr:
+    paste:
+      ref: op://Private/amazon-session
+```
+
+`kind: session` is **derived** from `paste`, exactly as it is from `browser`/`profile` — the imported and
+pasted halves of the same `session` source (a source is one or the other, never both, and a session carries
+no `ref`/`username`/`secret` credential).
+
+- **`paste`** — a **secret reference** to the pasted material, resolved at run time through the **same**
+  resolver as any credential (`op://`, an env-var name, `encrypted-file:…`, or a file path — see
+  [Credentials](#credentials)). A pasted `Cookie:` header is a **live session
+  credential**, so it is accepted **only** as a reference: an **inline value is rejected** (unlike a password,
+  which merely warns), and there is **no CLI flag** for it — so the cookie never lands in the config file, your
+  shell history, or a process's argv.
+
+A pasted session resolves to the **same** in-memory, domain-scoped session as a browser import (it must target
+the same session adapter), and rides the same **`reauth-required`** path when it goes stale — re-paste a fresh
+session to recover. For the full security posture (in-memory-only, value fencing, value-free errors), see
+[SECURITY.md § Manual-paste session](../SECURITY.md#manual-paste-session).
 
 > **Reusing the imported session (optional).** Every run re-reads the browser cookie store by default. Run
 > `getreceipt login amazon.fr` once to import the session and **store it encrypted at rest** (an AES-256-GCM

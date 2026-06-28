@@ -5,7 +5,7 @@ import {
     browserSessionToStoredSession,
     fromBrowserSession,
     fromCredentialContext,
-    importBrowserSession,
+    importSession,
     ReauthDetector,
     reuseOrImportBrowserSession,
 } from '@getreceipt/auth';
@@ -110,8 +110,9 @@ const defaultTransport: Transport = (input, init) => fetch(input, init);
 
 /**
  * Construction options. `transport` defaults to a unit-testable platform `fetch`; `importOptions` are
- * threaded into {@link importBrowserSession} so the cookie-store seams (profile dir, AES key, …) are
- * injectable for hermetic tests, defaulting to the real macOS profile + Keychain in production (#176/#177);
+ * threaded into the browser cookie-store import ({@link importSession}'s browser path) so its seams (profile
+ * dir, AES key, …) are injectable for hermetic tests, defaulting to the real macOS profile + Keychain in
+ * production (#176/#177) — they do not apply to a manually-pasted session (#218), which reads no store;
  * `render` defaults to the real headless port and is injectable so unit tests skip launching a browser.
  */
 export interface AmazonFrAdapterOptions {
@@ -164,17 +165,17 @@ export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
         const resolved = fromCredentialContext(credentials);
         if (resolved.session === undefined) {
-            // A session source must carry a resolved { browser, profile } descriptor (#180); surface a typed,
-            // value-free failure that never echoes config.
+            // A session source must carry a resolved session descriptor (#180) — a browser { browser, profile }
+            // pair OR a manual-paste descriptor (#218); surface a typed, value-free failure that never echoes config.
             throw new AuthenticationError(
-                'amazon: session authentication requires a configured browser session',
+                'amazon: session authentication requires a configured browser or pasted session',
                 'invalid-credentials',
             );
         }
         const descriptor = resolved.session;
-        // Import the domain-scoped browser session: no credential exchange, no browser launch — just read the
-        // cookie store the user populated by signing in. A stale session surfaces LATER, at list/fetch.
-        const importFresh = (): AuthHandle => importBrowserSession(descriptor, CANONICAL_DOMAIN, this.#importOptions);
+        // Import the domain-scoped session: no credential exchange, no browser launch — read the cookie store the
+        // user signed into, OR parse the session they pasted (#218). A stale session surfaces LATER, at list/fetch.
+        const importFresh = (): AuthHandle => importSession(descriptor, CANONICAL_DOMAIN, this.#importOptions);
         if (this.#sessionReuse === undefined) {
             return importFresh(); // basic per-run path (#179): no at-rest store wired.
         }

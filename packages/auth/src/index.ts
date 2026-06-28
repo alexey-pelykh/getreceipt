@@ -24,6 +24,7 @@ export type {
     MfaType,
     NoneAuthShape,
     PasskeyAuthShape,
+    PastedSessionAuthShape,
     PasswordPerFieldAuthShape,
     PasswordSingleRefAuthShape,
     Profile,
@@ -105,6 +106,7 @@ export {
     browserSessionToStoredSession,
     fromBrowserSession,
     importBrowserSession,
+    importSession,
     resolveBrowserSession,
     reuseOrImportBrowserSession,
     storedSessionToBrowserSession,
@@ -115,8 +117,10 @@ export type {
     BrowserSessionResolution,
     ImportBrowserSessionOptions,
     ReuseOrImportBrowserSessionRequest,
+    SessionDescriptor,
 } from './browser-session.js';
 export { importPastedSession } from './pasted-session.js';
+export type { PastedSessionDescriptor } from './pasted-session.js';
 export { decodeBase32, generateTotp } from './totp.js';
 export type { TotpParams } from './totp.js';
 export { createMfaChallengeResolver, mfaSurfaceResolvers, TotpChallengeResolver } from './totp-resolver.js';

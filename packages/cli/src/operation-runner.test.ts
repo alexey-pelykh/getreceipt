@@ -3,11 +3,13 @@ import {
     ConfigError,
     CredentialBackendUnavailableError,
     decodeBase32,
+    fromBrowserSession,
     fromCredentialContext,
     generateTotp,
+    importSession,
     Secret,
 } from '@getreceipt/auth';
-import type { ConfigParseResult, CredentialValue } from '@getreceipt/auth';
+import type { ConfigParseResult, CredentialValue, SecretRef } from '@getreceipt/auth';
 import { collect, SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type {
     ArtifactHandle,
@@ -715,6 +717,145 @@ describe('runOperation — session kind (#180)', () => {
         expect((error as OperationError).message).not.toContain('chrome');
         expect((error as OperationError).message).not.toContain('Default');
         expect(collectCalled).toBe(false);
+    });
+});
+
+describe('runOperation — manual-paste session kind (#218)', () => {
+    // The pasted material is supplied ONLY as a secret-ref; the config file (and argv) never carry the cookie.
+    const PASTE_REF = 'op://Private/amazon-session';
+    const SYNTHETIC_PASTE = 'Cookie: session-id=synthetic-abc; ubid-acbfr=synthetic-42';
+    const pasteConfig: ConfigParseResult = {
+        config: { sources: { 'shop.example': { kind: 'session', paste: { ref: PASTE_REF } } } },
+        warnings: [],
+    };
+
+    function sessionAdapter(): SourceAdapter {
+        const base = adapter();
+        return { ...base, descriptor: { ...base.descriptor, authKind: 'session', credentialShapes: ['none'] } };
+    }
+
+    it('resolves the paste source THROUGH the secret-ref resolver to a fenced session descriptor (no login backend)', async () => {
+        const capture = capturingCollect();
+        let resolvedRef: CredentialValue | undefined;
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(sessionAdapter()),
+                loadConfig: () => pasteConfig,
+                collect: capture.collect,
+                // The pasted material flows through the SAME resolver as any other credential.
+                resolveCredential: (value) => {
+                    resolvedRef = value;
+                    return Promise.resolve(new Secret(SYNTHETIC_PASTE));
+                },
+                // A paste session is NOT a login item — the single-item login backend must never run.
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run for a paste session')),
+            }),
+        );
+
+        // The resolver was handed the configured REF (not an inline value) — the secure-supply path.
+        expect(resolvedRef).toEqual<SecretRef>({ ref: PASTE_REF });
+        // Reaching collect proves the #169 shape gate was skipped (session) and the #205 gate admitted the session adapter.
+        const resolved = fromCredentialContext(capture.request()!.credentials);
+        expect(resolved.kind).toBe('session');
+        // The descriptor carries the resolved paste, still fenced — exposable only at the point of use.
+        const descriptor = resolved.session;
+        const paste = descriptor !== undefined && 'paste' in descriptor ? descriptor.paste : undefined;
+        expect(paste?.expose()).toBe(SYNTHETIC_PASTE);
+        expect(resolved.secret).toBeUndefined();
+        expect(resolved.username).toBeUndefined();
+    });
+
+    it('keeps the live cookie out of argv/logs — config holds only the ref, the descriptor redacts (#218)', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(sessionAdapter()),
+                loadConfig: () => pasteConfig,
+                collect: capture.collect,
+                resolveCredential: () => Promise.resolve(new Secret(SYNTHETIC_PASTE)),
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run')),
+            }),
+        );
+
+        // The config object never contains the cookie — only the reference to it.
+        expect(JSON.stringify(pasteConfig)).not.toContain('synthetic-abc');
+        expect(JSON.stringify(pasteConfig)).toContain(PASTE_REF);
+        // The resolved descriptor redacts through JSON (a fenced Secret), so a serialized credential context never leaks it.
+        const resolved = fromCredentialContext(capture.request()!.credentials);
+        expect(JSON.stringify(resolved)).not.toContain('synthetic-abc');
+    });
+
+    it('resolves to a USABLE session over synthetic paste data — importSession mints the domain-scoped jar', async () => {
+        const capture = capturingCollect();
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(sessionAdapter()),
+                loadConfig: () => pasteConfig,
+                collect: capture.collect,
+                resolveCredential: () => Promise.resolve(new Secret(SYNTHETIC_PASTE)),
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run')),
+            }),
+        );
+
+        // The resolved descriptor is what a session adapter's authenticate() hands to importSession — drive that
+        // exact step to prove the configured paste source yields a usable, domain-scoped session jar.
+        const resolved = fromCredentialContext(capture.request()!.credentials);
+        const session = fromBrowserSession(importSession(resolved.session!, 'shop.example'));
+        expect(session.domain).toBe('shop.example');
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['session-id', 'ubid-acbfr']);
+        expect(session.cookies.find((c) => c.name === 'session-id')?.value.expose()).toBe('synthetic-abc');
+    });
+
+    it('rejects a paste session pointed at a NON-session adapter as a pre-flight unsupported-shape error (#205)', async () => {
+        let collectCalled = false;
+        const error = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                // resolverWith(adapter()) — the default — declares authKind: password (not a session adapter).
+                loadConfig: () => pasteConfig,
+                collect: () => {
+                    collectCalled = true;
+                    return Promise.resolve(SUCCEEDED);
+                },
+                // The gate fires at pre-flight, BEFORE any credential resolution — the paste ref is never read.
+                resolveCredential: () =>
+                    Promise.reject(new Error('resolveCredential must not run before the #205 gate')),
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run')),
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        expect((error as OperationError).message).toContain('shop.example');
+        expect((error as OperationError).message).toContain('"session"');
+        expect(collectCalled).toBe(false);
+    });
+
+    it('maps a failed paste secret-ref resolution to a value-free credentials error', async () => {
+        const error = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(sessionAdapter()),
+                loadConfig: () => pasteConfig,
+                // The backend is unavailable (e.g. `op` not installed) — surfaces as a clean pre-flight error.
+                resolveCredential: () =>
+                    Promise.reject(new CredentialBackendUnavailableError('the 1Password CLI is not available', 'op')),
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run')),
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('credentials');
+        // Value-free: never echoes the pasted material.
+        expect((error as OperationError).message).not.toContain('synthetic');
     });
 });
 

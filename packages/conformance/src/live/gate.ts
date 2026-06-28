@@ -66,21 +66,42 @@ export interface PasswordLivePlan {
  * is NO credential to resolve — the already-authenticated login lives in the browser's cookie store — so the
  * harness lifts the pair via {@link @getreceipt/auth!resolveBrowserSession} rather than dereferencing a secret.
  */
-export interface SessionLivePlan {
+export interface BrowserSessionLivePlan {
     readonly kind: 'session';
     readonly source: string;
     /** Which browser's cookie store the session is imported from. */
     readonly browser: BrowserKind;
     /** The browser profile to read — a profile directory name OR an account email (resolved at import time). */
     readonly profile: string;
+    readonly paste?: never;
     readonly username?: never;
     readonly secret?: never;
 }
 
 /**
+ * A manual-paste `session` source's live run (#218): the pasted session material supplied by secret reference,
+ * which the harness resolves to its fenced value AT CALL-TIME (the SAME path a password secret takes — never a
+ * value at rest) and the adapter imports via {@link @getreceipt/auth!importSession}.
+ */
+export interface PastedSessionLivePlan {
+    readonly kind: 'session';
+    readonly source: string;
+    /** The pasted session material, by reference — resolved to its fenced value at call-time by the harness. */
+    readonly paste: CredentialValue;
+    readonly browser?: never;
+    readonly profile?: never;
+    readonly username?: never;
+    readonly secret?: never;
+}
+
+/** A `session` source's live run — either an imported browser session (#180) or a manual-paste one (#218). */
+export type SessionLivePlan = BrowserSessionLivePlan | PastedSessionLivePlan;
+
+/**
  * A fully specified live run — a discriminated union on `kind` mirroring the config's own
  * {@link @getreceipt/auth!AuthShape}: a {@link PasswordLivePlan} carries credentials to resolve, a
- * {@link SessionLivePlan} carries the `{ browser, profile }` pair a session source imports.
+ * {@link SessionLivePlan} carries the `{ browser, profile }` pair an imported session uses or the `paste`
+ * reference a manual-paste session resolves.
  */
 export type LivePlan = PasswordLivePlan | SessionLivePlan;
 
@@ -178,11 +199,16 @@ function plansFromConfig(
     const plans: LivePlan[] = [];
     const notes: string[] = [];
     for (const [source, auth] of Object.entries(config.config.sources)) {
-        // A browser-`session` source supplies no credential to resolve (the login lives in the cookie store),
-        // so a configured `{ browser, profile }` pair IS a usable plan (#180) — it never reaches the
-        // username/secret check below. `kind` is validated by loadConfig, so both fields are present here.
+        // A `session` source supplies no password-style credential to resolve: a browser session lifts its
+        // configured `{ browser, profile }` pair (#180), a manual-paste session resolves its `paste` reference
+        // at call-time (#218) — never a value at rest. Either IS a usable plan; it never reaches the
+        // username/secret check below. `kind` is validated by loadConfig, so the matching shape is present.
         if (auth.kind === 'session') {
-            plans.push({ kind: 'session', source, browser: auth.browser, profile: auth.profile });
+            plans.push(
+                auth.paste !== undefined
+                    ? { kind: 'session', source, paste: auth.paste }
+                    : { kind: 'session', source, browser: auth.browser, profile: auth.profile },
+            );
             continue;
         }
         // Both are CredentialValues now (a `{ ref }` or literal), resolved at call-time — so usability is

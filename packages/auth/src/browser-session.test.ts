@@ -25,6 +25,8 @@ import {
     fromBrowserSession,
     fromCredentialContext,
     importBrowserSession,
+    importPastedSession,
+    importSession,
     resolveBrowserSession,
     Secret,
 } from './index.js';
@@ -343,9 +345,64 @@ describe('importBrowserSession — structured failures via BrowserCookieStoreErr
     });
 });
 
+describe('importSession — unified browser + paste entry (#218)', () => {
+    it('delegates a browser descriptor to the cookie-store import (same handle as importBrowserSession)', () => {
+        const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: AMAZON_COOKIES });
+        const viaUnified = fromBrowserSession(
+            importSession({ browser: 'chrome', profile: 'Default' }, 'amazon.fr', { userDataDir, key: KEY }),
+        );
+        // The same domain-scoped jar the direct browser import yields — importSession is a pass-through here.
+        expect(viaUnified.browser).toBe('chrome');
+        expect(viaUnified.domain).toBe('amazon.fr');
+        expect(viaUnified.cookies.map((c) => c.name).sort()).toEqual(['host-only', 'session', 'ubid']);
+        expect(byName(viaUnified.cookies, 'session').value.expose()).toBe('S');
+    });
+
+    it('parses a pasted `Cookie:` header descriptor into the SAME domain-scoped session handle', () => {
+        const session = fromBrowserSession(
+            importSession({ paste: new Secret('Cookie: session=abc123; ubid=u-42') }, 'amazon.fr'),
+        );
+        // A pasted session has NO originating browser — but is otherwise the identical handle shape.
+        expect(session.browser).toBeUndefined();
+        expect(session.domain).toBe('amazon.fr');
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['session', 'ubid']);
+        // Every pasted pair is scoped to the target domain (a Cookie header is already browser-scoped to its site).
+        expect(session.cookies.every((c) => c.domain === 'amazon.fr')).toBe(true);
+        // Value reachable only via expose() at the point of use.
+        expect(byName(session.cookies, 'session').value.expose()).toBe('abc123');
+    });
+
+    it('parses a pasted Netscape cookies.txt descriptor, dropping out-of-scope rows', () => {
+        const cookiesTxt = [
+            '# Netscape HTTP Cookie File',
+            '.amazon.fr\tTRUE\t/\tTRUE\t0\tsession\tin-scope',
+            'google.com\tFALSE\t/\tFALSE\t0\tunrelated\tout-of-scope',
+        ].join('\n');
+        const session = fromBrowserSession(importSession({ paste: new Secret(cookiesTxt) }, 'amazon.fr'));
+        // Only the amazon.fr row survives the domain scope; the google.com row is dropped, exactly as the store reader scopes a jar.
+        expect(session.cookies.map((c) => c.name)).toEqual(['session']);
+        expect(byName(session.cookies, 'session').value.expose()).toBe('in-scope');
+    });
+
+    it('keeps the pasted material fenced — the minted handle never serializes a cookie value (#218)', () => {
+        const handle = importSession({ paste: new Secret('Cookie: session=super-secret-paste') }, 'amazon.fr');
+        // The handle redacts through JSON — the raw paste never reaches a log or a persisted artifact.
+        expect(JSON.stringify(fromBrowserSession(handle))).not.toContain('super-secret-paste');
+    });
+
+    it('routes a pasted descriptor identically to importPastedSession (parity with the direct provider)', () => {
+        const raw = 'Cookie: a=1; b=2';
+        const viaUnified = fromBrowserSession(importSession({ paste: new Secret(raw) }, 'amazon.fr'));
+        const viaDirect = fromBrowserSession(importPastedSession(raw, 'amazon.fr'));
+        expect(viaUnified.cookies.map((c) => `${c.name}=${c.value.expose()}`)).toEqual(
+            viaDirect.cookies.map((c) => `${c.name}=${c.value.expose()}`),
+        );
+    });
+});
+
 // --- the session-kind auth contract on the REAL collect path (#180) --------
 // A fake `session` source proving the contract end-to-end against core's real `collect()`: the resolver
-// yields the descriptor, `authenticate()` imports-and-returns via importBrowserSession (no login), and
+// yields the descriptor, `authenticate()` imports-and-returns via importSession (no login), and
 // `list`/`fetch` read the session back. All data is synthetic — a temp user-data dir + an injected Safe
 // Storage key (KEY) — so no real Keychain is touched and CI stays hermetic.
 
@@ -384,8 +441,9 @@ function sessionAdapter(script: SessionAdapterScript): SourceAdapter {
             if (resolved.session === undefined) {
                 throw new Error('expected a resolved session descriptor on the credential context');
             }
-            // Import-and-return: no credential exchange, no browser launch — just read the cookie store.
-            return importBrowserSession(resolved.session, SESSION_DESCRIPTOR.canonicalDomain, {
+            // Import-and-return via the unified entry (#218): a browser descriptor reads the cookie store; a
+            // pasted descriptor parses the resolved paste. No credential exchange, no browser launch either way.
+            return importSession(resolved.session, SESSION_DESCRIPTOR.canonicalDomain, {
                 userDataDir: script.userDataDir,
                 key: KEY,
             });

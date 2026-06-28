@@ -208,7 +208,8 @@ handle** the store path does, so the **same posture holds**:
   to disk. (Opt-in at-rest persistence + reuse of an imported session — encrypted, established by
   `getreceipt login` — shipped in
   [#189](https://github.com/alexey-pelykh/getreceipt/issues/189) for the browser-cookie session; a
-  paste-backed `session` source would reuse the same path.)
+  paste-backed `session` source ([#218](https://github.com/alexey-pelykh/getreceipt/issues/218)) reuses the
+  same path.)
 - **Domain-scoped.** Only the **target site's** cookies enter the session. A `Cookie:` header is already
   browser-scoped to the site it was copied from; a `cookies.txt` export carries per-cookie domains, so
   out-of-scope cookies are **dropped** by the same domain match the cookie-store reader uses.
@@ -219,8 +220,22 @@ handle** the store path does, so the **same posture holds**:
   `PastedSessionError` — a sibling in the browser-cookie-store taxonomy — with a machine-readable reason
   and static recovery guidance, **never** a cookie value or any of the pasted text.
 
-This is the library provider; surfacing it as a configurable `session` source follows the same staging the
-cookie-store path used (provider first, then the config/adapter wiring).
+### Supplied securely
+
+A pasted `Cookie:` header is a **live session credential** — more directly replayable than a password (it is
+already authenticated and rides past any second factor) — so a **configured** paste source
+([#218](https://github.com/alexey-pelykh/getreceipt/issues/218)) supplies it **only by secret reference**,
+never inline:
+
+- **Secret-reference only.** The `paste` config key takes a **reference** (`op://…`, an env-var name,
+  `encrypted-file:…`, or a file path), resolved at run time through the same backend as any credential. An
+  **inline value is rejected at parse time** — stricter than a password, which only warns — and there is **no
+  CLI flag** for the paste, so the cookie never lands in the config file, your shell history, or a process's
+  argv or logs. See
+  [configuration.md § Manual-paste session](docs/configuration.md#manual-paste-session).
+- **Same session path.** The resolved paste mints the **same** in-memory, domain-scoped session handle as a
+  browser import and flows through the same session-auth contract — including the pre-flight that requires a
+  `session` source to target a session adapter — so every property above holds identically, config to wire.
 
 ## MCP trust model
 

@@ -317,6 +317,23 @@ describe('resolveLiveGate — session sources (no credential to resolve)', () =>
         }
     });
 
+    it('maps a configured manual-paste session source to a plan carrying its `paste` reference (#218)', () => {
+        const PASTE_ONLY = configWith({
+            'amazon.fr': { kind: 'session', paste: { ref: 'op://Private/amazon-session' } },
+        });
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(PASTE_ONLY) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans).toHaveLength(1);
+            // A paste session carries its reference (resolved at call-time), NOT a browser/profile or username/secret.
+            expect(decision.plans[0]).toEqual({
+                kind: 'session',
+                source: 'amazon.fr',
+                paste: { ref: 'op://Private/amazon-session' },
+            });
+        }
+    });
+
     it('maps a mixed profile (password + session) to one plan each, in config order', () => {
         const mixed = configWith({
             'grandfrais.com': { kind: 'password', username: 'a@example.com', secret: { ref: 'op://Private/gf/pw' } },

@@ -34,6 +34,12 @@ export type _AuthShapeTypeTests = [
     Expect<Rejected<{ kind: 'session'; browser: 'chrome' }>>,
     // `browser` is the closed BrowserKind vocabulary — an off-list value is rejected.
     Expect<Rejected<{ kind: 'session'; browser: 'safari'; profile: string }>>,
+    // A manual-paste `session` (#218) and a browser one are mutually exclusive: `paste` + `browser` is no arm.
+    Expect<Rejected<{ kind: 'session'; paste: { ref: string }; browser: 'chrome' }>>,
+    // A paste session carries no password-style credential: `paste` + a `ref` is assignable to no arm.
+    Expect<Rejected<{ kind: 'session'; paste: { ref: string }; ref: string }>>,
+    // `paste` is the session shape — a credential arm carrying it is rejected from the other side too.
+    Expect<Rejected<{ kind: 'password'; ref: string; paste: { ref: string } }>>,
 
     // Every valid arm IS constructible.
     Expect<Constructible<{ kind: 'none' }>>,
@@ -43,6 +49,8 @@ export type _AuthShapeTypeTests = [
     Expect<Constructible<{ kind: 'api-token'; secret: { ref: string } }>>,
     Expect<Constructible<{ kind: 'passkey' }>>,
     Expect<Constructible<{ kind: 'session'; browser: 'chrome'; profile: string }>>,
+    // The manual-paste session arm (#218): `kind: session` carrying a `paste` reference, no browser/profile.
+    Expect<Constructible<{ kind: 'session'; paste: { ref: string } }>>,
 
     // `mfa` is orthogonal — it attaches to ANY arm.
     Expect<Constructible<{ kind: 'none'; mfa: { type: 'sms' } }>>,

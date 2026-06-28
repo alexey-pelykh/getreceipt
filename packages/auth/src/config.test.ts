@@ -755,6 +755,150 @@ describe('parseConfig — #174 browser-session arm + derived `session` kind', ()
     });
 });
 
+describe('parseConfig — #218 manual-paste session arm + secure-supply', () => {
+    // --- `session` derives from a `paste` reference, in either the `auth:` block or the sugar. ---
+    it('derives `session` from an `auth: { paste: { ref } }` block when `kind` is omitted', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.fr': { auth: { paste: { ref: 'op://Private/amazon-session' } } } },
+        });
+        // A `paste` ref is a reference, NOT an inline secret — it resolves at run-time, so it never warns.
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon.fr'];
+        expect(source?.kind).toBe('session');
+        expect(source?.paste).toEqual({ ref: 'op://Private/amazon-session' });
+        // A paste session carries no browser/profile and no password-style credential.
+        expect(source?.browser).toBeUndefined();
+        expect(source?.profile).toBeUndefined();
+        expect(source?.ref).toBeUndefined();
+        expect(source?.secret).toBeUndefined();
+    });
+
+    it('desugars the top-level `{ paste: { ref } }` shorthand to the session arm (no `auth:` block)', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.fr': { paste: { ref: 'COOKIES_ENV_VAR' } } },
+        });
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon.fr'];
+        expect(source?.kind).toBe('session');
+        expect(source?.paste).toEqual({ ref: 'COOKIES_ENV_VAR' });
+    });
+
+    it('accepts an explicit `kind: session` validated against the paste shape (rc-window)', () => {
+        const { config } = parseConfig({
+            sources: { 'amazon.fr': { auth: { kind: 'session', paste: { ref: 'encrypted-file:cookies' } } } },
+        });
+        expect(config.sources['amazon.fr']?.kind).toBe('session');
+        expect(config.sources['amazon.fr']?.paste).toEqual({ ref: 'encrypted-file:cookies' });
+    });
+
+    // --- Secure-supply: the pasted material is a live credential, so ONLY a `{ ref }` is accepted. ---
+    it('rejects an INLINE pasted cookie value, never echoing it (secure-supply, #218)', () => {
+        let caught: unknown;
+        const inlineCookie = 'session-id=Atza|THE-LIVE-COOKIE-VALUE; ubid-acbfr=257';
+        try {
+            parseConfig({ sources: { x: { auth: { paste: inlineCookie } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.paste');
+        // Value-free: the rejection NEVER carries the inlined cookie (the whole point of forbidding it).
+        expect((caught as ConfigError).message).not.toContain('THE-LIVE-COOKIE-VALUE');
+        expect((caught as ConfigError).message).not.toContain('Atza');
+        // Guidance points at the secure form.
+        expect((caught as ConfigError).message).toContain('ref');
+    });
+
+    it('rejects a BARE-STRING paste value (ambiguous ref-vs-inline) — the `{ ref }` form is required', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { paste: 'op://Private/amazon-session' } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.paste');
+    });
+
+    it('rejects an empty `paste.ref`, naming the path', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { paste: { ref: '' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth.paste');
+    });
+
+    // --- Skew: the two session shapes are mutually exclusive, and a session takes no credential. ---
+    it('rejects mixing `paste` with `browser`/`profile` (two session shapes)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { paste: { ref: 'op://V/i' }, browser: 'chrome', profile: 'P' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('paste');
+    });
+
+    it('rejects a paste session carrying a credential `secret` (paste + secret skew)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { paste: { ref: 'op://V/i' }, secret: { ref: 'op://V/s' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('credential');
+    });
+
+    it('rejects a declared non-session kind carrying `paste` (kind: password + paste)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'password', paste: { ref: 'op://V/i' } } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.x.auth');
+        expect((caught as ConfigError).message).toContain('session');
+    });
+
+    it('names `paste` as an option when `kind: session` is declared with no session shape', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { x: { auth: { kind: 'session' } } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        // The message now offers BOTH session shapes — browser/profile OR paste.
+        expect((caught as ConfigError).message).toContain('paste');
+    });
+
+    // --- `mfa` stays orthogonal — it attaches to the paste arm like any other. ---
+    it('accepts `mfa` alongside a paste session (orthogonal to the session shape)', () => {
+        const { config } = parseConfig({
+            sources: { x: { auth: { paste: { ref: 'op://V/i' }, mfa: { type: 'push' } } } },
+        });
+        expect(config.sources['x']?.kind).toBe('session');
+        expect(config.sources['x']?.mfa?.type).toBe('push');
+    });
+
+    // --- multi-instance is orthogonal too (#190): one pasted session, data per instance. ---
+    it('accepts an `instances` list alongside a paste session (#190 × #218)', () => {
+        const { config } = parseConfig({
+            sources: { 'amazon.fr': { paste: { ref: 'op://V/i' }, instances: ['amazon.fr', 'amazon.com'] } },
+        });
+        expect(config.sources['amazon.fr']?.kind).toBe('session');
+        expect(config.sources['amazon.fr']?.instances).toEqual(['amazon.fr', 'amazon.com']);
+    });
+});
+
 describe('resolveConfigFilePath', () => {
     const HOME = '/home/tester';
 
