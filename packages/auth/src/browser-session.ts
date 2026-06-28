@@ -5,6 +5,8 @@ import type { AuthHandle } from '@getreceipt/core';
 import type { BrowserKind, BrowserSessionAuthShape } from './config.js';
 import type { BrowserCookie, ReadChromeCookiesOptions } from './cookie-reader.js';
 import { readChromeCookies } from './cookie-reader.js';
+import { importPastedSession } from './pasted-session.js';
+import type { PastedSessionDescriptor } from './pasted-session.js';
 import type { ResolveProfileOptions } from './profile-resolver.js';
 import { resolveProfile } from './profile-resolver.js';
 import type { ReauthDetector } from './reauth-detector.js';
@@ -24,6 +26,15 @@ export interface BrowserSessionDescriptor {
     /** The browser profile to read — a profile directory name OR an account email. */
     readonly profile: string;
 }
+
+/**
+ * What a resolved `session` source carries to its adapter's `authenticate()` (#180/#218) — EITHER an imported
+ * browser session ({@link BrowserSessionDescriptor}, a `{ browser, profile }` pair read at import time) OR a
+ * manual-paste one ({@link PastedSessionDescriptor}, the already-resolved pasted material, fenced). Both mint
+ * the SAME {@link AuthHandle} via {@link importSession}; the two are distinguished structurally (`paste` vs
+ * `browser`/`profile`), so a session adapter handles both with one call and no branch of its own.
+ */
+export type SessionDescriptor = BrowserSessionDescriptor | PastedSessionDescriptor;
 
 /**
  * Resolve a `session` source's config arm to the {@link BrowserSessionDescriptor} its adapter imports —
@@ -94,6 +105,29 @@ export function importBrowserSession(
     const profileDir = resolveProfile(descriptor.browser, descriptor.profile, options);
     const cookies = readChromeCookies(descriptor.browser, profileDir, domain, options);
     return asAuthHandle({ browser: descriptor.browser, domain, cookies });
+}
+
+/**
+ * Import whichever {@link SessionDescriptor} a `session` source resolved to (#218) — a browser session via
+ * {@link importBrowserSession} (reading the cookie store) or a manual-paste session via
+ * {@link importPastedSession} (parsing the resolved paste). One entry point for a session adapter's
+ * `authenticate()`, so adding the paste path needs NO per-adapter branch: the discrimination (`paste` vs
+ * `browser`/`profile`) lives here. Both produce the SAME domain-scoped, {@link Secret}-fenced
+ * {@link AuthHandle}, read back identically with {@link fromBrowserSession}.
+ *
+ * The paste material is exposed ONLY here, at the point of use: {@link importPastedSession} re-fences every
+ * parsed cookie value, so the raw paste never reaches a log, an error, or a later stage. `options` apply to
+ * the browser path only (the paste path reads no store and needs none).
+ */
+export function importSession(
+    descriptor: SessionDescriptor,
+    domain: string,
+    options: ImportBrowserSessionOptions = {},
+): AuthHandle {
+    if ('paste' in descriptor) {
+        return importPastedSession(descriptor.paste.expose(), domain);
+    }
+    return importBrowserSession(descriptor, domain, options);
 }
 
 /**

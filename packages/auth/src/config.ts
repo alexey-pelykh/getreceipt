@@ -74,6 +74,7 @@ export interface NoneAuthShape {
     readonly secret?: never;
     readonly browser?: never;
     readonly profile?: never;
+    readonly paste?: never;
 }
 
 /** Single-item login: ONE reference to a 1Password LOGIN item resolving BOTH username and secret — the item-level alternative to per-field credentials. */
@@ -84,6 +85,7 @@ export interface PasswordSingleRefAuthShape {
     readonly secret?: never;
     readonly browser?: never;
     readonly profile?: never;
+    readonly paste?: never;
 }
 
 /** Per-field password: username and/or secret as separate {@link CredentialValue}s. */
@@ -94,6 +96,7 @@ export interface PasswordPerFieldAuthShape {
     readonly secret?: CredentialValue;
     readonly browser?: never;
     readonly profile?: never;
+    readonly paste?: never;
 }
 
 /**
@@ -108,6 +111,7 @@ export interface ApiTokenAuthShape {
     readonly secret: CredentialValue;
     readonly browser?: never;
     readonly profile?: never;
+    readonly paste?: never;
 }
 
 /** Passkey — no stored credential. A placeholder arm; the credential flow is the #150 spike. */
@@ -118,6 +122,7 @@ export interface PasskeyAuthShape {
     readonly secret?: never;
     readonly browser?: never;
     readonly profile?: never;
+    readonly paste?: never;
 }
 
 /**
@@ -137,6 +142,29 @@ export interface BrowserSessionAuthShape {
     readonly ref?: never;
     readonly username?: never;
     readonly secret?: never;
+    readonly paste?: never;
+}
+
+/**
+ * Manual-paste session (#218): the config-selectable counterpart of {@link BrowserSessionAuthShape}, for when
+ * the browser cookie store fails closed (Windows App-Bound, #187) and the user supplies the session by hand.
+ * Both are `kind: 'session'` — they flow through the SAME #205 pre-flight (target a session adapter) and #180
+ * session auth contract — distinguished by the {@link paste} field instead of `browser`/`profile`.
+ *
+ * The pasted material (a `Cookie:` request header or a `cookies.txt` export) is a LIVE credential, so it is
+ * supplied ONLY as a {@link SecretRef} — resolved through the existing secret-ref resolver (`op://` / env /
+ * `encrypted-file:` / file) at run-time, NEVER an inline config value or a CLI flag. An inline literal is
+ * rejected at parse-time (unlike a password, which only warns), so a cookie can never sit in the config file.
+ */
+export interface PastedSessionAuthShape {
+    readonly kind: 'session';
+    /** Secret reference to the pasted session material — resolved at run-time; never an inline value. */
+    readonly paste: SecretRef;
+    readonly browser?: never;
+    readonly profile?: never;
+    readonly ref?: never;
+    readonly username?: never;
+    readonly secret?: never;
 }
 
 /**
@@ -152,7 +180,8 @@ export type AuthShape =
     | PasswordPerFieldAuthShape
     | ApiTokenAuthShape
     | PasskeyAuthShape
-    | BrowserSessionAuthShape;
+    | BrowserSessionAuthShape
+    | PastedSessionAuthShape;
 
 /**
  * Per-domain authentication configuration: a credential {@link AuthShape} plus orthogonal optional
@@ -307,12 +336,12 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
         throw new ConfigError('expected a source mapping or a bare reference string', path);
     }
 
-    // Browser-session sugar: a mapping carrying `browser`/`profile` at the TOP level (no `auth:` block)
-    // desugars to the session auth block — the mapping analogue of the bare-ref string sugar above, so the
-    // terse `{ browser, profile }` form parses without an `auth:` wrapper. Only the credential-less session
-    // shape gets this shorthand; a credential still needs its `auth:` block. Mixing the shorthand WITH an
-    // `auth:` block would specify the source's auth twice, so reject that rather than silently pick.
-    const hasTopLevelSession = raw.browser !== undefined || raw.profile !== undefined;
+    // Session sugar: a mapping carrying `browser`/`profile` (imported) OR `paste` (manual-paste, #218) at the
+    // TOP level (no `auth:` block) desugars to the session auth block — the mapping analogue of the bare-ref
+    // string sugar above, so the terse session form parses without an `auth:` wrapper. Only the credential-less
+    // session shapes get this shorthand; a credential still needs its `auth:` block. Mixing the shorthand WITH
+    // an `auth:` block would specify the source's auth twice, so reject that rather than silently pick.
+    const hasTopLevelSession = raw.browser !== undefined || raw.profile !== undefined || raw.paste !== undefined;
     if (hasTopLevelSession && raw.auth !== undefined) {
         throw new ConfigError(
             'use either top-level `browser`/`profile` (the session shorthand) or an `auth:` block, not both',
@@ -344,6 +373,7 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
         hasSecret: auth.secret !== undefined,
         hasBrowser: auth.browser !== undefined,
         hasProfile: auth.profile !== undefined,
+        hasPaste: auth.paste !== undefined,
     };
 
     // `ref` (single-item) and `username`/`secret` (per-field) are two ways to say the same thing —
@@ -401,41 +431,52 @@ interface ShapeFlags {
     readonly hasSecret: boolean;
     readonly hasBrowser: boolean;
     readonly hasProfile: boolean;
+    readonly hasPaste: boolean;
 }
 
 /**
  * Resolve the source's {@link AuthKind} from its shape. The shape is authoritative: any credential
- * field derives `password`, a `browser`/`profile` pair derives `session` (#174), an empty block derives
- * `none`. The genuinely-ambiguous single opaque secret (`secret:` alone — could be password-single-ref
- * or api-token) takes the `password` default here and leaves the collision for the adapter to resolve
- * fail-closed (#169). An explicit `kind:` is honored only as a VALIDATION constraint — it must agree
- * with the shape (it can pick `api-token` / `passkey`, which have no distinguishing credential field of
- * their own; `session` it can only restate, never summon — the `browser`/`profile` pair must be present),
- * never override it.
+ * field derives `password`, a `browser`/`profile` pair OR a `paste` reference derives `session` (#174/#218),
+ * an empty block derives `none`. The genuinely-ambiguous single opaque secret (`secret:` alone — could be
+ * password-single-ref or api-token) takes the `password` default here and leaves the collision for the
+ * adapter to resolve fail-closed (#169). An explicit `kind:` is honored only as a VALIDATION constraint — it
+ * must agree with the shape (it can pick `api-token` / `passkey`, which have no distinguishing credential
+ * field of their own; `session` it can only restate, never summon — a `browser`/`profile` pair or a `paste`
+ * reference must be present), never override it.
  */
 function resolveAuthKind(declared: AuthKind | undefined, flags: ShapeFlags, authPath: string): AuthKind {
     const hasCredential = flags.hasRef || flags.hasUsername || flags.hasSecret;
     const hasBrowserSession = flags.hasBrowser || flags.hasProfile;
+    // A `session` source is EITHER an imported browser session (`browser`/`profile`) OR a manual-paste one
+    // (`paste`, #218) — never both, and never alongside a credential.
+    const hasSession = hasBrowserSession || flags.hasPaste;
 
-    // A browser `session` imports an existing login, so it carries NO credential — the two shapes are
-    // mutually exclusive. The discriminated union already makes `browser` + a `ref` a compile error;
-    // enforce the same on untyped YAML so a skewed file fails to parse instead of silently dropping a field.
-    if (hasBrowserSession && hasCredential) {
+    // The two session shapes are mutually exclusive — a source imports its login from ONE place.
+    if (hasBrowserSession && flags.hasPaste) {
         throw new ConfigError(
-            'a `browser`/`profile` session block takes no credential — remove the `ref`/`username`/`secret` (a browser session imports an existing login)',
+            'use either `browser`/`profile` (an imported browser session) or `paste` (a manually-pasted session), not both',
             authPath,
         );
     }
-    // `browser`/`profile` ARE the session shape; pairing them with a declared non-session kind contradicts it.
-    if (hasBrowserSession && declared !== undefined && declared !== 'session') {
+    // A `session` imports an existing login, so it carries NO credential — the shapes are mutually exclusive.
+    // The discriminated union already makes `browser`/`paste` + a `ref` a compile error; enforce the same on
+    // untyped YAML so a skewed file fails to parse instead of silently dropping a field.
+    if (hasSession && hasCredential) {
         throw new ConfigError(
-            `\`kind: ${declared}\` takes no \`browser\`/\`profile\` — that pair is the \`session\` shape`,
+            'a `session` source takes no credential — remove the `ref`/`username`/`secret` (its login is the imported or pasted session, not a password)',
+            authPath,
+        );
+    }
+    // `browser`/`profile`/`paste` ARE the session shapes; pairing them with a declared non-session kind contradicts it.
+    if (hasSession && declared !== undefined && declared !== 'session') {
+        throw new ConfigError(
+            `\`kind: ${declared}\` takes no \`browser\`/\`profile\`/\`paste\` — those are the \`session\` shapes`,
             authPath,
         );
     }
 
     if (declared === undefined) {
-        if (hasBrowserSession) {
+        if (hasSession) {
             return 'session';
         }
         return hasCredential ? 'password' : 'none';
@@ -455,12 +496,12 @@ function resolveAuthKind(declared: AuthKind | undefined, flags: ShapeFlags, auth
             }
             return 'passkey';
         case 'session':
-            // Derived, never summoned from a bare `kind:` — a session is meaningless without the
-            // `browser`/`profile` naming WHICH session to import (unlike api-token/passkey, which carry no
-            // distinguishing field). Credential skew is already rejected above.
-            if (!hasBrowserSession) {
+            // Derived, never summoned from a bare `kind:` — a session is meaningless without naming WHICH
+            // session to import: a `browser`/`profile` pair, or a `paste` reference (#218). (Unlike
+            // api-token/passkey, which carry no distinguishing field.) Credential skew is already rejected above.
+            if (!hasSession) {
                 throw new ConfigError(
-                    '`kind: session` requires a `browser` and a `profile` (the browser session to import)',
+                    '`kind: session` requires a `browser` and a `profile` (an imported browser session) or a `paste` reference (a manually-pasted session)',
                     authPath,
                 );
             }
@@ -506,6 +547,12 @@ function buildAuthShape(
         case 'passkey':
             return { kind, ...withMfa };
         case 'session':
+            // The session sub-shape is the manual-paste one (#218) iff it carries a `paste` reference;
+            // otherwise it is the imported browser session (`browser`/`profile`). Mutual exclusivity and
+            // credential skew are already enforced in resolveAuthKind.
+            if (flags.hasPaste) {
+                return { kind, paste: parsePasteRef(auth.paste, `${authPath}.paste`), ...withMfa };
+            }
             return {
                 kind,
                 browser: parseBrowser(auth.browser, `${authPath}.browser`),
@@ -608,6 +655,24 @@ function parseProfile(raw: unknown, path: string): string {
         return raw;
     }
     throw new ConfigError('`profile` must be a non-empty string (a browser profile name or account email)', path);
+}
+
+/**
+ * Parse the `paste` field of a manual-paste session source (#218) into a {@link SecretRef}. The pasted
+ * material — a `Cookie:` request header or a `cookies.txt` export — is a LIVE session credential, so it is
+ * accepted ONLY as a `{ ref }` reference (resolved at run-time through the secret-ref resolver). An inline
+ * literal or a bare string is REJECTED here — stricter than a password (which only warns) — so a cookie can
+ * never be stored in the config file or land in argv/logs. Throws {@link ConfigError}, which never echoes
+ * the configured value (so a paste mistakenly inlined here is not leaked by the rejection message).
+ */
+function parsePasteRef(raw: unknown, path: string): SecretRef {
+    if (isRecord(raw) && typeof raw.ref === 'string' && raw.ref.length > 0) {
+        return { ref: raw.ref };
+    }
+    throw new ConfigError(
+        'a pasted session must be a secret reference, e.g. `paste: { ref: op://Vault/item }` — a pasted `Cookie:` header is a live credential and must never be an inline config value',
+        path,
+    );
 }
 
 /**

@@ -291,6 +291,41 @@ describe('runLiveCollection — session source (no credential to resolve)', () =
         expect(run.verdict.state).toBe('e2e-verified');
     });
 
+    it('resolves a manual-paste session plan THROUGH the credential resolver and packs the fenced paste (#218)', async () => {
+        const PASTE_PLAN: LivePlan = {
+            kind: 'session',
+            source: 'amazon.fr',
+            paste: { ref: 'op://Private/amazon-session' },
+        };
+        let resolvedRef: CredentialValue | undefined;
+        let seen: CollectRequest | undefined;
+
+        const run = await runLiveCollection(PASTE_PLAN, {
+            resolver: fakeResolver(fakeSessionAdapter(PASTE_PLAN.source)),
+            // Unlike a browser session, a paste session DOES resolve a reference — the SAME path a password secret takes.
+            resolveCredential: async (value) => {
+                resolvedRef = value;
+                return new Secret('Cookie: session=resolved-paste');
+            },
+            collect: async (request) => {
+                seen = request;
+                return succeededResult(PASTE_PLAN.source);
+            },
+            createOutDir: knownTempDir,
+        });
+
+        // The resolver saw the configured REF, never an inline value — the secure-supply path mirrored in the oracle.
+        expect(resolvedRef).toEqual({ ref: 'op://Private/amazon-session' });
+        const packed = fromCredentialContext(seen!.credentials);
+        expect(packed.kind).toBe('session');
+        // The descriptor carries the resolved paste, still fenced — never a browser/profile or username/secret.
+        const descriptor = packed.session;
+        const paste = descriptor !== undefined && 'paste' in descriptor ? descriptor.paste : undefined;
+        expect(paste?.expose()).toBe('Cookie: session=resolved-paste');
+        expect(packed.username).toBeUndefined();
+        expect(run.verdict.state).toBe('e2e-verified');
+    });
+
     it('does NOT run the credential-shape gate for a session source (a ["none"] shape would fail it closed)', async () => {
         // The session config maps to the EMPTY shape set, which the resolve-time gate rejects fail-closed (#169).
         // A clean verified run proves the harness SKIPS the gate for `session`, mirroring production (#180).

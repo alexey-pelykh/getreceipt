@@ -222,6 +222,14 @@ function creds(profile = 'Default'): CredentialContext {
     });
 }
 
+/**
+ * The credential context a front-end resolves for a MANUAL-PASTE session source (#218): the resolved pasted
+ * material, fenced, carried on the session descriptor — the shape the runner produces from a `paste: { ref }`.
+ */
+function pasteCreds(raw: string): CredentialContext {
+    return asCredentialContext({ kind: 'session', session: { paste: new Secret(raw) } });
+}
+
 function noopWriter(): ReceiptWriter {
     return { has: () => Promise.resolve(false), write: () => Promise.resolve() };
 }
@@ -314,6 +322,31 @@ describe('AmazonFrAdapter — AC1: authenticate (import the browser session, no 
 
         expect(error).toBeInstanceOf(AuthenticationError);
         expect((error as AuthenticationError).reason).toBe('invalid-credentials');
+    });
+
+    it('imports a MANUALLY-PASTED session (#218) WITHOUT reading any cookie store or issuing HTTP', async () => {
+        // No userDataDir, no importOptions, no MSW handlers: the paste path reads no store and makes no request.
+        const auth = await new AmazonFrAdapter({ render: stubRender }).authenticate(
+            pasteCreds('Cookie: session-id=PASTED-SENTINEL; at-acbfr=PASTED-AT'),
+        );
+        const session = fromBrowserSession(auth);
+        // A pasted session has no originating browser, but is otherwise the SAME amazon.fr-scoped handle.
+        expect(session.browser).toBeUndefined();
+        expect(session.domain).toBe('amazon.fr');
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['at-acbfr', 'session-id']);
+    });
+
+    it('threads a PASTED session onto the listing request — usable end-to-end (#218)', async () => {
+        let listRequest: Request | undefined;
+        server.use(ordersOk([], (request) => (listRequest = request)));
+        const a = new AmazonFrAdapter({ render: stubRender });
+
+        await a.list(await a.authenticate(pasteCreds('Cookie: session-id=PASTED-SENTINEL')), WIDE);
+
+        // The pasted cookie reaches the wire exactly like an imported one — proving the configured paste source
+        // yields a session the adapter actually uses.
+        expect(listRequest?.headers.get('cookie')).toContain('session-id=PASTED-SENTINEL');
+        expect(listRequest?.headers.get('accept-language')).toBe(LOCALE.acceptLanguage);
     });
 });
 

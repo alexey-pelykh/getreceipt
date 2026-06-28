@@ -94,9 +94,11 @@ export async function runLiveCollection(plan: LivePlan, overrides: Partial<LiveH
 /**
  * Resolve a plan's {@link CredentialContext} the SAME way the production resolve path does
  * (`operation-runner.ts`), so the oracle stays a true mirror of production:
- *  - a `session` source is EXEMPT from the #169 shape gate (it supplies no credential to validate); resolving
- *    it is lifting its `{ browser, profile }` pair via {@link resolveBrowserSession} (#180) — no `op`, no
- *    secret. A stale imported session surfaces LATER, at list/fetch, as the usual `reauth-required` outcome.
+ *  - a `session` source is EXEMPT from the #169 shape gate (it supplies no credential to validate). A browser
+ *    session lifts its `{ browser, profile }` pair via {@link resolveBrowserSession} (#180) — no `op`, no
+ *    secret. A manual-paste session (#218) resolves its `paste` reference at call-time, exactly as a password
+ *    secret does (a missing backend → {@link LiveBackendUnavailable}). A stale session surfaces LATER, at
+ *    list/fetch, as the usual `reauth-required` outcome.
  *  - a `password` source runs the SAME fail-closed shape gate (#169) — so a plan whose shape the adapter
  *    rejects fails here at setup, not deep inside `authenticate()` — then resolves username+secret at
  *    call-time; a missing credential BACKEND becomes a {@link LiveBackendUnavailable} the caller skips on.
@@ -107,6 +109,20 @@ async function resolvePlanCredentials(
     deps: LiveHarnessDeps,
 ): Promise<CredentialContext> {
     if (plan.kind === 'session') {
+        // Manual-paste session (#218): resolve the reference the SAME way production does, then carry the
+        // fenced material on the descriptor; the adapter's authenticate() imports it via importSession.
+        if (plan.paste !== undefined) {
+            let paste: Secret;
+            try {
+                paste = await deps.resolveCredential(plan.paste);
+            } catch (error) {
+                if (error instanceof CredentialBackendUnavailableError) {
+                    throw new LiveBackendUnavailable(error.message);
+                }
+                throw error;
+            }
+            return asCredentialContext({ kind: 'session', session: { paste } });
+        }
         const resolved: ResolvedCredentials = {
             kind: 'session',
             session: resolveBrowserSession({ kind: 'session', browser: plan.browser, profile: plan.profile }),
