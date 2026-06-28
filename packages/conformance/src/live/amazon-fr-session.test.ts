@@ -224,3 +224,83 @@ describe('live harness — amazon.fr session source (synthetic fixtures, zero-ca
         expect(existsSync(used!)).toBe(false);
     });
 });
+
+/**
+ * Session-adapter error discipline (#205): the {@link @getreceipt/core!SourceAdapter} contract requires a
+ * session adapter's list/fetch to throw ONLY value-free, typed errors. The leak surface is `collect()`,
+ * which puts the first error's `.message` verbatim onto a `failed` result's `reason` — riding out to the
+ * CLI `--json` and MCP `OperationResult.reason`. Driven over the REAL amazon.fr session adapter (the one
+ * shipped session source) with a SENTINEL-bearing synthetic session, each error CLASS is asserted to
+ * surface no cookie value: a stale session as the TYPED `reauth-required` outcome (reachable only via the
+ * adapter's typed `ReauthRequiredError`), and a non-reauth failure as a `failed` result whose `reason` is
+ * the adapter's value-free message. Every shipped error already holds to this — a regression that echoed a
+ * cookie into an error would fail loudly here, since the session carries leak-sentinel cookies.
+ */
+describe('session-adapter error discipline (#205) — list/fetch surface only value-free errors', () => {
+    const SIGN_IN_URL = `${ENDPOINTS.origin}${ENDPOINTS.signIn}`;
+    /** All three synthetic cookie values share this substring — one assertion catches a leak of any of them. */
+    const SENTINEL = 'LEAK-SENTINEL';
+
+    function assertNoCookieLeak(run: unknown): void {
+        const surfaces = [JSON.stringify(run), inspect(run)].join('\n');
+        for (const sentinel of [AT_TOKEN, SESS_TOKEN, SESSION_ID]) {
+            expect(surfaces).not.toContain(sentinel);
+        }
+    }
+
+    it('surfaces a stale session as the typed reauth-required outcome, leaking no cookie value', async () => {
+        // The order history bounces to sign-in (302 → /ap/signin) — a dead session. The adapter maps it to
+        // the typed ReauthRequiredError, which collect() projects to the redaction-safe reauth-required.
+        server.use(
+            http.get(ORDER_HISTORY, () => new HttpResponse(null, { status: 302, headers: { location: SIGN_IN_URL } })),
+        );
+
+        const run = await runLiveCollection(PLAN, {
+            resolver: syntheticResolver(makeUserDataDir(AMAZON_COOKIES)),
+            createOutDir: knownTempDir,
+        });
+
+        expect(run.result.outcome).toBe('reauth-required');
+        if (run.result.outcome === 'reauth-required') {
+            expect(run.result.reason ?? '').not.toContain(SENTINEL);
+        }
+        assertNoCookieLeak(run);
+    });
+
+    it('surfaces a non-reauth failure as a failed result whose reason carries no cookie value', async () => {
+        // A 5xx on the listing is NOT a reauth signal: the adapter throws a value-free `amazon: <path>
+        // returned HTTP 500`, which collect() puts verbatim onto failed.reason — the #205 leak surface.
+        server.use(http.get(ORDER_HISTORY, () => new HttpResponse(null, { status: 500 })));
+
+        const run = await runLiveCollection(PLAN, {
+            resolver: syntheticResolver(makeUserDataDir(AMAZON_COOKIES)),
+            createOutDir: knownTempDir,
+        });
+
+        expect(run.result.outcome).toBe('failed');
+        if (run.result.outcome === 'failed') {
+            // The reason IS the adapter's value-free message (proves the error path actually ran) and the
+            // imported cookie never appears in it.
+            expect(run.result.reason).toContain('amazon');
+            expect(run.result.reason).not.toContain(SENTINEL);
+        }
+        assertNoCookieLeak(run);
+    });
+
+    it('surfaces a stale session on the invoice FETCH as reauth-required, leaking no cookie value', async () => {
+        // list succeeds, then the invoice fetch bounces to sign-in — the fetch leg's stale-session signal. It
+        // too maps to the typed ReauthRequiredError, so the value-free discipline is proven on BOTH legs.
+        server.use(
+            ordersOk([order('404-err', '4 mai 2026')]),
+            http.get(INVOICE_PRINT, () => new HttpResponse(null, { status: 302, headers: { location: SIGN_IN_URL } })),
+        );
+
+        const run = await runLiveCollection(PLAN, {
+            resolver: syntheticResolver(makeUserDataDir(AMAZON_COOKIES)),
+            createOutDir: knownTempDir,
+        });
+
+        expect(run.result.outcome).toBe('reauth-required');
+        assertNoCookieLeak(run);
+    });
+});
