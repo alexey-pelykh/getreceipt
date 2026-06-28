@@ -129,6 +129,82 @@ const AMAZON_COOKIES: readonly FixtureCookie[] = [
     { host_key: 'google.com', name: 'unrelated', encrypted_value: encryptV10('X', KEY, 'google.com') },
 ];
 
+/** A Firefox `moz_cookies` row — plaintext value, no encryption (the Firefox store has no key). */
+interface FirefoxFixtureCookie {
+    readonly host: string;
+    readonly name: string;
+    readonly value: string;
+}
+
+/** Write a Firefox-shaped `moz_cookies` table (plaintext values) to `dbPath`. */
+function writeFirefoxCookiesDb(dbPath: string, cookies: readonly FirefoxFixtureCookie[]): void {
+    const db = new DatabaseSync(dbPath);
+    db.exec(
+        `CREATE TABLE moz_cookies (
+            id INTEGER PRIMARY KEY,
+            host TEXT NOT NULL,
+            name TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL DEFAULT '/',
+            isSecure INTEGER NOT NULL DEFAULT 0,
+            isHttpOnly INTEGER NOT NULL DEFAULT 0,
+            expiry INTEGER NOT NULL DEFAULT 0
+        )`,
+    );
+    const statement = db.prepare('INSERT INTO moz_cookies (host, name, value) VALUES (?, ?, ?)');
+    for (const cookie of cookies) {
+        statement.run(cookie.host, cookie.name, cookie.value);
+    }
+    db.close();
+}
+
+interface FirefoxRootSpec {
+    /** Cookies for the default profile's `cookies.sqlite` (omit to skip writing one — exercises cookie-store-unreadable). */
+    readonly cookies?: readonly FirefoxFixtureCookie[];
+    /** Write `profiles.ini` at all (default true) — false exercises profiles-ini-unreadable. */
+    readonly writeIni?: boolean;
+}
+
+/** The default profile's directory under the synthetic Firefox root (the install default in the fixture profiles.ini). */
+const FIREFOX_PROFILE_REL = ['Profiles', '8f9d2a1b.default-release'];
+
+/** Build a synthetic Firefox root: a `profiles.ini` whose install default is `default-release`, that profile's dir, and (optionally) its `cookies.sqlite`. */
+function makeFirefoxRoot(spec: FirefoxRootSpec = {}): string {
+    const dir = freshDir();
+    if (spec.writeIni ?? true) {
+        writeFileSync(
+            join(dir, 'profiles.ini'),
+            [
+                '[Install0]',
+                'Default=Profiles/8f9d2a1b.default-release',
+                '',
+                '[Profile0]',
+                'Name=default-release',
+                'IsRelative=1',
+                'Path=Profiles/8f9d2a1b.default-release',
+                'Default=1',
+                '',
+            ].join('\n'),
+            'utf8',
+        );
+    }
+    const profileDir = join(dir, ...FIREFOX_PROFILE_REL);
+    mkdirSync(profileDir, { recursive: true });
+    if (spec.cookies !== undefined) {
+        writeFirefoxCookiesDb(join(profileDir, 'cookies.sqlite'), spec.cookies);
+    }
+    return dir;
+}
+
+/** The amazon.fr-scoped Firefox cookies (plus decoys that must NOT match) — plaintext values. */
+const FIREFOX_AMAZON_COOKIES: readonly FirefoxFixtureCookie[] = [
+    { host: '.amazon.fr', name: 'session', value: 'FF-S' },
+    { host: 'www.amazon.fr', name: 'ubid', value: 'FF-U' },
+    { host: 'amazon.fr', name: 'host-only', value: 'FF-H' },
+    { host: '.notamazon.fr', name: 'decoy-prefix', value: 'X' },
+    { host: 'google.com', name: 'unrelated', value: 'X' },
+];
+
 function byName(cookies: readonly BrowserCookie[], name: string): BrowserCookie {
     const found = cookies.find((cookie) => cookie.name === name);
     if (found === undefined) {
@@ -253,17 +329,8 @@ describe('importBrowserSession — structured failures via BrowserCookieStoreErr
         );
     });
 
-    it('rejects Firefox with unsupported-browser (the reason shared by both halves)', () => {
-        const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: AMAZON_COOKIES });
-        expectStoreError(
-            () =>
-                importBrowserSession({ browser: 'firefox', profile: 'Default' }, 'amazon.fr', {
-                    userDataDir,
-                    key: KEY,
-                }),
-            'unsupported-browser',
-        );
-    });
+    // (Firefox is no longer rejected here — it routes to its own resolve+read pair; see the Firefox describe
+    // block below. The Chromium-path defensive guards for Firefox live in cookie-reader.test / errors.test.)
 
     // --- read half (#177) ---
     it('surfaces cookie-store-unreadable when the resolved profile has no cookie store', () => {
@@ -342,6 +409,89 @@ describe('importBrowserSession — structured failures via BrowserCookieStoreErr
             'decryption-failed',
         );
         expect(`${error.message}${error.stack ?? ''}`).not.toContain('super-secret-value');
+    });
+});
+
+describe('importBrowserSession — Firefox (plaintext profiles.ini + cookies.sqlite, #219)', () => {
+    it('resolves the default profile, reads the domain-scoped plaintext cookies, and mints a handle (no key needed)', () => {
+        const firefoxDir = makeFirefoxRoot({ cookies: FIREFOX_AMAZON_COOKIES });
+
+        const session = fromBrowserSession(
+            importBrowserSession({ browser: 'firefox', profile: 'default' }, 'amazon.fr', { firefoxDir }),
+        );
+
+        expect(session.browser).toBe('firefox');
+        expect(session.domain).toBe('amazon.fr');
+        // Domain-scoped: the registrable domain + subdomains only — never the decoys or the unrelated jar.
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['host-only', 'session', 'ubid']);
+        expect(byName(session.cookies, 'session').value.expose()).toBe('FF-S');
+        expect(byName(session.cookies, 'session').domain).toBe('.amazon.fr');
+    });
+
+    it('resolves a Firefox profile by its Name too', () => {
+        const firefoxDir = makeFirefoxRoot({ cookies: FIREFOX_AMAZON_COOKIES });
+        const session = fromBrowserSession(
+            importBrowserSession({ browser: 'firefox', profile: 'default-release' }, 'amazon.fr', { firefoxDir }),
+        );
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['host-only', 'session', 'ubid']);
+    });
+
+    it('keeps every Firefox cookie value Secret-fenced through the handle (same posture as Chromium)', () => {
+        const firefoxDir = makeFirefoxRoot({
+            cookies: [{ host: '.amazon.fr', name: 'session', value: 'super-secret-firefox' }],
+        });
+
+        const auth = importBrowserSession({ browser: 'firefox', profile: 'default' }, 'amazon.fr', { firefoxDir });
+        const cookie = byName(fromBrowserSession(auth).cookies, 'session');
+
+        expect(cookie.value).toBeInstanceOf(Secret);
+        expect(String(cookie.value)).toBe('[redacted]');
+        // Neither the unpacked session NOR the opaque handle serializes the plaintext.
+        expect(JSON.stringify(fromBrowserSession(auth))).not.toContain('super-secret-firefox');
+        expect(JSON.stringify(auth)).not.toContain('super-secret-firefox');
+        expect(cookie.value.expose()).toBe('super-secret-firefox');
+    });
+
+    it('routes a Firefox descriptor through the unified importSession entry too', () => {
+        const firefoxDir = makeFirefoxRoot({ cookies: FIREFOX_AMAZON_COOKIES });
+        const session = fromBrowserSession(
+            importSession({ browser: 'firefox', profile: 'default' }, 'amazon.fr', { firefoxDir }),
+        );
+        expect(session.browser).toBe('firefox');
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['host-only', 'session', 'ubid']);
+    });
+
+    it('surfaces a Firefox profile-resolution failure (profile-not-found) without echoing the configured value', () => {
+        const firefoxDir = makeFirefoxRoot({ cookies: FIREFOX_AMAZON_COOKIES });
+        const error = expectStoreError(
+            () => importBrowserSession({ browser: 'firefox', profile: 'no-such-profile' }, 'amazon.fr', { firefoxDir }),
+            'profile-not-found',
+        );
+        expect(error.message).not.toContain('no-such-profile');
+    });
+
+    it('surfaces profiles-ini-unreadable when the Firefox root has no profiles.ini', () => {
+        const firefoxDir = makeFirefoxRoot({ writeIni: false });
+        expectStoreError(
+            () => importBrowserSession({ browser: 'firefox', profile: 'default' }, 'amazon.fr', { firefoxDir }),
+            'profiles-ini-unreadable',
+        );
+    });
+
+    it('surfaces cookie-store-unreadable when the resolved Firefox profile has no cookies.sqlite', () => {
+        const firefoxDir = makeFirefoxRoot(); // profile dir exists, but no cookies.sqlite inside it
+        expectStoreError(
+            () => importBrowserSession({ browser: 'firefox', profile: 'default' }, 'amazon.fr', { firefoxDir }),
+            'cookie-store-unreadable',
+        );
+    });
+
+    it('rejects an empty target domain with invalid-domain (Firefox path)', () => {
+        const firefoxDir = makeFirefoxRoot({ cookies: FIREFOX_AMAZON_COOKIES });
+        expectStoreError(
+            () => importBrowserSession({ browser: 'firefox', profile: 'default' }, '', { firefoxDir }),
+            'invalid-domain',
+        );
     });
 });
 

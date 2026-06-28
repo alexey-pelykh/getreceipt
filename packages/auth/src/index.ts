@@ -92,8 +92,8 @@ export type {
     SessionStoreFailureReason,
     TotpFailureReason,
 } from './errors.js';
-export { browserUserDataDir, resolveProfile } from './profile-resolver.js';
-export type { ResolveProfileOptions } from './profile-resolver.js';
+export { browserUserDataDir, firefoxProfilesRoot, resolveFirefoxProfile, resolveProfile } from './profile-resolver.js';
+export type { ResolveFirefoxProfileOptions, ResolveProfileOptions } from './profile-resolver.js';
 export {
     decryptChromeCookie,
     deriveChromeSafeStorageKey,

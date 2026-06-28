@@ -3,12 +3,12 @@ import { ReauthRequiredError } from '@getreceipt/core';
 import type { AuthHandle } from '@getreceipt/core';
 
 import type { BrowserKind, BrowserSessionAuthShape } from './config.js';
-import type { BrowserCookie, ReadChromeCookiesOptions } from './cookie-reader.js';
-import { readChromeCookies } from './cookie-reader.js';
+import type { BrowserCookie, ReadChromeCookiesOptions, ReadFirefoxCookiesOptions } from './cookie-reader.js';
+import { readChromeCookies, readFirefoxCookies } from './cookie-reader.js';
 import { importPastedSession } from './pasted-session.js';
 import type { PastedSessionDescriptor } from './pasted-session.js';
-import type { ResolveProfileOptions } from './profile-resolver.js';
-import { resolveProfile } from './profile-resolver.js';
+import type { ResolveFirefoxProfileOptions, ResolveProfileOptions } from './profile-resolver.js';
+import { resolveFirefoxProfile, resolveProfile } from './profile-resolver.js';
 import type { ReauthDetector } from './reauth-detector.js';
 import { Secret } from './secret.js';
 import { reuseStoredSession, toReauthRequiredError } from './session-reuse.js';
@@ -74,34 +74,53 @@ export interface BrowserSession {
 }
 
 /**
- * Inputs threaded through to {@link resolveProfile} (#176) AND {@link readChromeCookies} (#177). The
- * intersection makes every seam of both halves injectable — a pinned user-data dir, a synthetic AES key, an
- * injected cookie path — so the composition is unit-testable with no real browser, Keychain, or home dir.
- * The defaults are exactly the two underlying functions' defaults (read the live profile and, on macOS,
- * the real Keychain). `platform` is the only field both share, with the same type, so it sets both halves at once.
+ * Inputs threaded through to whichever resolve + read pair the browser needs — the Chromium pair
+ * ({@link resolveProfile} #176 + {@link readChromeCookies} #177) or the Firefox pair
+ * ({@link resolveFirefoxProfile} + {@link readFirefoxCookies} #187). The intersection makes every seam of
+ * all four injectable — a pinned user-data / Firefox dir, a synthetic AES key, an injected cookie path — so
+ * the composition is unit-testable with no real browser, Keychain, or home dir. The defaults are exactly the
+ * underlying functions' defaults (read the live profile and, for Chromium on macOS, the real Keychain). The
+ * shared seams (`platform`/`home`/`env`/`cookiesPath`/`tmpDir`) carry the same type across the members, so one
+ * options object sets whichever path runs.
  */
-export type ImportBrowserSessionOptions = ResolveProfileOptions & ReadChromeCookiesOptions;
+export type ImportBrowserSessionOptions = ResolveProfileOptions &
+    ReadChromeCookiesOptions &
+    ResolveFirefoxProfileOptions &
+    ReadFirefoxCookiesOptions;
 
 /**
- * Import an already-authenticated browser session: resolve the `{ browser, profile }` descriptor to a
- * profile directory (#176), then read + decrypt that profile's cookies scoped to `domain` (#177), and mint
- * the in-memory {@link AuthHandle} an adapter's `authenticate()` returns for a `session`-kind source — the
- * yt-dlp `--cookies-from-browser` model. The consuming adapter reads the session back with
- * {@link fromBrowserSession} in `list`/`fetch`. Each step owns its own validation (the helper adds none):
- * resolution runs first, so a bad profile is reported before an empty `domain` (which the reader rejects).
+ * Import an already-authenticated browser session: resolve the `{ browser, profile }` descriptor to a profile
+ * directory, then read that profile's cookies scoped to `domain`, and mint the in-memory {@link AuthHandle} an
+ * adapter's `authenticate()` returns for a `session`-kind source — the yt-dlp `--cookies-from-browser` model.
+ * The consuming adapter reads the session back with {@link fromBrowserSession} in `list`/`fetch`.
  *
- * Import ONLY: it drives no login, exchanges no credential, and launches no browser — it just reads the
- * cookie store the user already populated by signing in. Cookie values stay {@link Secret}-fenced from the
- * reader through the handle, so nothing here logs or persists them. Every failure surfaces as a
+ * The browser selects the resolve + read pair: a Chromium-family browser resolves via `Local State`
+ * ({@link resolveProfile} #176) and reads + decrypts via the OS Safe Storage key ({@link readChromeCookies}
+ * #177); Firefox resolves via `profiles.ini` ({@link resolveFirefoxProfile}) and reads its PLAINTEXT
+ * `cookies.sqlite` ({@link readFirefoxCookies} #187) — no key, no keyring, cross-platform. Each step owns its
+ * own validation (the helper adds none): resolution runs first, so a bad profile is reported before an empty
+ * `domain` (which the reader rejects).
+ *
+ * Import ONLY: it drives no login, exchanges no credential, and launches no browser — it just reads the cookie
+ * store the user already populated by signing in. Cookie values stay {@link Secret}-fenced from the reader
+ * through the handle, so nothing here logs or persists them. Every failure surfaces as a
  * {@link BrowserCookieStoreError} (#178) — a {@link ProfileResolutionError} (locating the profile) or a
- * {@link CookieReadError} (reading/decrypting it), each carrying a machine-readable `reason` and actionable
- * `guidance`, and neither ever echoing a configured value or secret.
+ * {@link CookieReadError} (reading it), each carrying a machine-readable `reason` and actionable `guidance`,
+ * and neither ever echoing a configured value or secret.
  */
 export function importBrowserSession(
     descriptor: BrowserSessionDescriptor,
     domain: string,
     options: ImportBrowserSessionOptions = {},
 ): AuthHandle {
+    // Firefox keeps a plaintext store under `profiles.ini`, so it routes to its own resolve + read pair rather
+    // than the Chromium `Local State` / Safe Storage path — the resolver/reader siblings each fail closed if
+    // handed the other family, so the branch here is the single place the two paths diverge.
+    if (descriptor.browser === 'firefox') {
+        const profileDir = resolveFirefoxProfile(descriptor.profile, options);
+        const cookies = readFirefoxCookies(profileDir, domain, options);
+        return asAuthHandle({ browser: descriptor.browser, domain, cookies });
+    }
     const profileDir = resolveProfile(descriptor.browser, descriptor.profile, options);
     const cookies = readChromeCookies(descriptor.browser, profileDir, domain, options);
     return asAuthHandle({ browser: descriptor.browser, domain, cookies });
