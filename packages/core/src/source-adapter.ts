@@ -262,6 +262,13 @@ export function isAuthChallengeRequired(result: AuthResult): result is AuthChall
 /**
  * The IMPLEMENTED half of an adapter: three async stages the `collect()` pipeline
  * drives in order — authenticate → list → fetch.
+ *
+ * Session-adapter error discipline (#205): an `authKind: 'session'` adapter's `list`/`fetch` MUST throw
+ * ONLY value-free, typed errors — {@link ReauthRequiredError} for a dead/expired session, or another typed
+ * error naming no secret — NEVER a raw `Error` carrying a cookie value. `collect()` puts the first error's
+ * `.message` verbatim onto a `failed` result's `reason`, which rides out to the CLI `--json` and MCP report
+ * (`OperationResult.reason`), so a value there would leak. Every shipped session adapter already holds to
+ * this; the conformance posture suite asserts it.
  */
 export interface SourceAdapter {
     /** The source's declared capabilities. Read by the registry, resolver, and pipeline. */

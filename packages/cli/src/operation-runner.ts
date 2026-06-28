@@ -200,13 +200,15 @@ export async function resolveSourceContext(
     // Validate the configured `instances:` against what the adapter serves, fail-closed (#190 AC2): a
     // configured instance the adapter does not declare is a pre-flight config error, never a silent skip.
     const configuredInstances = resolveConfiguredInstances(adapter, sourceConfig.instances, path);
-    // Fail closed BEFORE resolving credentials / authenticate(): reject a source whose configured
-    // credential shape the adapter does not accept (#169). Runs here, the one seam holding BOTH the
-    // parsed config shape and the adapter descriptor, so a mis-shaped source surfaces as a pre-flight
+    // Fail closed BEFORE resolving credentials / authenticate(), at the one seam holding BOTH the parsed
+    // config shape and the adapter descriptor, so a mis-shaped source surfaces as a pre-flight
     // OperationError at setup rather than failing opaquely deep in the auth flow. A `session` source is
-    // exempt: it supplies no resolve-time credential (the login lives in the browser's cookie store), so
-    // there is no credential shape to validate — resolveCredentials resolves it to its descriptor (#180).
-    if (sourceConfig.kind !== 'session') {
+    // exempt from the #169 credential-shape gate — it supplies no resolve-time credential (the login lives
+    // in the browser's cookie store, #180) — but it MUST target a session adapter (#205); every other kind
+    // must declare a credential shape the adapter accepts (#169).
+    if (sourceConfig.kind === 'session') {
+        assertSessionAdapter(adapter);
+    } else {
         assertConfiguredShapeSupported(adapter, sourceConfig);
     }
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
@@ -312,6 +314,23 @@ function assertConfiguredShapeSupported(adapter: SourceAdapter, sourceConfig: Do
             throw new OperationError('unsupported-shape', error.message);
         }
         throw error;
+    }
+}
+
+/**
+ * The session counterpart to {@link assertConfiguredShapeSupported} (#205): a `session` source carries no
+ * credential shape for the #169 gate, so it bypasses that check — but it must still target an adapter that
+ * authenticates by browser session. Without this, a session pointed at a non-session adapter would fail
+ * closed LATER and opaquely inside authenticate(); here it is a clean pre-flight {@link OperationError}.
+ * Value-free: the message names only the source domain and the two authKinds, never the session descriptor.
+ */
+function assertSessionAdapter(adapter: SourceAdapter): void {
+    if (adapter.descriptor.authKind !== 'session') {
+        throw new OperationError(
+            'unsupported-shape',
+            `source "${adapter.descriptor.canonicalDomain}" is configured as a browser session but its adapter ` +
+                `authenticates by "${adapter.descriptor.authKind}", not "session"`,
+        );
     }
 }
 

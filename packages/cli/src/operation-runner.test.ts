@@ -685,6 +685,37 @@ describe('runOperation — session kind (#180)', () => {
         expect(resolved.secret).toBeUndefined();
         expect(resolved.username).toBeUndefined();
     });
+
+    it('rejects a session config pointed at a NON-session adapter as a pre-flight unsupported-shape error (#205)', async () => {
+        // The default adapter authenticates by password. The #169 shape gate is SKIPPED for a session
+        // config, so this gate is the one that must catch the mismatch — a clean pre-flight OperationError,
+        // not an opaque failure later inside authenticate(). (The valid session-on-session path is the test
+        // above, which reaches collect — so the gate admits the one shipped session source.)
+        let collectCalled = false;
+        const error = await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                // resolverWith(adapter()) — the default — declares authKind: password.
+                loadConfig: () => sessionConfig,
+                collect: () => {
+                    collectCalled = true;
+                    return Promise.resolve(SUCCEEDED);
+                },
+                resolveCredential: () => Promise.reject(new Error('resolveCredential must not run')),
+                resolveLogin: () => Promise.reject(new Error('resolveLogin must not run')),
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        // Value-free: names the source domain + the two authKinds, never the session's browser/profile.
+        expect((error as OperationError).message).toContain('shop.example');
+        expect((error as OperationError).message).toContain('"session"');
+        expect((error as OperationError).message).not.toContain('chrome');
+        expect((error as OperationError).message).not.toContain('Default');
+        expect(collectCalled).toBe(false);
+    });
 });
 
 describe('runInstancesOperation — one config, shared auth, data per instance (#190)', () => {
