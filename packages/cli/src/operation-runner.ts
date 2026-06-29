@@ -7,6 +7,7 @@ import {
     resolveBrowserSession,
 } from '@getreceipt/auth';
 import type {
+    ConfigParseOptions,
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
@@ -80,7 +81,8 @@ export interface ResolveSourceDeps {
     readonly resolver: SourceResolver;
     /** Resolve WHICH config file to load from a {@link ConfigSelection} (`--config`/`--profile`/env/home default). */
     readonly resolveConfigPath: (selection?: ConfigSelection) => string;
-    readonly loadConfig: (path: string) => ConfigParseResult;
+    /** Load + parse the config file. `options.strict` (from `--strict` / a `strict: true` key) fails closed on an inline-literal secret. */
+    readonly loadConfig: (path: string, options?: ConfigParseOptions) => ConfigParseResult;
     /** Resolves a configured credential reference to its fenced secret value. */
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
     /** Resolves a single-item login reference (`op://[account/]vault/item`) to both username and secret. */
@@ -195,7 +197,8 @@ export async function resolveSourceContext(
 }> {
     const { adapter, instance } = resolveAddressed(deps.resolver, spec.source);
     const path = deps.resolveConfigPath(spec.selection);
-    const parsed = loadConfigOrThrow(deps.loadConfig, path);
+    // `--strict` (carried on the selection) makes an inline-literal secret fail closed at parse time.
+    const parsed = loadConfigOrThrow(deps.loadConfig, path, { strict: spec.selection?.strict === true });
     const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
     // Validate the configured `instances:` against what the adapter serves, fail-closed (#190 AC2): a
     // configured instance the adapter does not declare is a pre-flight config error, never a silent skip.
@@ -278,9 +281,13 @@ function resolveConfiguredInstances(
     });
 }
 
-function loadConfigOrThrow(loadConfig: (path: string) => ConfigParseResult, path: string): ConfigParseResult {
+function loadConfigOrThrow(
+    loadConfig: (path: string, options?: ConfigParseOptions) => ConfigParseResult,
+    path: string,
+    options?: ConfigParseOptions,
+): ConfigParseResult {
     try {
-        return loadConfig(path);
+        return loadConfig(path, options);
     } catch (error) {
         // ConfigError is pre-sanitized (#6) and already prefixed with the path; never echo file contents.
         throw new OperationError(

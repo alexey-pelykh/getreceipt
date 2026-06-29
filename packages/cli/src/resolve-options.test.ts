@@ -46,6 +46,15 @@ describe('resolveGlobalOptions — child-over-parent inheritance', () => {
     it('is empty when neither global is given', () => {
         expect(resolveGlobalOptions(parsed(['from', 'x']))).toEqual({});
     });
+
+    it('projects --strict as { strict: true } (the latch), on either side of the verb', () => {
+        expect(resolveGlobalOptions(parsed(['--strict', 'from', 'x']))).toEqual({ strict: true });
+        expect(resolveGlobalOptions(parsed(['from', 'x', '--strict']))).toEqual({ strict: true });
+    });
+
+    it('omits the strict key entirely when --strict is absent (exact-equality callers keep their shape)', () => {
+        expect(resolveGlobalOptions(parsed(['from', 'x', '--profile', 'work']))).toEqual({ profile: 'work' });
+    });
 });
 
 describe('buildConfigSelection — precedence + divergence warnings', () => {
@@ -108,5 +117,18 @@ describe('resolveConfigSelection — merge + build in one step', () => {
         });
         expect(selection).toEqual({ path: '/c.yaml' });
         expect(warnings.join('')).toContain('overrides --profile "work"');
+    });
+
+    it('carries --strict onto the selection (alongside the resolved file)', () => {
+        expect(resolveConfigSelection(parsed(['from', 'x', '--strict', '--profile', 'work']), { env: {} })).toEqual({
+            profile: 'work',
+            strict: true,
+        });
+    });
+
+    it('omits strict from the selection when --strict is absent', () => {
+        expect(resolveConfigSelection(parsed(['from', 'x', '--profile', 'work']), { env: {} })).toEqual({
+            profile: 'work',
+        });
     });
 });

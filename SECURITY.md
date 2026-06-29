@@ -46,10 +46,10 @@ is **authored by you**; `getreceipt` does not create or capture it. Each source'
 carries an optional `secret`, which may be supplied in one of two forms — listed here in **descending
 order of safety**:
 
-| Order | Form               | Config shape                | Recommended                  |
-| ----- | ------------------ | --------------------------- | ---------------------------- |
-| 1     | External reference | `secret: { ref: <name> }`   | **yes**                      |
-| 2     | Inline literal     | `secret: <value>` (rawtext) | discouraged — warned at load |
+| Order | Form               | Config shape                | Recommended                                  |
+| ----- | ------------------ | --------------------------- | -------------------------------------------- |
+| 1     | External reference | `secret: { ref: <name> }`   | **yes**                                      |
+| 2     | Inline literal     | `secret: <value>` (rawtext) | discouraged — warned, or rejected (_strict_) |
 
 **1. External reference (recommended).** The `ref` names a secret held **outside** the config file —
 a password manager (e.g. a 1Password `op://VAULT/ITEM/FIELD` reference), your OS keychain, or an
@@ -62,6 +62,15 @@ auth drivers in later `0.1.0` issues.
 sync clients, and accidental commits all expose a plaintext config file — prefer an external
 reference. **Never use rawtext for a sensitive account**; reserve it, if at all, for low-value or
 throwaway test logins.
+
+**Strict mode — forbid on-disk secrets.** A CI or production environment can make form 2 a hard error
+instead of a warning: pass the global `--strict` flag (`getreceipt from x --strict`) or set
+`strict: true` at the top level of the config file. An inline-literal secret (a `secret`, or a TOTP
+`mfa.seed`) then fails closed at load with a `ConfigError` naming the path — never the value — so a
+secret can never sit on disk under a strict invocation. The effective mode is the OR of the two
+(`--strict` forces it on without editing committed config). A username is not a secret and is never
+affected, and a [manually-pasted session](#manual-paste-session) is already rejected inline in both
+modes. See [configuration § Strict mode](docs/configuration.md#strict-mode).
 
 Three properties hold regardless of form:
 

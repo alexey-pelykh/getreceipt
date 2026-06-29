@@ -15,6 +15,7 @@ export type {
     AuthShape,
     BrowserKind,
     BrowserSessionAuthShape,
+    ConfigParseOptions,
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,

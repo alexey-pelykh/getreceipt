@@ -7,6 +7,7 @@ import {
     resolveConfigFilePath,
 } from '@getreceipt/auth';
 import type {
+    ConfigParseOptions,
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
@@ -217,7 +218,7 @@ export async function runCollectAll(params: CollectAllParams, deps: McpCollectio
     const path = deps.resolveConfigPath(params.selection);
     let parsed: ConfigParseResult;
     try {
-        parsed = deps.loadConfig(path);
+        parsed = deps.loadConfig(path, { strict: params.selection?.strict === true });
     } catch (error) {
         throw new OperationError('config', `${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -297,7 +298,7 @@ export interface ListSourcesParams {
 /** Collaborators for {@link runListSources}: the adapter registry + the config seam used for configured-state. */
 export interface ListSourcesDeps {
     readonly resolveConfigPath: (selection?: ConfigSelection) => string;
-    readonly loadConfig: (path: string) => ConfigParseResult;
+    readonly loadConfig: (path: string, options?: ConfigParseOptions) => ConfigParseResult;
     /** The registry whose adapters are listed. */
     readonly registry: SourceAdapterRegistry;
     /** Looks up an adapter's verification state; defaults to none (every source surfaces as `unverified`). */
@@ -335,7 +336,7 @@ function loadConfiguredKeys(deps: ListSourcesDeps, selection: ConfigSelection | 
     const path = deps.resolveConfigPath(selection);
     let parsed: ConfigParseResult;
     try {
-        parsed = deps.loadConfig(path);
+        parsed = deps.loadConfig(path, { strict: selection?.strict === true });
     } catch (error) {
         deps.onWarn?.(
             `⚠ could not read config (${path}): ${error instanceof Error ? error.message : String(error)}; sources shown as not-configured\n`,
@@ -372,7 +373,7 @@ export interface AuthStatusParams {
 /** Collaborators for {@link runAuthStatus}: the resolver + config seam + the session store the disposition is read from. */
 export interface AuthStatusDeps {
     readonly resolveConfigPath: (selection?: ConfigSelection) => string;
-    readonly loadConfig: (path: string) => ConfigParseResult;
+    readonly loadConfig: (path: string, options?: ConfigParseOptions) => ConfigParseResult;
     /** Maps a configured source key (canonical or alias) to its adapter. */
     readonly resolver: SourceResolver;
     /** Where stored sessions are read from. */
@@ -393,7 +394,7 @@ export async function runAuthStatus(params: AuthStatusParams, deps: AuthStatusDe
     const path = deps.resolveConfigPath(params.selection);
     let parsed: ConfigParseResult;
     try {
-        parsed = deps.loadConfig(path);
+        parsed = deps.loadConfig(path, { strict: params.selection?.strict === true });
     } catch (error) {
         throw new OperationError('config', `${path}: ${error instanceof Error ? error.message : String(error)}`);
     }

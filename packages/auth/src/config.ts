@@ -230,6 +230,18 @@ export interface ConfigParseResult {
     readonly warnings: readonly SecurityWarning[];
 }
 
+/** Options for {@link parseConfig} / {@link loadConfig}. */
+export interface ConfigParseOptions {
+    /**
+     * Force STRICT mode: an inline-literal secret is REJECTED (a fail-closed {@link ConfigError}) at
+     * parse time instead of warned-and-accepted — so a CI/production invocation can forbid on-disk
+     * secrets without editing the committed config. Independent of the config's own `strict: true`
+     * key; effective strictness is the OR of the two (this can force it ON, never off). A username is
+     * never affected (it is not a secret), and a pasted session is rejected in BOTH modes already (#218).
+     */
+    readonly strict?: boolean;
+}
+
 /**
  * Selection inputs for resolving WHICH config file to load — the shape the CLI/MCP front-ends pass
  * down (derived from `--config`/`--profile` and the env). `home`/`env` are injectable so resolution
@@ -244,6 +256,13 @@ export interface ConfigSelection {
     readonly home?: string;
     /** Override environment variables (testing). */
     readonly env?: Record<string, string | undefined>;
+    /**
+     * Force strict config parsing (the front-end's `--strict` flag): an inline-literal secret fails
+     * closed at parse time. Carried here as the config front-end's intent and consumed by
+     * {@link loadConfig} (as {@link ConfigParseOptions.strict}); {@link resolveConfigFilePath} ignores
+     * it — it resolves only WHICH file, never how it is parsed.
+     */
+    readonly strict?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -299,8 +318,14 @@ export function resolveConfigFilePath(selection: ConfigSelection = {}): string {
  *
  * A legacy `profiles:`-map file (the pre-per-file shape) is rejected with an actionable migration
  * error rather than silently misread as a single source named `profiles`.
+ *
+ * STRICT mode (fail closed on inline-literal secrets) is enabled by EITHER {@link ConfigParseOptions.strict}
+ * (the `--strict` flag) OR a top-level `strict: true` key in the config — the OR lets a CI/production
+ * invocation force it on without editing committed config. In strict mode an inline-literal secret is
+ * REJECTED at its path instead of warned (see {@link parseCredential}); default (non-strict) behavior is
+ * unchanged.
  */
-export function parseConfig(raw: unknown): ConfigParseResult {
+export function parseConfig(raw: unknown, options: ConfigParseOptions = {}): ConfigParseResult {
     if (!isRecord(raw)) {
         throw new ConfigError('expected a mapping at the config root', '<root>');
     }
@@ -315,17 +340,23 @@ export function parseConfig(raw: unknown): ConfigParseResult {
     if (!isRecord(raw.sources)) {
         throw new ConfigError('expected a `sources` mapping', 'sources');
     }
+    // A stringy `strict: "false"` is truthy yet would NOT enable the gate via `=== true` — reject a
+    // non-boolean loudly so a typo can never silently disable a security control.
+    if (raw.strict !== undefined && typeof raw.strict !== 'boolean') {
+        throw new ConfigError('`strict` must be a boolean', 'strict');
+    }
+    const strict = options.strict === true || raw.strict === true;
 
     const warnings: SecurityWarning[] = [];
     const sources: Record<string, DomainAuthConfig> = {};
     for (const [domain, rawSource] of Object.entries(raw.sources)) {
-        sources[domain] = parseDomainAuth(rawSource, `sources.${domain}`, warnings);
+        sources[domain] = parseDomainAuth(rawSource, `sources.${domain}`, warnings, strict);
     }
 
     return { config: { sources }, warnings };
 }
 
-function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]): DomainAuthConfig {
+function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[], strict: boolean): DomainAuthConfig {
     // Bare-ref sugar: a bare string source value desugars to the single-item `ref` shape (kind:
     // password). A lone string carries ONE reference, and is taken AS the reference whatever its
     // backend (op://, encrypted-file:, an env-var name) — no scheme sniffing decides ref-vs-literal.
@@ -390,9 +421,9 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     const kind = resolveAuthKind(declaredKind, flags, authPath);
 
     // `mfa` is orthogonal to the credential choice — parse it once, then attach to whichever arm.
-    const mfa = auth.mfa !== undefined ? parseMfa(auth.mfa, `${authPath}.mfa`, warnings) : undefined;
+    const mfa = auth.mfa !== undefined ? parseMfa(auth.mfa, `${authPath}.mfa`, warnings, strict) : undefined;
 
-    const shape = buildAuthShape(kind, auth, flags, mfa, authPath, warnings);
+    const shape = buildAuthShape(kind, auth, flags, mfa, authPath, warnings, strict);
     // `instances` is a SOURCE-level sibling (a collection concern, not auth) — read from the source mapping,
     // not the auth block, so it sits beside an `auth:` block AND beside the session shorthand alike (#190).
     const instances = parseInstances(raw.instances, `${path}.instances`);
@@ -539,6 +570,7 @@ function buildAuthShape(
     mfa: MfaConfig | undefined,
     authPath: string,
     warnings: SecurityWarning[],
+    strict: boolean,
 ): DomainAuthConfig {
     const withMfa = mfa !== undefined ? { mfa } : {};
     switch (kind) {
@@ -560,7 +592,7 @@ function buildAuthShape(
                 ...withMfa,
             };
         case 'api-token':
-            return { kind, secret: parseCredential(auth.secret, `${authPath}.secret`, warnings), ...withMfa };
+            return { kind, secret: parseCredential(auth.secret, `${authPath}.secret`, warnings, strict), ...withMfa };
         case 'password': {
             if (flags.hasRef) {
                 return { kind, ref: parseItemRef(auth.ref, `${authPath}.ref`), ...withMfa };
@@ -568,7 +600,9 @@ function buildAuthShape(
             const perField: PasswordPerFieldAuthShape & { readonly mfa?: MfaConfig } = {
                 kind,
                 ...(flags.hasUsername ? { username: parseUsername(auth.username, `${authPath}.username`) } : {}),
-                ...(flags.hasSecret ? { secret: parseCredential(auth.secret, `${authPath}.secret`, warnings) } : {}),
+                ...(flags.hasSecret
+                    ? { secret: parseCredential(auth.secret, `${authPath}.secret`, warnings, strict) }
+                    : {}),
                 ...withMfa,
             };
             return perField;
@@ -616,7 +650,7 @@ function parseUsername(raw: unknown, path: string): CredentialValue {
     throw new ConfigError('expected a string literal or a `{ ref }` reference', path);
 }
 
-function parseCredential(raw: unknown, path: string, warnings: SecurityWarning[]): CredentialValue {
+function parseCredential(raw: unknown, path: string, warnings: SecurityWarning[], strict: boolean): CredentialValue {
     if (isRecord(raw)) {
         if (typeof raw.ref !== 'string' || raw.ref.length === 0) {
             throw new ConfigError('a secret reference must have a non-empty `ref` string', path);
@@ -624,6 +658,15 @@ function parseCredential(raw: unknown, path: string, warnings: SecurityWarning[]
         return { ref: raw.ref };
     }
     if (typeof raw === 'string') {
+        if (strict) {
+            // Strict mode fails CLOSED: reject the inline literal instead of warning. Value-free, exactly
+            // like the warning it replaces — name only the path, never the secret (so a `--strict` run can
+            // forbid on-disk secrets without the rejection itself leaking one).
+            throw new ConfigError(
+                'inline-literal secret rejected in strict mode; supply it as a secret reference ({ ref: <name> }) so the value is not stored in the config file',
+                path,
+            );
+        }
         // Inline literal: discouraged. Warn WITHOUT echoing the value.
         warnings.push({
             code: 'inline-credential',
@@ -683,7 +726,7 @@ function parsePasteRef(raw: unknown, path: string): SecretRef {
  * inline password (it routes through {@link parseCredential}). Throws {@link ConfigError}, which
  * never echoes a configured value.
  */
-function parseMfa(raw: unknown, path: string, warnings: SecurityWarning[]): MfaConfig {
+function parseMfa(raw: unknown, path: string, warnings: SecurityWarning[], strict: boolean): MfaConfig {
     if (!isRecord(raw)) {
         throw new ConfigError('expected an `mfa` mapping', path);
     }
@@ -702,7 +745,7 @@ function parseMfa(raw: unknown, path: string, warnings: SecurityWarning[]): MfaC
         if (raw.seed === undefined) {
             throw new ConfigError('`mfa.type: totp` requires a `seed` (the TOTP shared secret)', `${path}.seed`);
         }
-        result.seed = parseCredential(raw.seed, `${path}.seed`, warnings);
+        result.seed = parseCredential(raw.seed, `${path}.seed`, warnings, strict);
         return result;
     }
 
@@ -736,8 +779,13 @@ export function defaultConfigPath(): string {
  * Load + validate a YAML config file: read the file, parse YAML, then run {@link parseConfig}.
  * Throws {@link ConfigError} — never echoing file contents — on a missing/unreadable file,
  * malformed YAML, or a structural problem. Defaults to the home-default file when no path is given.
+ * {@link ConfigParseOptions.strict} forwards to {@link parseConfig} (so a `--strict` invocation fails
+ * closed on an inline-literal secret); the config's own `strict: true` key is honored regardless.
  */
-export function loadConfig(filePath: string = defaultConfigPath()): ConfigParseResult {
+export function loadConfig(
+    filePath: string = defaultConfigPath(),
+    options: ConfigParseOptions = {},
+): ConfigParseResult {
     let text: string;
     try {
         text = readFileSync(filePath, 'utf8');
@@ -753,5 +801,5 @@ export function loadConfig(filePath: string = defaultConfigPath()): ConfigParseR
         throw new ConfigError('config file is not valid YAML', filePath);
     }
 
-    return parseConfig(raw);
+    return parseConfig(raw, options);
 }
