@@ -427,6 +427,16 @@ describe('from — exit-code ladder (AC #3)', () => {
         expect(err).toContain('config file could not be read');
     });
 
+    it('exits 1 (usage) rejecting an inline-literal secret under --strict, never echoing it (#155)', async () => {
+        // The default fixture configures `shop.example` with an INLINE secret. The `--strict` flag makes it
+        // fail closed at config-load (the same fixture collects fine WITHOUT the flag — see the AC #1 test
+        // above — so the flag is what rejects). The rejection is value-free.
+        const { err, error } = await runFrom(['shop.example', '--strict']);
+        expect(error).toMatchObject({ exitCode: 1, code: 'getreceipt.from.config' });
+        expect(err).toContain('strict mode');
+        expect(err).not.toContain('hunter2-not-real');
+    });
+
     it('exits 1 (usage) on an incomplete window (--until without --since)', async () => {
         const { err, error } = await runFrom(['shop.example', '--until', '2024-01-31']);
         expect(error).toMatchObject({ exitCode: 1 });

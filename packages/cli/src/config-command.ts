@@ -4,7 +4,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 
 import { ConfigError, loadConfig as authLoadConfig, resolveConfigFilePath, scanForSecrets } from '@getreceipt/auth';
-import type { ConfigParseResult, ConfigSelection } from '@getreceipt/auth';
+import type { ConfigParseOptions, ConfigParseResult, ConfigSelection } from '@getreceipt/auth';
 import { Command, CommanderError } from 'commander';
 
 import {
@@ -72,8 +72,8 @@ export interface ConfigCommandEnv {
     readonly io: CliIO;
     /** Resolve WHICH config file to operate on from a {@link ConfigSelection} (`--config`/`--profile`/env/home default). */
     readonly resolveConfigPath: (selection?: ConfigSelection) => string;
-    /** Load + validate a config file (ConfigLoader #6). */
-    readonly loadConfig: (path: string) => ConfigParseResult;
+    /** Load + validate a config file (ConfigLoader #6). `options.strict` (from `--strict`) makes an inline-literal secret fail closed. */
+    readonly loadConfig: (path: string, options?: ConfigParseOptions) => ConfigParseResult;
     /** Whether the config file exists on disk. */
     readonly fileExists: (path: string) => boolean;
     /** Read the raw config bytes — the `edit` snapshot taken before launching the editor (for round-trip on invalid). Defaults to a UTF-8 read. */
@@ -179,14 +179,18 @@ export function createConfigCommand(overrides: Partial<ConfigCommandEnv> = {}): 
 
     config
         .command('validate')
-        .description('Validate the resolved configuration file; non-zero exit when invalid.')
+        .description(
+            'Validate the resolved configuration file; non-zero exit when invalid (or, under --strict, when it holds an inline-literal secret).',
+        )
         .option('--json', 'emit a machine-readable verdict')
         .action((options: { json?: boolean }, command: Command) => {
             const selection = resolveConfigSelection(command, { stderr: env.io.writeErr });
             const path = env.resolveConfigPath(selection);
+            // `--strict` turns an inline-literal secret from a warning into an invalid verdict — `validate`
+            // is the natural enforcement point for "this config must carry no on-disk secrets".
             const verdict = (() => {
                 try {
-                    const parsed = env.loadConfig(path);
+                    const parsed = env.loadConfig(path, { strict: selection.strict === true });
                     return buildValidateVerdict(path, { ok: true, warnings: parsed.warnings });
                 } catch (error) {
                     return buildValidateVerdict(path, { ok: false, message: loadErrorDetail(error, path) });

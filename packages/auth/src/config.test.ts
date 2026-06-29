@@ -899,6 +899,138 @@ describe('parseConfig — #218 manual-paste session arm + secure-supply', () => 
     });
 });
 
+describe('parseConfig — #155 strict mode (fail closed on inline-literal secrets)', () => {
+    const secret = 'super-secret-password';
+    const inlineSecretConfig = { sources: { 'free.fr': { auth: { kind: 'password', secret } } } };
+
+    it('rejects an inline-literal secret in strict mode — via the `--strict` option', () => {
+        let caught: unknown;
+        try {
+            parseConfig(inlineSecretConfig, { strict: true });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.secret');
+        // Value-free: the rejection names only the path, never the secret (so a `--strict` run can forbid
+        // on-disk secrets without the rejection itself leaking one).
+        expect((caught as ConfigError).message).not.toContain(secret);
+        expect((caught as ConfigError).message).toContain('strict mode');
+    });
+
+    it('rejects an inline-literal secret in strict mode — via a config-level `strict: true` key', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ strict: true, ...inlineSecretConfig });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.secret');
+        expect((caught as ConfigError).message).not.toContain(secret);
+    });
+
+    it('leaves default (non-strict) behavior unchanged — the SAME config warns + is accepted', () => {
+        const { config, warnings } = parseConfig(inlineSecretConfig);
+        // Parsing succeeds (the value is accepted) and the inline-credential warning is present.
+        expect(config.sources['free.fr']?.secret).toBe(secret);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]?.code).toBe('inline-credential');
+        expect(warnings[0]?.path).toBe('sources.free.fr.auth.secret');
+    });
+
+    it('accepts a secret REFERENCE in strict mode — only inline literals fail closed', () => {
+        const { config, warnings } = parseConfig(
+            { sources: { 'free.fr': { auth: { kind: 'password', secret: { ref: 'FREE_PW' } } } } },
+            { strict: true },
+        );
+        expect(config.sources['free.fr']?.secret).toEqual({ ref: 'FREE_PW' });
+        expect(warnings).toEqual([]);
+    });
+
+    it('rejects an inline-literal MFA `seed` in strict mode (the seed routes through the secret path)', () => {
+        const seed = 'JBSWY3DPEHPK3PXP';
+        let caught: unknown;
+        try {
+            parseConfig(
+                {
+                    sources: {
+                        'free.fr': { auth: { kind: 'password', secret: { ref: 'PW' }, mfa: { type: 'totp', seed } } },
+                    },
+                },
+                { strict: true },
+            );
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.free.fr.auth.mfa.seed');
+        expect((caught as ConfigError).message).not.toContain(seed);
+    });
+
+    it('rejects an inline-literal api-token `secret` in strict mode', () => {
+        const token = 'tok-do-not-leak';
+        let caught: unknown;
+        try {
+            parseConfig(
+                { sources: { 'shop.example': { auth: { kind: 'api-token', secret: token } } } },
+                { strict: true },
+            );
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.shop.example.auth.secret');
+        expect((caught as ConfigError).message).not.toContain(token);
+    });
+
+    it('does NOT reject an inline-literal username in strict mode (a username is not a secret)', () => {
+        const { config, warnings } = parseConfig(
+            {
+                sources: {
+                    'free.fr': { auth: { kind: 'password', username: 'alice@free.fr', secret: { ref: 'PW' } } },
+                },
+            },
+            { strict: true },
+        );
+        expect(config.sources['free.fr']?.username).toBe('alice@free.fr');
+        expect(warnings).toEqual([]);
+    });
+
+    it('keeps an inline paste REJECTED in BOTH modes — strict does not weaken #218', () => {
+        const inlineCookie = 'session-id=Atza|THE-LIVE-COOKIE; ubid=257';
+        for (const options of [undefined, { strict: true }]) {
+            let caught: unknown;
+            try {
+                parseConfig({ sources: { x: { auth: { paste: inlineCookie } } } }, options);
+            } catch (error) {
+                caught = error;
+            }
+            expect(caught).toBeInstanceOf(ConfigError);
+            expect((caught as ConfigError).path).toBe('sources.x.auth.paste');
+            expect((caught as ConfigError).message).not.toContain(inlineCookie);
+        }
+    });
+
+    it('rejects a non-boolean `strict:` key, naming the path (a typo must not silently disable the gate)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ strict: 'true', ...inlineSecretConfig });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('strict');
+    });
+
+    it('a config `strict: false` key does not enable the gate (inline secret still merely warns)', () => {
+        const { config, warnings } = parseConfig({ strict: false, ...inlineSecretConfig });
+        expect(config.sources['free.fr']?.secret).toBe(secret);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]?.code).toBe('inline-credential');
+    });
+});
+
 describe('resolveConfigFilePath', () => {
     const HOME = '/home/tester';
 

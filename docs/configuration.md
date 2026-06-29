@@ -77,6 +77,9 @@ sources: # the sources this profile can collect from
 
 - **`sources`** — a mapping of domain → source config (required; may be empty). There is **no**
   `profiles:` map — see [Migrating](#migrating-from-the-profiles-map) if you used one.
+- **`strict`** — optional top-level boolean (default `false`). When `true`, an inline-literal secret is
+  **rejected** at load instead of warned — see [Strict mode](#strict-mode). The `--strict` flag forces it
+  on for a single invocation regardless of this key.
 - **`<domain>.auth.kind`** — **optional and derived** from the credential shape (see
   [Auth kinds](#auth-kinds)); one of `none`, `password`, `session`, `api-token`, `passkey`. If you write
   it, it is **validated against** the shape (it can't contradict it), never trusted as the source of truth.
@@ -384,7 +387,33 @@ secret: 'your-secret-here' # a plain string — stored verbatim in the config fi
 
 A bare string is taken as the secret value itself. It is supported but **discouraged**: the value
 sits in the config file in plain text, so `config validate` reports an `inline-credential` security
-warning and `config show` masks it. Prefer one of the `ref` forms above.
+warning and `config show` masks it. Prefer one of the `ref` forms above — or turn an inline literal
+into a hard error with [strict mode](#strict-mode).
+
+### Strict mode
+
+Strict mode makes an inline-literal **secret** a hard error instead of a warning — so a CI or
+production environment can **forbid on-disk secrets** outright. Enable it either way:
+
+```sh
+getreceipt config validate --strict    # check the file holds no on-disk secrets (the enforcement point)
+getreceipt from example.com --strict    # a global flag: works on every verb, on either side of it
+```
+
+```yaml
+strict: true # a top-level key in the config file itself
+sources:
+  example.com:
+    secret: your-secret-here # → rejected at load (supply a `ref` instead)
+```
+
+The effective mode is the **OR** of the two: `--strict` forces it on for one invocation even when the
+file omits the key (it cannot turn a file's `strict: true` _off_). When strict, an inline secret fails
+closed with a `ConfigError` naming the offending path — never the value, so the rejection itself can't
+leak a secret. The fix is to switch it to a [secret reference](#credentials); the
+[bare-reference sugar](#bare-reference-sugar) keeps that the cheap default. Strict mode changes nothing
+else: a **username** is not a secret (an inline one is always accepted), a secret `ref` is always fine,
+and a [manual-paste session](#manual-paste-session) is rejected inline in **both** modes already.
 
 ## Two-factor authentication (MFA)
 
@@ -434,7 +463,7 @@ Field reference:
   `totp`, and rejected on every other type.** It is a **credential reference** resolved through the
   **same path** as any other secret — `op://…`, `encrypted-file:…`, or an inline literal (see
   [Credentials](#credentials)) — so an inline-literal seed reports the same `inline-credential`
-  warning and is masked by `config show`.
+  warning, is masked by `config show`, and is rejected under [strict mode](#strict-mode).
 - **`trustDevice`** — optional boolean. When the source offers to remember this device, set it to opt
   in; getreceipt then sends that election during an **interactive** sign-in (see below) to reduce
   future prompts. It is never sent unless the source actually offers the option.

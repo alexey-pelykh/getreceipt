@@ -120,6 +120,18 @@ describe('config validate', () => {
         expect(err).toContain('inline literal');
     });
 
+    it('fails (exit 1) under --strict on the SAME inline-credential file, never echoing the value (#155)', async () => {
+        // Without --strict the file above merely warns (exit 0); --strict makes the inline secret a hard error.
+        const { out, err, error } = await runConfig(['validate', '--strict'], {
+            resolveConfigPath: () => validFixture,
+        });
+
+        expect(error).toMatchObject({ exitCode: 1 });
+        expect(err).toContain('strict mode');
+        expect(err).not.toContain('inline-token-value');
+        expect(out).toBe('');
+    });
+
     it('fails (exit 1) with a clear message on an invalid file', async () => {
         const { out, err, error } = await runConfig(['validate'], { resolveConfigPath: () => invalidFixture });
 
