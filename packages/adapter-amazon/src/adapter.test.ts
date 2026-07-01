@@ -34,7 +34,7 @@ import type { AuthHandle, CredentialContext, DateRange, ReceiptWriter } from '@g
 import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AmazonFrAdapter, amazonFrAdapter } from './index.js';
+import { AmazonAdapter, amazonAdapter, AmazonFrAdapter, amazonFrAdapter } from './index.js';
 import type { InvoiceRenderer, Transport } from './index.js';
 import {
     ENDPOINTS,
@@ -210,8 +210,8 @@ const stubRender: InvoiceRenderer = (invoiceHtml) =>
     Promise.resolve(new TextEncoder().encode(`%PDF-1.4\n% rendered ${String(invoiceHtml.length)} bytes\n%%EOF\n`));
 
 /** An adapter wired to a synthetic cookie store (platform `fetch` transport → MSW intercepts every request). */
-function adapter(userDataDir: string, render?: InvoiceRenderer): AmazonFrAdapter {
-    return new AmazonFrAdapter({ importOptions: { userDataDir, key: KEY }, ...(render ? { render } : {}) });
+function adapter(userDataDir: string, render?: InvoiceRenderer): AmazonAdapter {
+    return new AmazonAdapter({ importOptions: { userDataDir, key: KEY }, ...(render ? { render } : {}) });
 }
 
 /** The credential context a front-end resolves for a session source — via the real {@link resolveBrowserSession}. */
@@ -234,36 +234,54 @@ function noopWriter(): ReceiptWriter {
     return { has: () => Promise.resolve(false), write: () => Promise.resolve() };
 }
 
-describe('AmazonFrAdapter — AC1: registration + resolution', () => {
-    it('resolves its canonical case-insensitively and resolves amazon.com as a SEPARATE instance of the same adapter (#190)', () => {
+/**
+ * The amazon.fr instance context from the SHIPPED descriptor (#88: never re-authored) — the live-validated
+ * instance. Collection addresses it explicitly (production's `from amazon.fr`), so a run keys its output by the
+ * instance domain (`<out>/amazon.fr/`) rather than the canonical amazon.com.
+ */
+const FR_INSTANCE = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.fr');
+if (FR_INSTANCE === undefined) {
+    throw new Error('amazon adapter must declare the amazon.fr instance (#190)');
+}
+
+describe('AmazonAdapter — AC1: registration + resolution', () => {
+    it('resolves canonical amazon.com AND the amazon.fr instance to the same adapter, each with its context (#226)', () => {
         const registry = new SourceAdapterRegistry();
-        registry.register(amazonFrAdapter);
+        registry.register(amazonAdapter);
         const resolver = new SourceResolver(registry);
 
-        expect(resolver.resolve('amazon.fr')).toBe(amazonFrAdapter);
-        expect(resolver.resolve('AMAZON.FR')).toBe(amazonFrAdapter);
-        expect(registry.get('amazon.fr')).toBe(amazonFrAdapter);
-        // www. is a flow subdomain of the one canonical source, not an alias — it does NOT resolve.
-        expect(resolver.tryResolve('www.amazon.fr')).toBeUndefined();
-        // amazon.com is now a SEPARATE data INSTANCE of the SAME adapter (#190): it resolves to the adapter
-        // carrying its instance context (host / locale / cookie scope), case-insensitively. The expected
-        // context is read from the descriptor (derived from the wire contract), never re-authored here (#88).
-        const comInstance = amazonFrAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.com');
+        // Canonical (ADR-008): amazon.com resolves to the adapter, case-insensitively.
+        expect(resolver.resolve('amazon.com')).toBe(amazonAdapter);
+        expect(resolver.resolve('AMAZON.COM')).toBe(amazonAdapter);
+        expect(registry.get('amazon.com')).toBe(amazonAdapter);
+        // www. is a flow subdomain of the canonical, not an alias — it does NOT resolve.
+        expect(resolver.tryResolve('www.amazon.com')).toBeUndefined();
+
+        // The expected contexts are read from the descriptor (derived from the wire contract), never re-authored (#88).
+        const comInstance = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.com');
+        const frInstance = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.fr');
         expect(comInstance).toBeDefined();
+        expect(frInstance).toBeDefined();
+
+        // Addressing (ADR-008 §6): `from amazon.com` → the .com instance; `from amazon.fr` → the .fr instance —
+        // the SAME adapter, each carrying its host / locale / cookie scope. The canonical resolves as its own
+        // instance so the collection path routes uniformly; amazon.fr still resolves (back-compat).
         const com = resolver.resolveInstance('amazon.com');
-        expect(com.adapter).toBe(amazonFrAdapter);
+        expect(com.adapter).toBe(amazonAdapter);
         expect(com.instance).toEqual(comInstance);
         expect(com.instance).toMatchObject({ domain: 'amazon.com', cookieDomain: 'amazon.com', locale: 'en-US' });
-        expect(resolver.resolveInstance('AMAZON.COM').adapter).toBe(amazonFrAdapter);
-        // The canonical resolves as its OWN instance too, so the collection path routes uniformly.
-        expect(resolver.resolveInstance('amazon.fr').instance).toMatchObject({ domain: 'amazon.fr', locale: 'fr-FR' });
+        const fr = resolver.resolveInstance('amazon.fr');
+        expect(fr.adapter).toBe(amazonAdapter);
+        expect(fr.instance).toEqual(frInstance);
+        expect(fr.instance).toMatchObject({ domain: 'amazon.fr', cookieDomain: 'amazon.fr', locale: 'fr-FR' });
+        expect(resolver.resolveInstance('AMAZON.FR').adapter).toBe(amazonAdapter);
     });
 
-    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.fr+amazon.com instances, and no aliases', () => {
-        const descriptor = amazonFrAdapter.descriptor;
+    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.com+amazon.fr instances, and no aliases', () => {
+        const descriptor = amazonAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
-            canonicalDomain: 'amazon.fr',
+            canonicalDomain: 'amazon.com',
             authKind: 'session',
             credentialShapes: ['none'],
             transportTier: 'html-scrape',
@@ -279,13 +297,13 @@ describe('AmazonFrAdapter — AC1: registration + resolution', () => {
         // The two instances this ONE adapter serves under ONE sign-in (#190); the canonical is listed as its own
         // instance. The instances ARE the wire contract's (#88: derived, never re-authored beside the adapter) —
         // hosts pass through the #103 publication gate, identity for this discovery-only source.
-        expect(descriptor.instances?.map((i) => i.domain)).toEqual(['amazon.fr', 'amazon.com']);
+        expect(descriptor.instances?.map((i) => i.domain)).toEqual(['amazon.com', 'amazon.fr']);
         expect(descriptor.instances).toEqual(WIRE_INSTANCES.map((i) => ({ ...i })));
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
     });
 });
 
-describe('AmazonFrAdapter — AC1: authenticate (import the browser session, no login)', () => {
+describe('AmazonAdapter — AC1: authenticate (import the browser session, no login)', () => {
     it('imports the amazon.fr session from the configured profile WITHOUT issuing any HTTP request (no login POST)', async () => {
         // No MSW handlers registered: onUnhandledRequest:'error' would throw if authenticate hit the network.
         const userDataDir = makeUserDataDir(AMAZON_COOKIES);
@@ -326,7 +344,7 @@ describe('AmazonFrAdapter — AC1: authenticate (import the browser session, no 
 
     it('imports a MANUALLY-PASTED session (#218) WITHOUT reading any cookie store or issuing HTTP', async () => {
         // No userDataDir, no importOptions, no MSW handlers: the paste path reads no store and makes no request.
-        const auth = await new AmazonFrAdapter({ render: stubRender }).authenticate(
+        const auth = await new AmazonAdapter({ render: stubRender }).authenticate(
             pasteCreds('Cookie: session-id=PASTED-SENTINEL; at-acbfr=PASTED-AT'),
         );
         const session = fromBrowserSession(auth);
@@ -339,7 +357,7 @@ describe('AmazonFrAdapter — AC1: authenticate (import the browser session, no 
     it('threads a PASTED session onto the listing request — usable end-to-end (#218)', async () => {
         let listRequest: Request | undefined;
         server.use(ordersOk([], (request) => (listRequest = request)));
-        const a = new AmazonFrAdapter({ render: stubRender });
+        const a = new AmazonAdapter({ render: stubRender });
 
         await a.list(await a.authenticate(pasteCreds('Cookie: session-id=PASTED-SENTINEL')), WIDE);
 
@@ -350,7 +368,7 @@ describe('AmazonFrAdapter — AC1: authenticate (import the browser session, no 
     });
 });
 
-describe('AmazonFrAdapter — AC2/AC3: list (your-orders scrape + locale + window)', () => {
+describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + locale + window)', () => {
     it('parses the order history into refs addressed by order id, titled and dated from the card', async () => {
         server.use(ordersOk([order('404-1234567-1234567', '26 juin 2026')]));
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
@@ -430,7 +448,7 @@ describe('AmazonFrAdapter — AC2/AC3: list (your-orders scrape + locale + windo
     });
 });
 
-describe('AmazonFrAdapter — AC2: fetch (invoice print page → rendered PDF)', () => {
+describe('AmazonAdapter — AC2: fetch (invoice print page → rendered PDF)', () => {
     it('renders the invoice print page (addressed by orderID) to a faithful application/pdf artifact', async () => {
         server.use(ordersOk([order('404-9-1', '4 mai 2026')]), invoiceOk());
         let renderedHtml: string | undefined;
@@ -474,7 +492,7 @@ describe('AmazonFrAdapter — AC2: fetch (invoice print page → rendered PDF)',
     });
 });
 
-describe('AmazonFrAdapter — AC4: stale session → reauth-required', () => {
+describe('AmazonAdapter — AC4: stale session → reauth-required', () => {
     it('maps an order-history sign-in redirect (302 → /ap/signin) to a ReauthRequiredError', async () => {
         server.use(
             http.get(ORDER_HISTORY, () => new HttpResponse(null, { status: 302, headers: { location: SIGN_IN_URL } })),
@@ -540,7 +558,7 @@ describe('AmazonFrAdapter — AC4: stale session → reauth-required', () => {
     });
 });
 
-describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => {
+describe('AmazonAdapter — AC5: boundary validation + secret hygiene', () => {
     it('rejects a malformed order row (no parseable date) at the trust boundary, labeled by source:stage', async () => {
         // A card whose date is not a French date → the order schema rejects it as drift.
         const badPage =
@@ -566,6 +584,7 @@ describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => 
                 credentials: creds(),
                 writer,
                 window: WIDE,
+                instance: FR_INSTANCE, // `from amazon.fr` — output keyed by the instance domain, not the canonical
             });
 
             expect(result.outcome).toBe('succeeded');
@@ -597,6 +616,7 @@ describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => 
                 credentials: creds(),
                 writer: new FilesystemReceiptWriter({ outDir: dir }),
                 window: WIDE,
+                instance: FR_INSTANCE,
             });
             expect(rerun.outcome).toBe('succeeded');
             if (rerun.outcome === 'succeeded') {
@@ -627,7 +647,7 @@ describe('AmazonFrAdapter — AC5: boundary validation + secret hygiene', () => 
         // The caught transport error embeds a secret-looking value; the adapter must DISCARD it and re-raise a
         // clean, pathname-only message — never forwarding detail that could reach OperationResult.reason.
         const leaky: Transport = () => Promise.reject(new Error(`socket hangup [cookie: ${AT_TOKEN}]`));
-        const a = new AmazonFrAdapter({
+        const a = new AmazonAdapter({
             transport: leaky,
             importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
         });
@@ -678,8 +698,10 @@ describe('wire.ts — the in-repo contract (schema-derived orders, French date p
     });
 });
 
-describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest', () => {
-    const AMAZON = 'amazon.fr';
+describe('AmazonAdapter — #189: persist + reuse the imported session at rest', () => {
+    // The SessionStore key is the SOURCE canonical (ADR-008 §4) — amazon.com after the #226 realign; `login`
+    // and the reuse path both key on it, while the imported jar itself is the live amazon.fr instance's.
+    const AMAZON = 'amazon.com';
     /** A persisted amazon session with ONE distinctive sentinel cookie — provably the STORED one, not a fresh 3-cookie import. */
     const STORED_VALUE = 'stored-session-SENTINEL-do-not-leak';
     const FUTURE_SECONDS = Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000);
@@ -719,7 +741,7 @@ describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest
         const store = new KeyringSessionStore(new InMemoryKeyring());
         await store.save(AMAZON, storedAmazonSession(FUTURE_SECONDS));
         // No importOptions: the reuse path must NOT read the browser (it would hit the real profile otherwise).
-        const a = new AmazonFrAdapter({ sessionReuse: { store } });
+        const a = new AmazonAdapter({ sessionReuse: { store } });
 
         const session = fromBrowserSession(await a.authenticate(creds()));
 
@@ -729,7 +751,7 @@ describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest
 
     it('imports + persists when nothing is stored, so the next run reuses it [absent]', async () => {
         const store = new KeyringSessionStore(new InMemoryKeyring());
-        const a = new AmazonFrAdapter({
+        const a = new AmazonAdapter({
             importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
             sessionReuse: { store },
         });
@@ -748,7 +770,7 @@ describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest
     it('surfaces reauth-required for a stored session past its freshness window [reauth-required]', async () => {
         const store = new KeyringSessionStore(new InMemoryKeyring());
         await store.save(AMAZON, storedAmazonSession(PAST_SECONDS));
-        const a = new AmazonFrAdapter({ sessionReuse: { store } });
+        const a = new AmazonAdapter({ sessionReuse: { store } });
 
         // authenticate throws the typed re-auth signal (no browser read); collect() maps it to a structured result.
         await expect(a.authenticate(creds())).rejects.toBeInstanceOf(ReauthRequiredError);
@@ -775,7 +797,7 @@ describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest
             },
             delete: () => Promise.resolve(),
         };
-        const a = new AmazonFrAdapter({
+        const a = new AmazonAdapter({
             importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
             sessionReuse: { store: nullStore },
         });
@@ -788,9 +810,9 @@ describe('AmazonFrAdapter — #189: persist + reuse the imported session at rest
     });
 });
 
-describe('AmazonFrAdapter — AC8: multi-instance fan-out over synthetic data (#190)', () => {
+describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#190)', () => {
     // The instance contexts come from the SHIPPED descriptor (the contract), never re-authored here (#88).
-    const INSTANCES = amazonFrAdapter.descriptor.instances ?? [];
+    const INSTANCES = amazonAdapter.descriptor.instances ?? [];
     const FR_CTX = INSTANCES.find((i) => i.domain === 'amazon.fr');
     const COM_CTX = INSTANCES.find((i) => i.domain === 'amazon.com');
     if (FR_CTX === undefined || COM_CTX === undefined) {
@@ -839,7 +861,7 @@ describe('AmazonFrAdapter — AC8: multi-instance fan-out over synthetic data (#
             ordersFor(COM_CTX.host, [order('111-COM-0000002', 'June 26, 2026')], comReq),
         );
         const auth = sharedSession();
-        const adapter = new AmazonFrAdapter({ render: stubRender });
+        const adapter = new AmazonAdapter({ render: stubRender });
 
         const fr = await adapter.list(auth, WIDE, FR_CTX);
         const com = await adapter.list(auth, WIDE, COM_CTX);
@@ -876,7 +898,7 @@ describe('AmazonFrAdapter — AC8: multi-instance fan-out over synthetic data (#
                 return html(renderInvoice(orderId));
             }),
         );
-        const adapter = new AmazonFrAdapter({ render: stubRender });
+        const adapter = new AmazonAdapter({ render: stubRender });
         const ref = { id: '111-COM-0000002', issuedAt: new Date('2026-06-26T00:00:00.000Z') };
 
         const artifact = asReceiptArtifact(await adapter.fetch(sharedSession(), ref, COM_CTX));
@@ -887,5 +909,85 @@ describe('AmazonFrAdapter — AC8: multi-instance fan-out over synthetic data (#
         expect(invoiceReq?.headers.get('cookie')).not.toContain(FR_AT);
         expect(artifact.contentType).toBe('application/pdf');
         expect(artifact.filename).toBe('111-COM-0000002.pdf');
+    });
+});
+
+describe('AmazonAdapter — #226: canonical realign (amazon.com source identity)', () => {
+    const COM_INSTANCE = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.com');
+    if (COM_INSTANCE === undefined) {
+        throw new Error('amazon adapter must declare the amazon.com instance (#190)');
+    }
+
+    it('surfaces reauth keyed on the SOURCE canonical amazon.com — source-level, not per-instance (ADR-008 §5)', async () => {
+        // A stale session on EITHER instance's host bounces to sign-in; the reauth signal is the SOURCE's (amazon.com),
+        // never the addressed instance domain — one re-auth per source, all its instances block on it.
+        server.use(
+            http.get(
+                `${FR_INSTANCE.host}${ENDPOINTS.orderHistory}`,
+                () => new HttpResponse(null, { status: 302, headers: { location: SIGN_IN_URL } }),
+            ),
+            http.get(
+                `${COM_INSTANCE.host}${ENDPOINTS.orderHistory}`,
+                () =>
+                    new HttpResponse(null, {
+                        status: 302,
+                        headers: { location: `${COM_INSTANCE.host}${ENDPOINTS.signIn}` },
+                    }),
+            ),
+        );
+        const a = adapter(makeUserDataDir(AMAZON_COOKIES));
+        const auth = await a.authenticate(creds());
+
+        const frErr = (await a.list(auth, WIDE, FR_INSTANCE).catch((e: unknown) => e)) as ReauthRequiredError;
+        const comErr = (await a.list(auth, WIDE, COM_INSTANCE).catch((e: unknown) => e)) as ReauthRequiredError;
+
+        expect(frErr).toBeInstanceOf(ReauthRequiredError);
+        expect(comErr).toBeInstanceOf(ReauthRequiredError);
+        // BOTH carry the source canonical (amazon.com), never the addressed instance domain.
+        expect(frErr.domain).toBe('amazon.com');
+        expect(comErr.domain).toBe('amazon.com');
+    });
+
+    it('namespaces output per instance so the SAME order id on two marketplaces cannot clobber (#190/#226)', async () => {
+        const SHARED_ID = '404-SHARED-01';
+        server.use(
+            http.get(`${FR_INSTANCE.host}${ENDPOINTS.orderHistory}`, () =>
+                html(renderOrdersPage([order(SHARED_ID, '1 mai 2026')])),
+            ),
+            http.get(`${FR_INSTANCE.host}${ENDPOINTS.invoicePrint}`, ({ request }) =>
+                html(renderInvoice(new URL(request.url).searchParams.get(ORDER_QUERY.orderId) ?? '')),
+            ),
+            http.get(`${COM_INSTANCE.host}${ENDPOINTS.orderHistory}`, () =>
+                html(renderOrdersPage([order(SHARED_ID, 'May 1, 2026')])),
+            ),
+            http.get(`${COM_INSTANCE.host}${ENDPOINTS.invoicePrint}`, ({ request }) =>
+                html(renderInvoice(new URL(request.url).searchParams.get(ORDER_QUERY.orderId) ?? '')),
+            ),
+        );
+        const dir = mkdtempSync(join(tmpdir(), 'amazon-multi-out-'));
+        try {
+            // `from amazon.fr` then `from amazon.com`, same shared writer root — each keys output by its instance domain.
+            for (const instance of [FR_INSTANCE, COM_INSTANCE]) {
+                const run = await collect({
+                    adapter: adapter(makeUserDataDir(AMAZON_COOKIES), stubRender),
+                    credentials: creds(),
+                    writer: new FilesystemReceiptWriter({ outDir: dir }),
+                    window: WIDE,
+                    instance,
+                });
+                expect(run.outcome).toBe('succeeded');
+            }
+            // Separate per-instance dirs, each holding the shared id — no cross-instance clobber.
+            expect((await readdirP(join(dir, 'amazon.fr'))).sort()).toEqual([`${SHARED_ID}.pdf`]);
+            expect((await readdirP(join(dir, 'amazon.com'))).sort()).toEqual([`${SHARED_ID}.pdf`]);
+        } finally {
+            await rmP(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps the deprecated adapter-amazon-fr export names as aliases for one release (back-compat)', () => {
+        // The package/class rename ships deprecated aliases so an importer of the old names keeps resolving.
+        expect(AmazonFrAdapter).toBe(AmazonAdapter);
+        expect(amazonFrAdapter).toBe(amazonAdapter);
     });
 });

@@ -167,6 +167,11 @@ it **imports that browser's already-authenticated session** from the browser's c
 yt-dlp's `--cookies-from-browser` uses). getreceipt never drives the login — it reuses the session you
 already established in your own browser.
 
+> **Amazon is canonically `amazon.com`, collected via the `amazon.fr` marketplace today.** `getreceipt
+sources` lists the source as `amazon.com`; you collect it with `getreceipt from amazon.fr` (its live
+> marketplace instance), and every `amazon.fr` config key or stored session below keeps resolving. The
+> examples use `amazon.fr` for that reason.
+
 ```yaml
 sources:
   amazon.fr:
@@ -593,7 +598,7 @@ output) so a months-old or never-verified confirmation is self-evident. A `stale
 source still **warns but proceeds**: getreceipt fetches your own receipts with your own credentials,
 so staleness is a visible advisory, never a block on collection or on release.
 
-The six bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`particuliers.alpiq.fr`**, and **`amazon.fr`** (Amazon orders via an imported browser session) — are currently `unverified`.
+The six bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`particuliers.alpiq.fr`**, and **`amazon.com`** (Amazon orders via an imported browser session, collected today via the `amazon.fr` marketplace) — are currently `unverified`.
 
 Verification is produced **only** by the project's live conformance oracle, **not** by your own
 collections: a successful `collect` does not mark a source verified. For what each state means, where

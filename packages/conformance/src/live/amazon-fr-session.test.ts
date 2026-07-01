@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { inspect } from 'node:util';
 
-import { AmazonFrAdapter, ENDPOINTS, LISTING, ORDER_QUERY, orderSchema } from '@getreceipt/adapter-amazon-fr';
-import type { InvoiceRenderer, OrderDto } from '@getreceipt/adapter-amazon-fr';
+import { AmazonAdapter, ENDPOINTS, LISTING, ORDER_QUERY, orderSchema } from '@getreceipt/adapter-amazon';
+import type { InvoiceRenderer, OrderDto } from '@getreceipt/adapter-amazon';
 import { deriveChromeSafeStorageKey } from '@getreceipt/auth';
 import { SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
@@ -18,10 +18,10 @@ import type { LivePlan } from './gate.js';
 import { runLiveCollection } from './harness.js';
 
 /**
- * amazon.fr — the FIRST `session`-kind source — driven through the live harness against SYNTHETIC fixtures
- * (issue #184). This proves the harness's session arm end to end: the gate→`runLiveCollection` path builds a
- * session credential context, the real {@link AmazonFrAdapter} authenticates (imports the cookies) → lists →
- * fetches, and the oracle promotes the source to `e2e-verified`. It is NOT `*.e2e.test.ts`, so it RUNS in the
+ * The amazon.fr instance of the Amazon `session`-kind source (canonical amazon.com, #226) — driven through the
+ * live harness against SYNTHETIC fixtures (issue #184). This proves the harness's session arm end to end: the
+ * gate→`runLiveCollection` path builds a session credential context, the real {@link AmazonAdapter} authenticates
+ * (imports the cookies) → lists → fetches, and the oracle promotes the source to `e2e-verified`. It is NOT `*.e2e.test.ts`, so it RUNS in the
  * default conformance (CI) suite — the harness mechanics for a session source are proven in CI, while the
  * fenced `live.e2e.test.ts` still contacts a real service only on opt-in.
  *
@@ -40,7 +40,7 @@ import { runLiveCollection } from './harness.js';
 const ORDER_HISTORY = `${ENDPOINTS.origin}${ENDPOINTS.orderHistory}`;
 const INVOICE_PRINT = `${ENDPOINTS.origin}${ENDPOINTS.invoicePrint}`;
 
-// --- synthetic Chrome cookie store (mirrors adapter-amazon-fr/adapter.test.ts; no real Keychain) ----------
+// --- synthetic Chrome cookie store (mirrors adapter-amazon/adapter.test.ts; no real Keychain) ----------
 
 /** Chromium's fixed cookie IV (16 spaces) — mirrored so fixtures encrypt exactly as the reader decrypts. */
 const IV = Buffer.alloc(16, ' ');
@@ -169,7 +169,7 @@ const stubRender: InvoiceRenderer = (invoiceHtml) =>
 /** A resolver returning the real amazon adapter wired to a synthetic cookie store + stub renderer (no live network, no Keychain). */
 function syntheticResolver(userDataDir: string): SourceResolver {
     const registry = new SourceAdapterRegistry();
-    registry.register(new AmazonFrAdapter({ importOptions: { userDataDir, key: KEY }, render: stubRender }));
+    registry.register(new AmazonAdapter({ importOptions: { userDataDir, key: KEY }, render: stubRender }));
     return new SourceResolver(registry);
 }
 

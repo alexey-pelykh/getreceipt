@@ -126,14 +126,16 @@ describe('#152 — alpiq + monoprix are password sources (oauth2 → password re
  * (`configuredCredentialShapes`) and the REAL gate (`resolveCredentialShape`) — the cross-package
  * linkage no single package owns.
  *
- * #181 splits out the FIRST session-kind source (amazon.fr): it imports a browser session and supplies
- * NO credential, so it declares `credentialShapes: ['none']` and the operation-runner bypasses the #169
- * password gate for it. The password-shape assertions below therefore run over {@link PASSWORD_SOURCES}
- * only; {@link SESSION_SOURCES} get their own posture assertion. Both are named explicitly so a revert
- * (a session source regaining a password shape, or vice versa) FAILS here rather than slipping through.
+ * #181 splits out the FIRST session-kind source (Amazon — canonical `amazon.com` since #226): it imports a
+ * browser session and supplies NO credential, so it declares `credentialShapes: ['none']` and the
+ * operation-runner bypasses the #169 password gate for it. The password-shape assertions below therefore run
+ * over {@link PASSWORD_SOURCES} only; {@link SESSION_SOURCES} get their own posture assertion. Both are named
+ * explicitly so a revert (a session source regaining a password shape, or vice versa) FAILS here rather than
+ * slipping through.
  */
 const PASSWORD_SOURCES = ['free.fr', 'grandfrais.com', 'monoprix.fr', 'particuliers.alpiq.fr', 'pro.free.fr'] as const;
-const SESSION_SOURCES = ['amazon.fr'] as const;
+// The session source's CANONICAL domain (ADR-008 / #226) — amazon.com, not the amazon.fr marketplace instance.
+const SESSION_SOURCES = ['amazon.com'] as const;
 /** Every shipped source — the bundle must be EXACTLY this union (the coverage guard below). */
 const SHIPPED_SOURCES = [...PASSWORD_SOURCES, ...SESSION_SOURCES] as const;
 
@@ -176,8 +178,9 @@ describe('#169 — shipped adapters declare a credential shape the fail-closed g
 });
 
 describe('#181 — the session source declares no credential shape (bypasses the #169 password gate)', () => {
-    // amazon.fr imports a browser session and supplies no credential; the field is required + non-empty, so
-    // it declares exactly ['none']. A revert to a password shape (or an added api-token shape) FAILS here.
+    // The Amazon source (canonical amazon.com since #226) imports a browser session and supplies no credential;
+    // the field is required + non-empty, so it declares exactly ['none']. A revert to a password shape (or an
+    // added api-token shape) FAILS here.
     it.each(SESSION_SOURCES)('%s declares authKind: session with credentialShapes ["none"]', (domain) => {
         const { authKind, credentialShapes } = bundledAdapterFor(domain).descriptor;
         expect(authKind).toBe('session');
