@@ -19,7 +19,7 @@
     "lint": "eslint ."
   },
   "devDependencies": {
-    "@getreceipt/adapter-amazon-fr": "workspace:^",
+    "@getreceipt/adapter-amazon": "workspace:^",
     "@getreceipt/auth": "workspace:^",
     "@getreceipt/cli": "workspace:^",
     "@getreceipt/core": "workspace:^",

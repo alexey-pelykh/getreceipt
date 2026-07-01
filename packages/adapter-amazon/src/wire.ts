@@ -33,22 +33,23 @@ export const ENDPOINTS = {
 } as const;
 
 /**
- * The instance contract (#190): amazon.fr (canonical) and amazon.com are SEPARATE data instances served by
- * ONE adapter under ONE sign-in — orders placed on `.com` are not visible on `.fr`. Each instance shares
- * Amazon's global page STRUCTURE (the {@link LISTING} tokens + {@link ENDPOINTS} paths) and differs only in
- * `host`, `Accept-Language`, the date FORMAT (`fr` → `DD mois YYYY`, `en` → `Month DD, YYYY`), and which of the
- * shared session's cookies travel (`cookieDomain`). The hosts are baked public constants (no runtime discovery)
- * → publishable under the host-publication gate (#103), like {@link ENDPOINTS.origin}.
+ * The instance contract (#190): amazon.com (canonical, ADR-008) and amazon.fr are SEPARATE data instances served
+ * by ONE adapter under ONE sign-in — orders placed on `.com` are not visible on `.fr`. The canonical is listed
+ * FIRST. Each instance shares Amazon's global page STRUCTURE (the {@link LISTING} tokens + {@link ENDPOINTS} paths)
+ * and differs only in `host`, `Accept-Language`, the date FORMAT (`en` → `Month DD, YYYY`, `fr` → `DD mois YYYY`),
+ * and which of the shared session's cookies travel (`cookieDomain`). The hosts are baked public constants (no
+ * runtime discovery) → publishable under the host-publication gate (#103), like {@link ENDPOINTS.origin}.
  *
  * SCOPE NOTE: amazon.com's LIVE page structure and cookie/auth model are NOT yet validated against the real
  * site — that is the #191 recon spike (out of scope here). This contract ASSUMES the shared-structure model and
- * is proven over SYNTHETIC fixtures; #191 confirms or corrects it before any live amazon.com collection. The
- * fields are structurally an {@link @getreceipt/core!InstanceContext} (the adapter routes each `host` through
- * the #103 gate when building the descriptor's `instances`).
+ * is proven over SYNTHETIC fixtures; #191 confirms or corrects it before any live amazon.com collection. Until
+ * then the adapter imports the live-validated amazon.fr instance's session ({@link ENDPOINTS.origin} is that
+ * instance's order host). The fields are structurally an {@link @getreceipt/core!InstanceContext} (the adapter
+ * routes each `host` through the #103 gate when building the descriptor's `instances`).
  */
 export const INSTANCES = [
-    { domain: 'amazon.fr', host: ENDPOINTS.origin, cookieDomain: 'amazon.fr', locale: 'fr-FR' },
     { domain: 'amazon.com', host: 'https://www.amazon.com', cookieDomain: 'amazon.com', locale: 'en-US' },
+    { domain: 'amazon.fr', host: ENDPOINTS.origin, cookieDomain: 'amazon.fr', locale: 'fr-FR' },
 ] as const;
 
 /** Query-parameter names the listing pagination and the invoice page address. */

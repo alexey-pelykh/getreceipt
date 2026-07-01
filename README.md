@@ -130,7 +130,7 @@ supplied as a **reference**, so the value itself never lives in the config file:
 The **[configuration guide](docs/configuration.md)** covers the full schema, every credential form,
 where receipts land, and how sources are resolved.
 
-> The six bundled sources (`grandfrais.com`, `monoprix.fr`, `free.fr` — Free residential/Freebox, `pro.free.fr` — Free Pro, `particuliers.alpiq.fr`, `amazon.fr` — Amazon orders via an imported browser session) are currently
+> The six bundled sources (`grandfrais.com`, `monoprix.fr`, `free.fr` — Free residential/Freebox, `pro.free.fr` — Free Pro, `particuliers.alpiq.fr`, `amazon.com` — Amazon orders via an imported browser session, collected today via the `amazon.fr` marketplace) are currently
 > **`unverified`** — their reverse-engineered flows have not been machine-confirmed against the live
 > services, so results are best-effort. `getreceipt sources` shows each source's state. A successful
 > `collect` does **not** mark a source verified — see **[docs/verification.md](docs/verification.md)**

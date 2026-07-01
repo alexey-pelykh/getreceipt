@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { AmazonFrAdapter, ENDPOINTS as amazonEndpoints } from '@getreceipt/adapter-amazon-fr';
+import { AmazonAdapter, ENDPOINTS as amazonEndpoints } from '@getreceipt/adapter-amazon';
 import { freeFrAdapter } from '@getreceipt/adapter-free-fr';
 import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais-com';
 import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix-fr';
@@ -35,7 +35,7 @@ export function buildBundledAdapters(): readonly SourceAdapter[] {
     // amazon is also wired with opt-in at-rest session reuse (#189): the readable session store skips the
     // browser cookie read when a still-fresh session was stored by `login amazon.fr`. The store is NULL until
     // that first login creates the sessions dir, so an un-logged-in run imports fresh (the basic per-run path).
-    const amazon = new AmazonFrAdapter({
+    const amazon = new AmazonAdapter({
         transport: createImpersonatingTransport({ impersonateHosts: [new URL(amazonEndpoints.origin).host] }),
         sessionReuse: { store: defaultReadableSessionStore() },
     });

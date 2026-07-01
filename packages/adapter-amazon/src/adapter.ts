@@ -43,7 +43,20 @@ import {
 } from './wire.js';
 import type { OrderDto } from './wire.js';
 
-const CANONICAL_DOMAIN = 'amazon.fr';
+/**
+ * The source's CANONICAL identity (ADR-008): resolution, the SessionStore key (`login` + at-rest reuse), and the
+ * SOURCE-level `reauth_required` signal (ADR-008 §4/§5) all key on this. amazon.fr + amazon.com are data INSTANCES
+ * of this one source (#190), not the canonical.
+ */
+const CANONICAL_DOMAIN = 'amazon.com';
+
+/**
+ * The instance whose LIVE browser session + page structure are validated today. amazon.com's live cookie/auth model
+ * is the #191 recon spike, so the (source-level, ADR-008 §4) session import and the no-explicit-instance run context
+ * read the amazon.fr instance until then — keeping `from amazon.fr` byte-for-byte. When #191 validates amazon.com the
+ * import becomes the shared multi-marketplace jar; the canonical identity above is unaffected.
+ */
+const LIVE_SESSION_DOMAIN = 'amazon.fr';
 
 /** Host-publication finding (#103): the order/invoice host is a baked public constant with no runtime discovery → publishable. */
 const DISCOVERY_ONLY = true;
@@ -54,8 +67,8 @@ const DISCOVERY_ONLY = true;
 const ORIGIN = resolvePublishableHost(DISCOVERY_ONLY, { bakedHost: ENDPOINTS.origin }).host;
 
 /**
- * The instances this ONE adapter serves as SEPARATE data instances under ONE sign-in (#190): amazon.fr
- * (canonical) + amazon.com. Built from the wire contract's {@link INSTANCES}, routing each baked host through
+ * The instances this ONE adapter serves as SEPARATE data instances under ONE sign-in (#190): amazon.com
+ * (canonical) + amazon.fr. Built from the wire contract's {@link INSTANCES}, routing each baked host through
  * the SAME publication gate (#103) as {@link ORIGIN} so every host the adapter addresses is provably
  * publishable. `list`/`fetch` read the per-run {@link InstanceContext} (host, locale, cookie scope) rather than
  * branching on the domain — adding a marketplace is adding a row, not a code path.
@@ -115,7 +128,7 @@ const defaultTransport: Transport = (input, init) => fetch(input, init);
  * production (#176/#177) — they do not apply to a manually-pasted session (#218), which reads no store;
  * `render` defaults to the real headless port and is injectable so unit tests skip launching a browser.
  */
-export interface AmazonFrAdapterOptions {
+export interface AmazonAdapterOptions {
     readonly transport?: Transport;
     readonly importOptions?: ImportBrowserSessionOptions;
     /** Renders a fetched invoice page to the PDF artifact; defaults to the @getreceipt/browser port ({@link renderInvoicePdf}). */
@@ -130,26 +143,28 @@ export interface AmazonFrAdapterOptions {
 }
 
 /**
- * The amazon.fr source adapter — the FIRST `session`-kind source. It reuses auth (the browser-session import
- * seam, Secret fence, typed errors) and core (trust boundary, re-auth seam) for every cross-cutting concern
- * rather than re-implementing it.
+ * The Amazon source adapter — canonical amazon.com, serving the amazon.com + amazon.fr marketplace instances
+ * (#190) — and the FIRST `session`-kind source. It reuses auth (the browser-session import seam, Secret fence,
+ * typed errors) and core (trust boundary, re-auth seam) for every cross-cutting concern rather than re-implementing it.
  *
- * `authenticate` IMPORTS the user's already-authenticated amazon.fr browser session (the yt-dlp
- * `--cookies-from-browser` model, #179) — it drives no login and launches no browser. `list` scrapes the
+ * `authenticate` IMPORTS the user's already-authenticated Amazon browser session (the yt-dlp
+ * `--cookies-from-browser` model, #179) — it drives no login and launches no browser. The session is a SOURCE
+ * concern (ADR-008 §4), keyed at the canonical for storage/re-auth; it reads the live-validated amazon.fr
+ * instance's cookies ({@link LIVE_SESSION_DOMAIN}) until amazon.com is validated (#191). `list` scrapes the
  * "your-orders" history (paginating by `startIndex`) into one {@link ReceiptRef} per order; `fetch` retrieves
  * that order's printable invoice page over the impersonating transport and renders it to a faithful
  * print-layout PDF artifact (#182) via the `@getreceipt/browser` headless port (#172). A session that the
  * source no longer accepts surfaces, at `list`/`fetch`, as the SAME `reauth-required` outcome every source
  * uses ({@link browserSessionReauthRequired}, #180) — pointing the user at their browser to sign in again.
  */
-export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter {
+export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
     readonly #transport: Transport;
     readonly #importOptions: ImportBrowserSessionOptions;
     readonly #render: InvoiceRenderer;
     readonly #sessionReuse: { readonly store: SessionStore; readonly detector: ReauthDetector } | undefined;
 
-    constructor(options: AmazonFrAdapterOptions = {}) {
+    constructor(options: AmazonAdapterOptions = {}) {
         this.#transport = options.transport ?? defaultTransport;
         this.#importOptions = options.importOptions ?? {};
         this.#render = options.render ?? renderInvoicePdf;
@@ -173,9 +188,11 @@ export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter
             );
         }
         const descriptor = resolved.session;
-        // Import the domain-scoped session: no credential exchange, no browser launch — read the cookie store the
-        // user signed into, OR parse the session they pasted (#218). A stale session surfaces LATER, at list/fetch.
-        const importFresh = (): AuthHandle => importSession(descriptor, CANONICAL_DOMAIN, this.#importOptions);
+        // Import the session scoped to the live-validated instance ({@link LIVE_SESSION_DOMAIN}, amazon.fr): no
+        // credential exchange, no browser launch — read the cookie store the user signed into, OR parse the session
+        // they pasted (#218). The store key + re-auth stay SOURCE-level (the canonical, ADR-008 §4/§5). A stale
+        // session surfaces LATER, at list/fetch.
+        const importFresh = (): AuthHandle => importSession(descriptor, LIVE_SESSION_DOMAIN, this.#importOptions);
         if (this.#sessionReuse === undefined) {
             return importFresh(); // basic per-run path (#179): no at-rest store wired.
         }
@@ -203,7 +220,7 @@ export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter
 
     async list(auth: AuthHandle, range: DateRange, instance?: InstanceContext): Promise<readonly ReceiptRef[]> {
         const session = fromBrowserSession(auth);
-        // The instance (#190) supplies the host, locale, and cookie scope; absent → the canonical amazon.fr defaults.
+        // The instance (#190) supplies the host, locale, and cookie scope; absent → the live amazon.fr instance defaults.
         const ctx = runContext(instance);
         const orders = await listAllOrders(this.#transport, session, ctx);
         return expandToRefs(orders, range, ctx.locale);
@@ -229,13 +246,14 @@ export class AmazonFrAdapter implements SourceAdapter, SessionPersistableAdapter
 }
 
 /** A ready-to-register adapter instance — a front-end registers this into its {@link @getreceipt/core!SourceAdapterRegistry}. */
-export const amazonFrAdapter: SourceAdapter = new AmazonFrAdapter();
+export const amazonAdapter: SourceAdapter = new AmazonAdapter();
 
 /**
  * The per-run wire parameters an optional {@link InstanceContext} resolves to (#190): the request origin, the
  * `Accept-Language` + date-parsing locale, the cookie scope that selects which of the shared session's cookies
- * travel, and the domain (for diagnostics). Absent instance → the canonical amazon.fr defaults, so a
- * single-instance run is byte-for-byte the pre-#190 behavior.
+ * travel, and the domain (for diagnostics). Absent instance → the live amazon.fr instance ({@link LIVE_SESSION_DOMAIN})
+ * defaults, so a no-explicit-instance run is byte-for-byte the pre-#190 behavior. (Production always addresses an
+ * explicit instance — the canonical resolves as its own instance — so this default is a direct-caller convenience.)
  */
 interface RunContext {
     readonly origin: string;
@@ -249,7 +267,7 @@ function runContext(instance: InstanceContext | undefined): RunContext {
         origin: instance?.host ?? ORIGIN,
         locale: instance?.locale ?? LOCALE.acceptLanguage,
         cookieDomain: instance?.cookieDomain,
-        domain: instance?.domain ?? CANONICAL_DOMAIN,
+        domain: instance?.domain ?? LIVE_SESSION_DOMAIN,
     };
 }
 

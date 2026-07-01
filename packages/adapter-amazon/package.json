@@ -1,13 +1,13 @@
 {
-  "name": "@getreceipt/adapter-amazon-fr",
+  "name": "@getreceipt/adapter-amazon",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "@getreceipt source adapter for amazon.fr (Amazon order invoices via an imported browser session).",
+  "description": "@getreceipt source adapter for Amazon (canonical amazon.com; serves the amazon.com + amazon.fr marketplace instances via an imported browser session).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexey-pelykh/getreceipt.git",
-    "directory": "packages/adapter-amazon-fr"
+    "directory": "packages/adapter-amazon"
   },
   "exports": {
     ".": {
