@@ -3,10 +3,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ENCRYPTED_FILE_PASSPHRASE_ENV } from '@getreceipt/auth';
+import { ENCRYPTED_FILE_PASSPHRASE_ENV, parseConfig } from '@getreceipt/auth';
 import { BUNDLED_ADAPTERS, createProgram } from '@getreceipt/cli';
 import { ADAPTER_VERIFICATION_STATES } from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 
 /**
  * Usage-documentation posture invariant (issue #12).
@@ -70,6 +71,25 @@ function cliInvocations(markdown: string): string[] {
         }
     }
     return out;
+}
+
+/** The inner text of each fenced ```yaml code block, in document order. Splits on `\r?\n` so a CRLF
+ * checkout (Windows) does not leave a trailing `\r` that a strict YAML parser rejects after a `]`. */
+function yamlBlocks(markdown: string): string[] {
+    const blocks: string[] = [];
+    let current: string[] | undefined;
+    for (const raw of markdown.split(/\r?\n/)) {
+        const fence = raw.trim();
+        if (current !== undefined && fence.startsWith('```')) {
+            blocks.push(current.join('\n'));
+            current = undefined;
+        } else if (current !== undefined) {
+            current.push(raw);
+        } else if (fence === '```yaml') {
+            current = [];
+        }
+    }
+    return blocks;
 }
 
 /** Relative link targets (`](…)`); external URLs and pure `#anchor` links are excluded. */
@@ -190,6 +210,27 @@ describe('the docs name the bundled sources honestly (issues #12, #16)', () => {
         expect(bothDocs).toContain('unverified');
         for (const state of ADAPTER_VERIFICATION_STATES) {
             expect(configGuide).toContain(state);
+        }
+    });
+});
+
+describe('the documented multi-instance config example round-trips through the loader (issues #190, #232)', () => {
+    // A documented multi-marketplace (Amazon) config must actually PARSE through the shipped loader — so an
+    // `instances:` example that drifts from `parseConfig` (the flat session arm + source-level `instances:`
+    // sibling) fails CI rather than reading plausibly while being unloadable.
+    const instanceBlocks = yamlBlocks(configGuide).filter((block) => /^\s*instances\s*:/m.test(block));
+
+    it('the guide carries a multi-instance `instances:` example (not a vacuous pass)', () => {
+        expect(instanceBlocks.length).toBeGreaterThan(0);
+    });
+
+    it.each(instanceBlocks)('a documented `instances:` example parses into a non-empty instance list', (block) => {
+        const { config } = parseConfig(parseYaml(block));
+        const configured = Object.values(config.sources).filter((source) => source.instances !== undefined);
+        expect(configured.length).toBeGreaterThan(0);
+        for (const source of configured) {
+            expect(source.instances).toEqual(expect.arrayContaining([expect.any(String)]));
+            expect(source.instances?.every((domain) => domain.length > 0)).toBe(true);
         }
     });
 });
