@@ -167,14 +167,15 @@ it **imports that browser's already-authenticated session** from the browser's c
 yt-dlp's `--cookies-from-browser` uses). getreceipt never drives the login — it reuses the session you
 already established in your own browser.
 
-> **Amazon is canonically `amazon.com`, collected via the `amazon.fr` marketplace today.** `getreceipt
-sources` lists the source as `amazon.com`; you collect it with `getreceipt from amazon.fr` (its live
-> marketplace instance), and every `amazon.fr` config key or stored session below keeps resolving. The
-> examples use `amazon.fr` for that reason.
+> **Amazon is a multi-marketplace source.** Its canonical domain is `amazon.com`; `amazon.fr` is a separate
+> **marketplace instance** — different orders under the **same** Amazon sign-in. The session examples below
+> configure the source under its canonical `amazon.com` key (one imported session serves every instance); the
+> instance list, addressing (`from amazon.fr`, `--all-instances`), per-instance output, and honest
+> per-marketplace status live under [Multi-marketplace instances](#multi-marketplace-instances-amazon).
 
 ```yaml
 sources:
-  amazon.fr:
+  amazon.com:
     browser: chrome # chrome, brave, edge, chromium, or firefox
     profile: 'Profile 1' # the browser profile: a profile directory name, or the account email
 ```
@@ -184,7 +185,7 @@ The terse top-level `browser`/`profile` pair above is **shorthand** (the session
 
 ```yaml
 sources:
-  amazon.fr:
+  amazon.com:
     auth:
       browser: chrome
       profile: 'Profile 1'
@@ -223,7 +224,7 @@ profile-directory name, or `default` for Firefox's default profile:
 
 ```yaml
 sources:
-  amazon.fr:
+  amazon.com:
     browser: firefox
     profile: default # or a profile Name (e.g. default-release) / its profile-directory name
 ```
@@ -252,7 +253,7 @@ it with `paste`:
 
 ```yaml
 sources:
-  amazon.fr:
+  amazon.com:
     auth:
       paste:
         ref: op://Private/amazon-session # the pasted Cookie header / cookies.txt, by secret reference
@@ -262,7 +263,7 @@ or the one-key shorthand (no `auth:` block, mirroring `browser`/`profile`):
 
 ```yaml
 sources:
-  amazon.fr:
+  amazon.com:
     paste:
       ref: op://Private/amazon-session
 ```
@@ -284,11 +285,79 @@ session to recover. For the full security posture (in-memory-only, value fencing
 [SECURITY.md § Manual-paste session](../SECURITY.md#manual-paste-session).
 
 > **Reusing the imported session (optional).** Every run re-reads the browser cookie store by default. Run
-> `getreceipt login amazon.fr` once to import the session and **store it encrypted at rest** (an AES-256-GCM
+> `getreceipt login amazon.com` once to import the session and **store it encrypted at rest** (an AES-256-GCM
 > file under `~/.getreceipt/sessions`, sealed with your `GETRECEIPT_SECRET_PASSPHRASE` — never plaintext);
 > later runs **reuse** it while it stays fresh, falling back to a browser read only once it expires.
-> `getreceipt logout amazon.fr` clears it. It is an optimization — skip `login` and every run imports fresh.
+> `getreceipt logout amazon.com` clears it. It is an optimization — skip `login` and every run imports fresh.
+> Login is **source-level**: one stored session serves every marketplace instance (see below).
 > See [SECURITY.md § Session reuse at rest](../SECURITY.md#session-reuse-at-rest-optional).
+
+### Multi-marketplace instances (Amazon)
+
+Some services run **one account across several marketplaces** — the same sign-in, different orders per
+storefront. Amazon is the first: your `amazon.com`, `amazon.fr`, … order histories are **separate data** behind
+**one** login. getreceipt models this as a **canonical source** (`amazon.com`) that serves several **instances**.
+
+Classify any service with two questions — _same data? same credentials?_
+
+| same data? | same credentials? | relationship        | example                                        |
+| ---------- | ----------------- | ------------------- | ---------------------------------------------- |
+| yes        | yes               | **alias**           | a vanity domain of the same store              |
+| **no**     | yes               | **instance**        | `amazon.fr` vs `amazon.com` (one Amazon login) |
+| no         | no                | **separate source** | two unrelated services                         |
+
+#### Configuring instances
+
+List the instances to collect under the canonical source with an optional **`instances:`** key — a
+**source-level sibling of `auth:`** (same indentation), _not_ inside the `auth:` block:
+
+```yaml
+sources:
+  amazon.com:
+    auth:
+      browser: chrome
+      profile: 'you@example.com'
+    instances: [amazon.com, amazon.fr]
+```
+
+`instances:` is **optional** — omit it and the source collects the single canonical instance. The
+credential/session is configured **once**; each listed instance is collected as a separate data instance under
+that **one shared** sign-in.
+
+#### Addressing
+
+| command                                      | collects                                                                    |
+| -------------------------------------------- | --------------------------------------------------------------------------- |
+| `getreceipt from amazon.com`                 | **only** the `amazon.com` instance                                          |
+| `getreceipt from amazon.fr`                  | **only** the `amazon.fr` instance                                           |
+| `getreceipt from amazon.com --all-instances` | **every** configured instance, under one shared sign-in                     |
+| `getreceipt all`                             | every configured source and, within a multi-instance source, every instance |
+
+`--all-instances` and `all` authenticate **once**, then collect each instance **sequentially**
+(continue-on-error — one instance failing never strands the rest); they are not a parallel crawler.
+
+#### Per-instance output
+
+Each instance's receipts are written under **its own** `<domain>` directory — `<out>/amazon.com/…`,
+`<out>/amazon.fr/…` — so receipts **never collide** across marketplaces (see
+[Where receipts are written](#where-receipts-are-written)).
+
+#### Re-auth is source-level
+
+The instances share **one** imported session, so a stale session is a **source-level** event: a single
+`reauth-required` is raised for the source and **all** its instances are blocked until you re-establish that one
+login (re-import in your browser, or re-paste). There is no per-instance re-auth.
+
+#### Per-marketplace status (as of this writing)
+
+A marketplace is only **collectable** once it is a declared **and** validated instance. Amazon's instances are
+declared, but only some are validated against the live site:
+
+| instance         | status                                                                                                                                                                                                                                                                                 |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`amazon.fr`**  | **e2e-verified** — the working marketplace today.                                                                                                                                                                                                                                      |
+| **`amazon.com`** | **declared, not yet validated** — its live page structure and cookie/auth model are still synthetic; live validation is pending [#229](https://github.com/alexey-pelykh/getreceipt/issues/229). Treat `.com` collection as experimental until then.                                    |
+| **`amazon.de`**  | **not yet an instance** — recon ([#228](https://github.com/alexey-pelykh/getreceipt/issues/228)) found `amazon.de`'s order history is now a client-rendered SPA, so it is not simply addable; validation is tracked in [#230](https://github.com/alexey-pelykh/getreceipt/issues/230). |
 
 ### Bare-reference sugar
 
@@ -569,13 +638,17 @@ Each collected receipt is written to:
 - Files are written **owner-only (`0600`)** — receipts are personal financial data.
 - Writes **never clobber**: re-collecting a receipt is skipped when the bytes are identical, and
   differing content for the same id lands at a `~1`, `~2`, … suffixed name. Re-runs are safe.
+- A **multi-instance** source (e.g. Amazon) writes each instance under its own `<domain>` —
+  `<out>/amazon.com/…`, `<out>/amazon.fr/…` — so receipts never collide across marketplaces (see
+  [Multi-marketplace instances](#multi-marketplace-instances-amazon)).
 
 ## Sources, and how one is added
 
 `getreceipt` ships a fixed set of **source adapters** — one per service. An adapter declares a
-**canonical domain** plus any **aliases** that resolve to it, how the source authenticates, how it is
-reached, and how its documents are obtained. The collection verbs resolve the `<domain>` you pass to
-the adapter that owns it.
+**canonical domain** plus any **aliases** that resolve to it — and, for a multi-marketplace source, its
+**instances** ([separate data behind one sign-in](#multi-marketplace-instances-amazon)) — how the source
+authenticates, how it is reached, and how its documents are obtained. The collection verbs resolve the
+`<domain>` you pass to the adapter (or instance) that owns it.
 
 List what is bundled, with each source's declared capabilities and verification state:
 
@@ -598,7 +671,7 @@ output) so a months-old or never-verified confirmation is self-evident. A `stale
 source still **warns but proceeds**: getreceipt fetches your own receipts with your own credentials,
 so staleness is a visible advisory, never a block on collection or on release.
 
-The six bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`particuliers.alpiq.fr`**, and **`amazon.com`** (Amazon orders via an imported browser session, collected today via the `amazon.fr` marketplace) — are currently `unverified`.
+The six bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`particuliers.alpiq.fr`**, and **`amazon.com`** (Amazon orders via an imported browser session; a [multi-marketplace source](#multi-marketplace-instances-amazon) whose `amazon.fr` instance is the working marketplace today) — are currently `unverified`.
 
 Verification is produced **only** by the project's live conformance oracle, **not** by your own
 collections: a successful `collect` does not mark a source verified. For what each state means, where

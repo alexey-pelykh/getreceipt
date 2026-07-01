@@ -7,15 +7,17 @@ The command surface for [getreceipt](https://github.com/alexey-pelykh/getreceipt
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by any of the services it integrates with. See the [project README](https://github.com/alexey-pelykh/getreceipt#readme) for the full disclaimer.
 
-> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the `config` surface — read-only `show` / `validate` / `path` plus mutating `init` (scaffold a starter file, never clobbering without confirmation) / `edit` (open `$EDITOR`, re-validate on save) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`, `free.fr`, `pro.free.fr`, `particuliers.alpiq.fr`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
+> **Status: `0.1.0`.** Ships the `from` (one source) and `all` (every configured source) collection verbs, the read-only introspection verbs `sources` and `status`, and the `config` surface — read-only `show` / `validate` / `path` plus mutating `init` (scaffold a starter file, never clobbering without confirmation) / `edit` (open `$EDITOR`, re-validate on save) — each exposed as a `create*Command()` factory and assembled into the full program by `createProgram()`. The bundled source adapters (`grandfrais.com`, `monoprix.fr`, `free.fr`, `pro.free.fr`, `particuliers.alpiq.fr`, and the multi-marketplace `amazon.com`) are wired by `createDefaultResolver()`, so the collection verbs resolve real sources.
 
 ## `from <domain>`
 
 ```sh
-getreceipt from <domain> [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--json] [--verbose] [--accept-consent]
+getreceipt from <domain> [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--all-instances] [--json] [--verbose] [--accept-consent]
 ```
 
 Resolves the source adapter for `<domain>`, loads the credentials configured under `--profile` (default `default`), runs one collection over the window, and writes the receipts under `<out>/<domain>/`. `--since`/`--until` are strict ISO dates (`YYYY-MM-DD`) and must be supplied together; omit both to use the adapter's default window. `--json` emits the structured result object the MCP surface also returns (CLI↔MCP parity). `--verbose` (alias `--debug`) streams stage-level diagnostics to stderr, each line passed through the secret fence; silent by default. On the first fetch run it surfaces a one-time consent acknowledgment (see [First-run consent](#first-run-consent)).
+
+`--all-instances` collects **every** configured instance of a [multi-marketplace source](../../docs/configuration.md#multi-marketplace-instances-amazon) (e.g. Amazon: `amazon.fr` + `amazon.com`) under **one** shared sign-in — authenticating once, then collecting each instance sequentially (continue-on-error) and writing it under its own `<out>/<instance>/`. It emits the same per-instance batch report `all` does.
 
 ### Exit codes
 
@@ -35,7 +37,7 @@ Resolves the source adapter for `<domain>`, loads the credentials configured und
 getreceipt all [--since <date> --until <date>] [--profile <name>] [--out <dir>] [--concurrency <n>] [--json] [--verbose] [--accept-consent]
 ```
 
-Runs `collect()` for **every** source configured under `--profile`, continuing past a failing source and printing a per-source report. Fan-out is capped by `--concurrency` (default `3`) so heavier/browser sources never run unbounded. `--json` emits the structured batch report (the same shape the MCP surface will return). The exit code reflects the batch outcome: `0` all sources succeeded, `3` some succeeded (partial), `4` none succeeded (`1` for a usage error — unreadable config, undefined profile, or a bad `--concurrency`); the consent gate (`6` / `7`, above) applies here too. The consent check runs once, before the fan-out.
+Runs `collect()` for **every** source configured under `--profile`, continuing past a failing source and printing a per-source report. Fan-out is capped by `--concurrency` (default `3`) so heavier/browser sources never run unbounded. `--json` emits the structured batch report (the same shape the MCP surface will return). The exit code reflects the batch outcome: `0` all sources succeeded, `3` some succeeded (partial), `4` none succeeded (`1` for a usage error — unreadable config, undefined profile, or a bad `--concurrency`); the consent gate (`6` / `7`, above) applies here too. The consent check runs once, before the fan-out. A [multi-marketplace source](../../docs/configuration.md#multi-marketplace-instances-amazon) expands to one entry per configured instance (collected sequentially under one shared sign-in).
 
 ## First-run consent
 

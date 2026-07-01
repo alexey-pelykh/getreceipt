@@ -136,6 +136,13 @@ below).
 - **Domain-scoped.** Only the **target site's** cookies — that domain and its subdomains — are decrypted
   and returned. The rest of the cookie jar is never decrypted or read; the match is enforced both in the
   SQL query and again in code, and the domain is escaped so it cannot act as a wildcard.
+- **Per-instance scoping (multi-marketplace sources).** A
+  [multi-marketplace source](docs/configuration.md#multi-marketplace-instances-amazon) — Amazon serves
+  `amazon.com` and `amazon.fr` from **one** Amazon sign-in — imports a single session, but each instance's
+  cookies stay **scoped to that instance's own domain**: a `.amazon.com` cookie never travels to `amazon.fr`,
+  and vice versa (the same domain match above, applied per instance). **Re-auth is source-level**: if the
+  shared session goes stale, a single `reauth-required` is raised for the **source** and every instance is
+  blocked until you re-establish that one login — there is no per-instance re-auth.
 - **Values are fenced.** Every cookie value is wrapped so that logging, string interpolation,
   `JSON.stringify`, and `util.inspect` all yield `[redacted]`; the plaintext is reachable only by an
   explicit `expose()` at the point of use (handing it to the target service's own request). See
