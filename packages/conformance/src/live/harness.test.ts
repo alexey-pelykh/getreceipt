@@ -470,3 +470,171 @@ describe('runLiveCollections — multi-source sweep', () => {
         expect(results).toEqual([]);
     });
 });
+
+/**
+ * A fake multi-instance `session` adapter (#227/#190): declares `descriptor.instances` for the given instance
+ * domains, so the harness's fail-closed instance resolution has a real declared set to check against. Session-kind
+ * + `['none']` shapes mirror the Amazon adapter; the three stages stay inert (the fake `collectInstances` seam
+ * stands in for the whole auth-once/list/fetch pipeline in mechanics tests).
+ */
+function fakeMultiInstanceSessionAdapter(canonicalDomain: string, instanceDomains: readonly string[]): SourceAdapter {
+    const base = fakeSessionAdapter(canonicalDomain);
+    return {
+        ...base,
+        descriptor: {
+            ...base.descriptor,
+            instances: instanceDomains.map((domain) => ({
+                domain,
+                host: `https://www.${domain}`,
+                cookieDomain: domain,
+                locale: 'en-US',
+            })),
+        },
+    };
+}
+
+/** A resolver over an explicit set of already-built adapters — for a mixed multi-instance + single-source sweep. */
+function registryResolverOf(...adapters: readonly SourceAdapter[]): SourceResolver {
+    const registry = new SourceAdapterRegistry();
+    for (const adapter of adapters) {
+        registry.register(adapter);
+    }
+    return new SourceResolver(registry);
+}
+
+/** A browser-session plan carrying a two-instance sweep (#227/#190): amazon.com (canonical) + amazon.fr. */
+const MULTI_INSTANCE_PLAN: LivePlan = {
+    kind: 'session',
+    source: 'amazon.com',
+    browser: 'chrome',
+    profile: 'Default',
+    instances: ['amazon.com', 'amazon.fr'],
+};
+
+describe('runLiveCollections — multi-instance sweep (#227/#190)', () => {
+    it('drives collectInstances ONCE for the whole instance set and yields one verdict PER instance', async () => {
+        const adapter = fakeMultiInstanceSessionAdapter('amazon.com', ['amazon.com', 'amazon.fr']);
+        let collectInstancesCalls = 0;
+        let collectCalls = 0;
+        const seenInstanceDomains: string[] = [];
+
+        const results = await runLiveCollections([MULTI_INSTANCE_PLAN], {
+            resolver: fakeResolver(adapter),
+            resolveCredential: async () => new Secret('unused-session'),
+            collect: async () => {
+                collectCalls += 1;
+                return succeededResult('amazon.com');
+            },
+            collectInstances: async (request) => {
+                collectInstancesCalls += 1;
+                seenInstanceDomains.push(...request.instances.map((i) => i.domain));
+                // One result per instance, keyed by the instance domain — exactly as core's collectInstances does.
+                return request.instances.map((i) => succeededResult(i.domain));
+            },
+            createOutDir: knownTempDir,
+        });
+
+        // ONE collectInstances call for the whole set (authenticate once) — never the per-instance single-collect path.
+        expect(collectInstancesCalls).toBe(1);
+        expect(collectCalls).toBe(0);
+        // The plan's instance domains were resolved to InstanceContexts (host/locale/cookie) and threaded in order.
+        expect(seenInstanceDomains).toEqual(['amazon.com', 'amazon.fr']);
+        // One matrix row per instance: source → instance → verdict.
+        expect(results.map((r) => ({ source: r.source, instance: r.instance, state: r.verdict.state }))).toEqual([
+            { source: 'amazon.com', instance: 'amazon.com', state: 'e2e-verified' },
+            { source: 'amazon.com', instance: 'amazon.fr', state: 'e2e-verified' },
+        ]);
+    });
+
+    it('keeps the single collect path (NOT collectInstances) for a plan with no instances (regression)', async () => {
+        let collectCalls = 0;
+        let collectInstancesCalls = 0;
+
+        const results = await runLiveCollections([SESSION_PLAN], {
+            resolver: fakeResolver(fakeSessionAdapter(SESSION_PLAN.source)),
+            resolveCredential: async () => new Secret('unused'),
+            collect: async () => {
+                collectCalls += 1;
+                return succeededResult(SESSION_PLAN.source);
+            },
+            collectInstances: async () => {
+                collectInstancesCalls += 1;
+                return [];
+            },
+            createOutDir: knownTempDir,
+        });
+
+        // A no-instances plan keeps the single-collect path byte-for-byte — collectInstances is never touched.
+        expect(collectCalls).toBe(1);
+        expect(collectInstancesCalls).toBe(0);
+        expect(results).toHaveLength(1);
+        expect(results[0]?.source).toBe('amazon.fr');
+        expect(results[0]?.verdict.state).toBe('e2e-verified');
+        // A single-instance row carries no instance field.
+        expect(results[0]?.instance).toBeUndefined();
+    });
+
+    it('records a per-instance failure as that instance unverified while siblings still report (continue-on-error)', async () => {
+        const adapter = fakeMultiInstanceSessionAdapter('amazon.com', ['amazon.com', 'amazon.fr']);
+
+        const results = await runLiveCollections([MULTI_INSTANCE_PLAN], {
+            resolver: fakeResolver(adapter),
+            resolveCredential: async () => new Secret('unused-session'),
+            collectInstances: async (request) =>
+                request.instances.map((i) =>
+                    i.domain === 'amazon.fr'
+                        ? {
+                              outcome: 'failed',
+                              source: 'amazon.fr',
+                              window: { from: new Date(0), to: new Date(0) },
+                              reason: 'listing blew up',
+                              cause: new Error('listing blew up'),
+                              written: [],
+                              skipped: [],
+                          }
+                        : succeededResult(i.domain),
+                ),
+            createOutDir: knownTempDir,
+        });
+
+        const byInstance = new Map(results.map((r) => [r.instance, r.verdict] as const));
+        // The failed instance is its own unverified verdict; the sibling still verified — one bad instance didn't sink it.
+        expect(byInstance.get('amazon.com')?.state).toBe('e2e-verified');
+        expect(byInstance.get('amazon.fr')?.state).toBe('unverified');
+        expect(results).toHaveLength(2);
+    });
+
+    it('rejects an unknown instance fail-closed — never sweeps it — and keeps sweeping sibling sources (ADR-008 §8)', async () => {
+        // The adapter serves amazon.com + amazon.fr; the plan lists amazon.de, which the adapter does NOT declare.
+        const adapter = fakeMultiInstanceSessionAdapter('amazon.com', ['amazon.com', 'amazon.fr']);
+        const unknownInstancePlan: LivePlan = {
+            kind: 'session',
+            source: 'amazon.com',
+            browser: 'chrome',
+            profile: 'Default',
+            instances: ['amazon.com', 'amazon.de'],
+        };
+        let collectInstancesCalls = 0;
+
+        const results = await runLiveCollections([unknownInstancePlan, PLAN_A], {
+            resolver: registryResolverOf(adapter, fakeAdapter(PLAN_A.source)),
+            resolveCredential: async () => new Secret('resolved'),
+            collect: async (request) => succeededResult(request.adapter.descriptor.canonicalDomain),
+            collectInstances: async (request) => {
+                collectInstancesCalls += 1;
+                return request.instances.map((i) => succeededResult(i.domain));
+            },
+            createOutDir: knownTempDir,
+        });
+
+        // Fail-closed: the mis-configured source's instances were NEVER swept (rejected before any collection).
+        expect(collectInstancesCalls).toBe(0);
+        const bySource = new Map(results.map((r) => [r.source, r.verdict] as const));
+        // The unknown-instance source is recorded as a config rejection (unverified), naming the offending domain…
+        expect(bySource.get('amazon.com')?.state).toBe('unverified');
+        expect(bySource.get('amazon.com')?.detail).toContain('does not serve the configured instance "amazon.de"');
+        expect(bySource.get('amazon.com')?.detail).toContain('fail-closed');
+        // …and the sibling source still ran to a real verdict — one bad instance config can't sink the rest.
+        expect(bySource.get('grandfrais.com')?.state).toBe('e2e-verified');
+    });
+});

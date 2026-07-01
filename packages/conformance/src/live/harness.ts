@@ -13,8 +13,16 @@ import {
 } from '@getreceipt/auth';
 import type { CredentialValue, DomainAuthConfig, ResolvedCredentials, Secret } from '@getreceipt/auth';
 import { createDefaultResolver } from '@getreceipt/cli';
-import { resolveCredentialShape, collect, FilesystemReceiptWriter } from '@getreceipt/core';
-import type { CollectRequest, CollectResult, CredentialContext, SourceAdapter, SourceResolver } from '@getreceipt/core';
+import { resolveCredentialShape, collect, collectInstances, FilesystemReceiptWriter } from '@getreceipt/core';
+import type {
+    CollectInstancesRequest,
+    CollectRequest,
+    CollectResult,
+    CredentialContext,
+    InstanceContext,
+    SourceAdapter,
+    SourceResolver,
+} from '@getreceipt/core';
 
 import type { LivePlan } from './gate.js';
 import { verdictFor } from './verdict.js';
@@ -30,6 +38,30 @@ import type { Clock, LiveVerdict } from './verdict.js';
  */
 export class LiveBackendUnavailable extends Error {
     override readonly name = 'LiveBackendUnavailable';
+}
+
+/**
+ * The fail-closed signal that a plan's configured `instances` list (#227/#190) names an instance the resolved
+ * adapter does NOT declare (ADR-008 §8) — the harness sibling of core's {@link @getreceipt/core!UnsupportedCredentialShapeError}
+ * (the #169 credential-shape gate). Raised BEFORE `collectInstances`, so a mis-configured instance is rejected at
+ * setup — never silently swept — rather than a bogus collection against an instance the adapter can't serve. The
+ * sweep ({@link runLiveCollections}) catches it and records it as that source's unverified verdict, so one bad
+ * instance config can't sink the rest (mirroring the per-source continue-on-error). Carries only PUBLIC instance
+ * domains (never a credential), so its message is safe to surface verbatim.
+ */
+export class LiveUnknownInstanceError extends Error {
+    override readonly name = 'LiveUnknownInstanceError';
+
+    constructor(
+        readonly source: string,
+        readonly instance: string,
+        readonly servedInstances: readonly string[],
+    ) {
+        super(
+            `source "${source}" does not serve the configured instance "${instance}" (adapter serves ` +
+                `${servedInstances.length === 0 ? 'no instances' : servedInstances.map((domain) => `"${domain}"`).join(', ')})`,
+        );
+    }
 }
 
 /** The result of one live run: the raw collect outcome plus the trust-state it justifies. */
@@ -52,6 +84,12 @@ export interface LiveHarnessDeps {
     readonly resolveCredential: (value: CredentialValue) => Promise<Secret>;
     /** Drives one collection. Defaults to core's {@link collect}. */
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
+    /**
+     * Drives a multi-instance collection under ONE shared session (#227/#190) — authenticate once, list/fetch
+     * per instance — for a plan carrying `instances`. Defaults to core's {@link collectInstances}. The seam lets
+     * the harness-mechanics test prove the sweep drives ONE `collectInstances` (not N `collect`s) with fakes.
+     */
+    readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
     /** Mints a throwaway output directory OUTSIDE the repo. Defaults to an `os.tmpdir()` dir, removed after the run. */
     readonly createOutDir: () => Promise<string>;
     /** Clock for the verified-at stamp on a conclusive success. Defaults to the wall clock; injected in tests for determinism. */
@@ -64,6 +102,7 @@ function defaultDeps(): LiveHarnessDeps {
         resolver: createDefaultResolver(),
         resolveCredential: (value) => credentialResolver.resolve(value),
         collect,
+        collectInstances,
         createOutDir: () => mkdtemp(join(tmpdir(), 'getreceipt-e2e-')),
         now: () => new Date(),
     };
@@ -171,9 +210,16 @@ async function collectInThrowawayDir(
     }
 }
 
-/** One source's outcome in a multi-source sweep: the source domain and the trust-state the live run justified. */
+/**
+ * One row of the sweep's verdict matrix: the source domain and the trust-state one live run justified. For a
+ * multi-instance source (#227/#190) the sweep emits ONE row per instance, each carrying its {@link instance}
+ * domain — so the matrix is `source → instance → signal/state`. A single-instance source emits one row with
+ * {@link instance} absent (byte-for-byte as before).
+ */
 export interface LiveSourceResult {
     readonly source: string;
+    /** The instance domain this row is for (e.g. `amazon.fr`) — present only for a multi-instance sweep (#227/#190). */
+    readonly instance?: string;
     readonly verdict: LiveVerdict;
 }
 
@@ -200,8 +246,16 @@ export async function runLiveCollections(
     const results: LiveSourceResult[] = [];
     for (const plan of plans) {
         try {
-            const run = await runLiveCollection(plan, overrides);
-            results.push({ source: plan.source, verdict: run.verdict });
+            // A plan carrying `instances` (#227/#190) sweeps EACH under one shared session (authenticate once,
+            // list/fetch per instance) via `collectInstances` — one matrix row per instance. A plan with no
+            // instances keeps the single-`collect` path, byte-for-byte.
+            const planInstances = plan.kind === 'session' ? plan.instances : undefined;
+            if (planInstances !== undefined && planInstances.length > 0) {
+                results.push(...(await runLiveInstances(plan, planInstances, overrides)));
+            } else {
+                const run = await runLiveCollection(plan, overrides);
+                results.push({ source: plan.source, verdict: run.verdict });
+            }
         } catch (error) {
             // A missing backend dooms every source, not just this one — let the caller skip the whole run.
             if (error instanceof LiveBackendUnavailable) {
@@ -221,8 +275,85 @@ export async function runLiveCollections(
                 });
                 continue;
             }
+            // A configured instance the adapter does not serve is a fail-closed CONFIG rejection (ADR-008 §8),
+            // caught BEFORE any collection — this source's problem alone: record it as unverified (never swept)
+            // and keep sweeping the rest, mirroring the production `all` batch, which records a per-source
+            // pre-flight config error and continues. The message carries only public instance domains.
+            if (error instanceof LiveUnknownInstanceError) {
+                results.push({
+                    source: plan.source,
+                    verdict: {
+                        signal: 'inconclusive',
+                        state: 'unverified',
+                        detail: `config: ${error.message} — fail-closed, not swept`,
+                    },
+                });
+                continue;
+            }
             throw error;
         }
     }
     return results;
+}
+
+/**
+ * Run ONE multi-instance plan: sweep every configured instance under a SINGLE shared session (#227/#190) and
+ * report a per-instance verdict row. Resolves the adapter, validates the plan's `instances` against what the
+ * adapter DECLARES (fail-closed — {@link LiveUnknownInstanceError} — before any collection), resolves the
+ * credential the plan's `kind` demands (authenticate itself runs once, inside `collectInstances`), then drives
+ * `collectInstances` into a throwaway dir. Mirrors the production multi-instance path
+ * (`packages/cli/src/operation-runner.ts` `runInstancesOperation` / `resolveConfiguredInstances`).
+ */
+async function runLiveInstances(
+    plan: LivePlan,
+    planInstances: readonly string[],
+    overrides: Partial<LiveHarnessDeps>,
+): Promise<readonly LiveSourceResult[]> {
+    const deps: LiveHarnessDeps = { ...defaultDeps(), ...overrides };
+    const adapter = deps.resolver.resolve(plan.source);
+    // Fail closed BEFORE authenticate/collect: every configured instance MUST be one the adapter declares.
+    const instances = resolvePlanInstances(adapter, planInstances);
+    const credentials = await resolvePlanCredentials(plan, adapter, deps);
+    return collectInstancesInThrowawayDir(plan.source, adapter, credentials, instances, deps);
+}
+
+/**
+ * Resolve a plan's configured instance domains to the {@link InstanceContext}s the adapter serves, fail-closed
+ * (ADR-008 §8): every configured domain MUST be declared in the adapter's `descriptor.instances`, else a
+ * {@link LiveUnknownInstanceError}. Matching is case-insensitive, mirroring domain resolution. Mirrors the
+ * production `resolveConfiguredInstances` (#190 AC2) so the oracle rejects exactly what production rejects.
+ */
+function resolvePlanInstances(adapter: SourceAdapter, configured: readonly string[]): readonly InstanceContext[] {
+    const served = new Map((adapter.descriptor.instances ?? []).map((ctx) => [ctx.domain.toLowerCase(), ctx] as const));
+    return configured.map((domain) => {
+        const ctx = served.get(domain.toLowerCase());
+        if (ctx === undefined) {
+            throw new LiveUnknownInstanceError(adapter.descriptor.canonicalDomain, domain, [...served.keys()]);
+        }
+        return ctx;
+    });
+}
+
+/**
+ * Drive a multi-instance collection into ONE throwaway `os.tmpdir()` directory and report a per-instance verdict
+ * row. `collectInstances` keys each {@link CollectResult} by its instance domain (`result.source`) and namespaces
+ * receipts under it, so one shared out dir holds every instance without collision; it is purged in a `finally`
+ * — even on a thrown error — so nothing the live service returns can ever land in the repo (#19 AC3).
+ */
+async function collectInstancesInThrowawayDir(
+    source: string,
+    adapter: SourceAdapter,
+    credentials: CredentialContext,
+    instances: readonly InstanceContext[],
+    deps: LiveHarnessDeps,
+): Promise<readonly LiveSourceResult[]> {
+    const outDir = await deps.createOutDir();
+    try {
+        const writer = new FilesystemReceiptWriter({ outDir });
+        const results = await deps.collectInstances({ adapter, credentials, writer, instances });
+        // One row per per-instance result; `result.source` IS the instance domain (collectInstances keys each by it).
+        return results.map((result) => ({ source, instance: result.source, verdict: verdictFor(result, deps.now) }));
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
 }

@@ -354,6 +354,62 @@ describe('resolveLiveGate — session sources (no credential to resolve)', () =>
     });
 });
 
+describe('resolveLiveGate — multi-instance session sources (#227/#190)', () => {
+    it('threads a configured session `instances` list onto the plan', () => {
+        const cfg = configWith({
+            'amazon.com': {
+                kind: 'session',
+                browser: 'chrome',
+                profile: 'Default',
+                instances: ['amazon.com', 'amazon.fr'],
+            },
+        });
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(cfg) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans).toHaveLength(1);
+            // The instances propagate verbatim onto the browser-session plan (the harness resolves + sweeps them).
+            expect(decision.plans[0]).toEqual({
+                kind: 'session',
+                source: 'amazon.com',
+                browser: 'chrome',
+                profile: 'Default',
+                instances: ['amazon.com', 'amazon.fr'],
+            });
+        }
+    });
+
+    it('threads `instances` onto a manual-paste session plan too', () => {
+        const cfg = configWith({
+            'amazon.com': {
+                kind: 'session',
+                paste: { ref: 'op://Private/amazon-session' },
+                instances: ['amazon.com', 'amazon.fr'],
+            },
+        });
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(cfg) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            expect(decision.plans[0]).toEqual({
+                kind: 'session',
+                source: 'amazon.com',
+                paste: { ref: 'op://Private/amazon-session' },
+                instances: ['amazon.com', 'amazon.fr'],
+            });
+        }
+    });
+
+    it('omits `instances` when the session source configures none (single-instance, unchanged)', () => {
+        const cfg = configWith({ 'amazon.fr': { kind: 'session', browser: 'chrome', profile: 'Default' } });
+        const decision = resolveLiveGate({ [OPT_IN_ENV]: '1' }, { loadConfig: fakeLoadConfig(cfg) });
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            // No `instances` key at all — the plan drives the existing single-`collect` path byte-for-byte.
+            expect(decision.plans[0]).not.toHaveProperty('instances');
+        }
+    });
+});
+
 describe('resolveLiveGate — clean skip (never a failure) when config yields nothing usable', () => {
     it('skips with a secret-free reason when the config file cannot be loaded', () => {
         const decision = resolveLiveGate(
