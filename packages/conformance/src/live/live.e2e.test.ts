@@ -35,14 +35,17 @@ const gate = resolveLiveGate(process.env);
 const LIVE_SWEEP_TIMEOUT_MS = 300_000;
 
 /**
- * A secret-free, per-source matrix line: `source → signal (state)[ @ verifiedAt] → detail`. Surfaced
- * as the assertion / skip message so every source names its own classified outcome — never a bare red/green.
+ * A secret-free matrix line: `source[ → instance] → signal (state)[ @ verifiedAt] → detail`. A multi-instance
+ * source (#227/#190) contributes one line PER instance (`source → instance → …`); a single-instance source omits
+ * the instance. Surfaced as the assertion / skip message so every (source, instance) names its own classified
+ * outcome — never a bare red/green.
  */
 function matrix(results: readonly LiveSourceResult[]): string {
     return results
         .map((r) => {
             const stamp = r.verdict.verifiedAt === undefined ? '' : ` @ ${r.verdict.verifiedAt.toISOString()}`;
-            return `${r.source} → ${r.verdict.signal} (${r.verdict.state})${stamp} → ${r.verdict.detail}`;
+            const scope = r.instance === undefined ? r.source : `${r.source} → ${r.instance}`;
+            return `${scope} → ${r.verdict.signal} (${r.verdict.state})${stamp} → ${r.verdict.detail}`;
         })
         .join('\n');
 }

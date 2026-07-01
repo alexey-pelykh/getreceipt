@@ -73,6 +73,14 @@ export interface BrowserSessionLivePlan {
     readonly browser: BrowserKind;
     /** The browser profile to read — a profile directory name OR an account email (resolved at import time). */
     readonly profile: string;
+    /**
+     * The data instances to sweep under this ONE shared session (#227/#190): each is a SEPARATE data
+     * instance (e.g. `amazon.com` + `amazon.fr`) the harness collects via `core.collectInstances`
+     * (authenticate once, list/fetch per instance). Threaded from the source's `auth.instances`. Absent
+     * → a single-instance run (the existing single-`collect` path, byte-for-byte). Whether the resolved
+     * adapter actually SERVES each listed instance is enforced by the harness, fail-closed (ADR-008 §8).
+     */
+    readonly instances?: readonly string[];
     readonly paste?: never;
     readonly username?: never;
     readonly secret?: never;
@@ -88,6 +96,8 @@ export interface PastedSessionLivePlan {
     readonly source: string;
     /** The pasted session material, by reference — resolved to its fenced value at call-time by the harness. */
     readonly paste: CredentialValue;
+    /** The data instances to sweep under this one shared session (#227/#190) — see {@link BrowserSessionLivePlan.instances}. */
+    readonly instances?: readonly string[];
     readonly browser?: never;
     readonly profile?: never;
     readonly username?: never;
@@ -204,10 +214,13 @@ function plansFromConfig(
         // at call-time (#218) — never a value at rest. Either IS a usable plan; it never reaches the
         // username/secret check below. `kind` is validated by loadConfig, so the matching shape is present.
         if (auth.kind === 'session') {
+            // Thread the source-level `instances` list (#227/#190) onto the plan so the harness sweeps every
+            // configured marketplace under the one shared session; omitted → a single-instance run (unchanged).
+            const instances = auth.instances === undefined ? {} : { instances: auth.instances };
             plans.push(
                 auth.paste !== undefined
-                    ? { kind: 'session', source, paste: auth.paste }
-                    : { kind: 'session', source, browser: auth.browser, profile: auth.profile },
+                    ? { kind: 'session', source, paste: auth.paste, ...instances }
+                    : { kind: 'session', source, browser: auth.browser, profile: auth.profile, ...instances },
             );
             continue;
         }
