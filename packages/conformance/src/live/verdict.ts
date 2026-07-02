@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AuthenticationError } from '@getreceipt/auth';
 import { TrustBoundaryError } from '@getreceipt/core';
-import type { AdapterVerificationState, CollectFailed, CollectResult } from '@getreceipt/core';
+import type { AdapterVerificationState, CollectFailed, CollectResult, CollectSucceeded } from '@getreceipt/core';
 
 /**
  * The distinct, actionable signal ONE live run produces about an adapter — never a bare
@@ -72,7 +72,7 @@ export function verdictFor(result: CollectResult, now: Clock = () => new Date())
             return {
                 signal: 'verified',
                 state: 'e2e-verified',
-                detail: `verified: ${String(result.written.length)} written, ${String(result.skipped.length)} skipped${outOfWindowDetail}`,
+                detail: `verified: ${String(result.written.length)} written, ${String(result.skipped.length)} skipped${outOfWindowDetail}${describeDateResolution(result.resolvedDates)}`,
                 verifiedAt: now(),
             };
         }
@@ -90,6 +90,23 @@ export function verdictFor(result: CollectResult, now: Clock = () => new Date())
             throw new Error(`unhandled collect outcome: ${String(exhaustive)}`);
         }
     }
+}
+
+/**
+ * A warn-only note on a coarse-list run's date-resolution (#243 fast-follow). The window-filter gates on
+ * each receipt's fetched date; when NONE resolve — a wholesale `parseInvoiceOrderDate` regression, #244's
+ * known limitation — the filter degrades to over-collection, silently until now. Surface the ratio so that
+ * degrade is VISIBLE, but never flip the verdict on it: an all-undateable run still fetched real receipts
+ * across the wire boundary, so it stays `verified`; the ⚠ tells the operator the WINDOW bound was not
+ * honored this run, not that the adapter is broken. Absent for the exact-list path (no `resolvedDates`).
+ */
+function describeDateResolution(resolvedDates: CollectSucceeded['resolvedDates']): string {
+    if (resolvedDates === undefined) {
+        return '';
+    }
+    const { resolved, total } = resolvedDates;
+    const warn = resolved === 0 ? ' ⚠ no dates resolved — window filter degraded to over-collection' : '';
+    return `, ${String(resolved)}/${String(total)} dates resolved${warn}`;
 }
 
 /**

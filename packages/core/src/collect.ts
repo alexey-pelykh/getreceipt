@@ -109,6 +109,14 @@ export interface CollectSucceeded extends CollectResultBase {
      * window) is not mis-read as a degenerate/empty subject. Each ref carries its authoritative fetched date.
      */
     readonly outOfWindow?: readonly ReceiptRef[];
+    /**
+     * For a COARSE-list run (#243): how many FETCHED artifacts carried an authoritative date, out of the
+     * total fetched. The window-filter gates on that date, so a low ratio means it degraded toward
+     * over-collection (an undateable receipt is written, never dropped — #244's known limitation). Surfaced
+     * so that silent degrade is VISIBLE on the verdict matrix (warn-only — it never flips a verdict). Present
+     * only for a coarse run that fetched ≥1 artifact; absent on the exact-list path and on a no-fetch run.
+     */
+    readonly resolvedDates?: { readonly resolved: number; readonly total: number };
 }
 
 /** The run failed; the error was captured, not thrown past the boundary. */
@@ -326,6 +334,10 @@ async function collectCoarseWindowed(
     const written: ReceiptRef[] = [];
     const skipped: ReceiptRef[] = [];
     const outOfWindow: ReceiptRef[] = [];
+    // Date-resolution tally (#243 fast-follow): the window-filter gates on the fetched date, so an
+    // all-undefined run silently degrades to over-collection (#244) — count resolved/total to surface it.
+    let datesResolved = 0;
+    let datesFetched = 0;
     for (const ref of refs) {
         if (await writer.has(source, ref)) {
             skipped.push(ref);
@@ -344,6 +356,10 @@ async function collectCoarseWindowed(
         // The authoritative date the fetch revealed supersedes the ref's coarse list-time provisional — carry
         // it on the emitted ref so the RESULT surface (CLI/MCP), not just the persisted artifact, is corrected.
         const issuedAt = asReceiptArtifact(artifact).issuedAt;
+        datesFetched += 1;
+        if (issuedAt !== undefined) {
+            datesResolved += 1;
+        }
         const resolved = issuedAt === undefined ? ref : { ...ref, issuedAt };
         switch (classifyAgainstWindow(issuedAt, window, dateFilter)) {
             case 'write':
@@ -355,10 +371,10 @@ async function collectCoarseWindowed(
                 break;
             case 'skip-stop':
                 outOfWindow.push(resolved);
-                return succeededWindowed(source, window, written, skipped, outOfWindow);
+                return succeededWindowed(source, window, written, skipped, outOfWindow, datesResolved, datesFetched);
         }
     }
-    return succeededWindowed(source, window, written, skipped, outOfWindow);
+    return succeededWindowed(source, window, written, skipped, outOfWindow, datesResolved, datesFetched);
 }
 
 /**
@@ -383,17 +399,29 @@ function classifyAgainstWindow(
     return olderThanFrom ? 'skip-stop' : 'skip-continue';
 }
 
-/** Build a `succeeded` result for the coarse path, attaching `outOfWindow` only when non-empty (exact-path parity otherwise). */
+/**
+ * Build a `succeeded` result for the coarse path. Each optional rides only when it carries signal:
+ * `outOfWindow` when non-empty (exact-path parity otherwise), `resolvedDates` when ≥1 artifact was
+ * fetched (a no-fetch run — all skipped/empty — has no date-resolution signal to report).
+ */
 function succeededWindowed(
     source: string,
     window: DateRange,
     written: readonly ReceiptRef[],
     skipped: readonly ReceiptRef[],
     outOfWindow: readonly ReceiptRef[],
+    datesResolved: number,
+    datesFetched: number,
 ): CollectSucceeded {
-    return outOfWindow.length === 0
-        ? { outcome: 'succeeded', source, window, written, skipped }
-        : { outcome: 'succeeded', source, window, written, skipped, outOfWindow };
+    return {
+        outcome: 'succeeded',
+        source,
+        window,
+        written,
+        skipped,
+        ...(outOfWindow.length > 0 ? { outOfWindow } : {}),
+        ...(datesFetched > 0 ? { resolvedDates: { resolved: datesResolved, total: datesFetched } } : {}),
+    };
 }
 
 /**
