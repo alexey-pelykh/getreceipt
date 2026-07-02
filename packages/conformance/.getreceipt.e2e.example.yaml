@@ -40,5 +40,5 @@ sources:
     # One imported session, many marketplaces (#190/#227): each registrable domain is collected as a
     # SEPARATE data instance under the SAME session. `instances:` is a SOURCE-level sibling of `auth:`
     # (not nested inside it); omit it for a single-instance source. Each entry must be a domain the adapter
-    # DECLARES it serves (fail-closed, ADR-008 §8) — today amazon.com (canonical) + amazon.fr.
-    instances: [amazon.com, amazon.fr]
+    # DECLARES it serves (fail-closed, ADR-008 §8) — amazon.com (canonical), amazon.fr, and amazon.de (#228).
+    instances: [amazon.com, amazon.fr, amazon.de]

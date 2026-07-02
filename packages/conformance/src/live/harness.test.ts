@@ -605,14 +605,15 @@ describe('runLiveCollections — multi-instance sweep (#227/#190)', () => {
     });
 
     it('rejects an unknown instance fail-closed — never sweeps it — and keeps sweeping sibling sources (ADR-008 §8)', async () => {
-        // The adapter serves amazon.com + amazon.fr; the plan lists amazon.de, which the adapter does NOT declare.
+        // The fake adapter serves amazon.com + amazon.fr; the plan lists amazon.co.jp, a genuinely undeclared
+        // marketplace (amazon.de IS a declared instance now, #228, so it is no longer the undeclared example).
         const adapter = fakeMultiInstanceSessionAdapter('amazon.com', ['amazon.com', 'amazon.fr']);
         const unknownInstancePlan: LivePlan = {
             kind: 'session',
             source: 'amazon.com',
             browser: 'chrome',
             profile: 'Default',
-            instances: ['amazon.com', 'amazon.de'],
+            instances: ['amazon.com', 'amazon.co.jp'],
         };
         let collectInstancesCalls = 0;
 
@@ -632,7 +633,7 @@ describe('runLiveCollections — multi-instance sweep (#227/#190)', () => {
         const bySource = new Map(results.map((r) => [r.source, r.verdict] as const));
         // The unknown-instance source is recorded as a config rejection (unverified), naming the offending domain…
         expect(bySource.get('amazon.com')?.state).toBe('unverified');
-        expect(bySource.get('amazon.com')?.detail).toContain('does not serve the configured instance "amazon.de"');
+        expect(bySource.get('amazon.com')?.detail).toContain('does not serve the configured instance "amazon.co.jp"');
         expect(bySource.get('amazon.com')?.detail).toContain('fail-closed');
         // …and the sibling source still ran to a real verdict — one bad instance config can't sink the rest.
         expect(bySource.get('grandfrais.com')?.state).toBe('e2e-verified');
