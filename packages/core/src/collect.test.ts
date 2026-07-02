@@ -948,4 +948,89 @@ describe('collect — coarse-list window (#243)', () => {
         expect(probe.fetched).toEqual(['a', 'b']); // stopped at b; c never fetched (no deeper exposure)
         expect(writer.written).toEqual(['a']); // partial progress persisted before the stop
     });
+
+    // resolvedDates (#243 fast-follow): a coarse run reports how many fetched artifacts carried a real
+    // date, so #244's silent all-undefined over-collection degrade is observable on the verdict matrix.
+    it('reports every fetched date resolved when all invoices carry an authoritative date', async () => {
+        const probe = coarseProbe(['a', 'b'], {
+            a: new Date('2026-05-10T00:00:00.000Z'),
+            b: new Date('2026-04-02T00:00:00.000Z'),
+        });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        if (result.outcome === 'succeeded') {
+            expect(result.resolvedDates).toEqual({ resolved: 2, total: 2 });
+        }
+    });
+
+    it('reports ZERO dates resolved when the parser degraded wholesale (the #244 over-collection case)', async () => {
+        const probe = coarseProbe(['a', 'b'], { a: undefined, b: undefined }); // parser degraded to no date
+        const writer = makeWriter();
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        if (result.outcome === 'succeeded') {
+            // total counts the fetched artifacts; resolved is 0 → the verdict surfaces the ⚠ degrade.
+            expect(result.resolvedDates).toEqual({ resolved: 0, total: 2 });
+        }
+    });
+
+    it('counts a MIXED run — including the ref that triggered the early-stop — resolved out of fetched', async () => {
+        const probe = coarseProbe(['a', 'b', 'c', 'd'], {
+            a: new Date('2026-06-01T00:00:00.000Z'), // in, dated
+            b: undefined, //                            in (undateable inclusive-degrade), NOT dated
+            c: new Date('2026-02-01T00:00:00.000Z'), // older than from → out, and STOP (dated)
+            d: new Date('2026-01-15T00:00:00.000Z'), // never fetched (early-stop) → not counted
+        });
+        const writer = makeWriter();
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(probe.fetched).toEqual(['a', 'b', 'c']); // d never fetched
+        if (result.outcome === 'succeeded') {
+            // 3 fetched (a, b, c — the skip-stop ref IS counted); 2 dated (a, c). d is not fetched → not in total.
+            expect(result.resolvedDates).toEqual({ resolved: 2, total: 3 });
+        }
+    });
+
+    it('OMITS resolvedDates when nothing was fetched (all already on disk — no date signal)', async () => {
+        const probe = coarseProbe(['a', 'b'], {
+            a: new Date('2026-06-01T00:00:00.000Z'),
+            b: new Date('2026-05-01T00:00:00.000Z'),
+        });
+        const writer = makeWriter({ has: () => true }); // writer already has everything
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(probe.fetched).toEqual([]); // nothing fetched
+        if (result.outcome === 'succeeded') {
+            expect(result.resolvedDates).toBeUndefined(); // no fetched artifact → no ratio to report
+        }
+    });
 });

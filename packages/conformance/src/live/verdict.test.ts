@@ -97,6 +97,55 @@ describe('verdictFor — success promotes only on real evidence', () => {
         expect(verdict.state).toBe('e2e-verified');
         expect(verdict.detail).toContain('1 out-of-window');
     });
+
+    it('surfaces the coarse-list date-resolution ratio, unwarned, when every fetched date resolved (#243)', () => {
+        const result: CollectResult = {
+            outcome: 'succeeded',
+            source: SOURCE,
+            window: WINDOW,
+            written: [REF, REF],
+            skipped: [],
+            resolvedDates: { resolved: 2, total: 2 },
+        };
+        const verdict = verdictFor(result, fixedClock);
+        expect(verdict.signal).toBe('verified');
+        expect(verdict.detail).toContain('2/2 dates resolved');
+        expect(verdict.detail).not.toContain('⚠');
+    });
+
+    it('WARNS but never FLIPS the verdict when a coarse run resolved zero dates (#244 degrade is visible, not a fault)', () => {
+        // The wholesale parser-regression case: the window filter degraded to over-collection. It is surfaced
+        // (⚠) so an operator SEES it, but the run still fetched real receipts across the wire boundary — so the
+        // verdict stays verified with its last-verified stamp. Warn-only, never a flip.
+        const result: CollectResult = {
+            outcome: 'succeeded',
+            source: SOURCE,
+            window: WINDOW,
+            written: [REF, REF],
+            skipped: [],
+            resolvedDates: { resolved: 0, total: 2 },
+        };
+        const verdict = verdictFor(result, fixedClock);
+        expect(verdict.signal).toBe('verified'); // NOT flipped — observability, not a gate
+        expect(verdict.state).toBe('e2e-verified');
+        expect(verdict.verifiedAt).toEqual(FIXED);
+        expect(verdict.detail).toContain('0/2 dates resolved');
+        expect(verdict.detail).toContain('⚠');
+    });
+
+    it('does not warn on a PARTIAL date-resolution miss — only the all-undefined wholesale case raises ⚠ (#244)', () => {
+        const result: CollectResult = {
+            outcome: 'succeeded',
+            source: SOURCE,
+            window: WINDOW,
+            written: [REF],
+            skipped: [],
+            resolvedDates: { resolved: 1, total: 2 },
+        };
+        const verdict = verdictFor(result, fixedClock);
+        expect(verdict.detail).toContain('1/2 dates resolved');
+        expect(verdict.detail).not.toContain('⚠');
+    });
 });
 
 describe('verdictFor — failure classification (distinct signals, no bare red/green)', () => {
