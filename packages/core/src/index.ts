@@ -18,6 +18,7 @@ export type {
     DateFilterBasis,
     DateRange,
     InstanceContext,
+    ListWindow,
     Opaque,
     PaginationKind,
     ReceiptMetadatum,

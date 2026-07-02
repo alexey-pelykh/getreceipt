@@ -86,6 +86,25 @@ export interface DateFilter {
 }
 
 /**
+ * How faithfully a source's `list()` honors the requested date window (#243) — which decides whether
+ * `collect()` must re-filter after fetching:
+ *
+ *  - `exact` (the default when {@link SourceDescriptor.listWindow} is omitted): `list()` returns ONLY
+ *    in-window refs, so `collect()` trusts them and fetches every one.
+ *  - `coarse`: `list()` CANNOT precisely date-filter — refs are over-inclusive and carry only a coarse
+ *    provisional {@link ReceiptRef.issuedAt} (amazon client-side-encrypts each order's date, so a ref can
+ *    only be bucketed to its filter YEAR). The authoritative date arrives at FETCH time on
+ *    {@link @getreceipt/core!ReceiptArtifact.issuedAt}, so `collect()` fetches in listing order and
+ *    window-filters on THAT. `order` is REQUIRED on this arm — it declares the ref ordering that makes a
+ *    listing-order early-stop sound: `newest-first` lets the fetch loop STOP at the first ref older than
+ *    the window (every later ref is older still). A coarse source with a different ordering must add its
+ *    own variant rather than silently inherit an unsound early-stop.
+ */
+export type ListWindow =
+    | { readonly precision: 'exact' }
+    | { readonly precision: 'coarse'; readonly order: 'newest-first' };
+
+/**
  * A relative date window, expressed as a lookback from "now". `collect()`
  * materializes it into a concrete {@link DateRange} (ending at the run's clock)
  * when the caller supplies no explicit `--since`/`--until`.
@@ -179,6 +198,14 @@ export interface SourceDescriptor {
      * rather than silently falling back to plain `fetch`. Absent/`false` means plain transport. (#101)
      */
     readonly requiresImpersonation?: boolean;
+    /**
+     * How faithfully this source's `list()` honors the requested window (#243). Omit for the common case —
+     * an `exact` source whose `list()` already returns only in-window refs (every current adapter but
+     * amazon). A `coarse` source declares that `list()` is over-inclusive and its refs carry only a
+     * provisional date, so `collect()` re-filters on the authoritative FETCH-time date and, for a
+     * `newest-first` source, early-stops past the window. See {@link ListWindow}.
+     */
+    readonly listWindow?: ListWindow;
 }
 
 /**

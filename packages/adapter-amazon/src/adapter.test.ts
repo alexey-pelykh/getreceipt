@@ -320,6 +320,9 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
             discoveryOnly: true,
             // The order host is TLS-fingerprint-gated, so the bundled wiring MUST inject an impersonating transport (#101).
             requiresImpersonation: true,
+            // The list encrypts per-order dates (Siege CSD), so it can only bucket a ref to its filter YEAR;
+            // collect() window-filters on the fetch-time invoice date and early-stops the newest-first walk (#243).
+            listWindow: { precision: 'coarse', order: 'newest-first' },
         });
         expect(descriptor.aliasDomains).toEqual([]);
         // The three instances this ONE adapter serves under ONE sign-in (#190/#228); the canonical is listed as its
