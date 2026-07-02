@@ -23,6 +23,13 @@ export interface ReceiptArtifact {
     readonly contentType: string;
     /** Optional source-suggested filename; only its extension is honored, to label the persisted file. */
     readonly filename?: string;
+    /**
+     * The receipt's authoritative issued date, when the fetched document carries it (e.g. Amazon's invoice order
+     * date, #240). It supersedes the {@link ReceiptRef.issuedAt} a source can only estimate at list time — some
+     * sources (Amazon's CSD-encrypted order history) cannot read the real date until the document is fetched.
+     * Absent when the document has no parseable date; a consumer then keeps the ref's provisional.
+     */
+    readonly issuedAt?: Date;
 }
 
 /**
@@ -57,7 +64,7 @@ export function asReceiptArtifact(handle: unknown): ReceiptArtifact {
     if (typeof handle !== 'object' || handle === null) {
         throw new TypeError('receipt artifact must be an object carrying { bytes, contentType }');
     }
-    const candidate = handle as { bytes?: unknown; contentType?: unknown; filename?: unknown };
+    const candidate = handle as { bytes?: unknown; contentType?: unknown; filename?: unknown; issuedAt?: unknown };
     if (!(candidate.bytes instanceof Uint8Array)) {
         throw new TypeError('receipt artifact is missing a Uint8Array `bytes` field');
     }
@@ -67,8 +74,14 @@ export function asReceiptArtifact(handle: unknown): ReceiptArtifact {
     if (candidate.filename !== undefined && typeof candidate.filename !== 'string') {
         throw new TypeError('receipt artifact `filename`, when present, must be a string');
     }
-    // Omit `filename` entirely when absent (exactOptionalPropertyTypes), never set it to undefined.
-    return candidate.filename === undefined
-        ? { bytes: candidate.bytes, contentType: candidate.contentType }
-        : { bytes: candidate.bytes, contentType: candidate.contentType, filename: candidate.filename };
+    if (candidate.issuedAt !== undefined && !(candidate.issuedAt instanceof Date)) {
+        throw new TypeError('receipt artifact `issuedAt`, when present, must be a Date');
+    }
+    // Omit optional fields entirely when absent (exactOptionalPropertyTypes), never set them to undefined.
+    return {
+        bytes: candidate.bytes,
+        contentType: candidate.contentType,
+        ...(candidate.filename !== undefined ? { filename: candidate.filename } : {}),
+        ...(candidate.issuedAt !== undefined ? { issuedAt: candidate.issuedAt } : {}),
+    };
 }

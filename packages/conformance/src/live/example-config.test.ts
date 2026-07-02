@@ -30,12 +30,12 @@ describe('committed e2e example template (.getreceipt.e2e.example.yaml)', () => 
 
     it('keys the canonical amazon.com source as a multi-instance session (#226/#190), not the stop-gap amazon.fr', () => {
         const { config } = loadConfig(EXAMPLE_PATH);
-        // Canonical source is amazon.com (#226) — a browser session (no credential) sweeping both marketplaces
-        // under one imported login; `instances:` is the source-level sibling of `auth:` (#190/#227).
+        // Canonical source is amazon.com (#226) — a browser session (no credential) sweeping every marketplace
+        // under one imported login; `instances:` is the source-level sibling of `auth:` (#190/#227/#228).
         expect(config.sources['amazon.com']).toMatchObject({
             kind: 'session',
             browser: 'chrome',
-            instances: ['amazon.com', 'amazon.fr'],
+            instances: ['amazon.com', 'amazon.fr', 'amazon.de'],
         });
         // The pre-#226 single-domain `amazon.fr:` key is gone — the source is keyed by the canonical domain.
         expect(config.sources).not.toHaveProperty('amazon.fr');
@@ -57,14 +57,14 @@ describe('committed e2e example template (.getreceipt.e2e.example.yaml)', () => 
         expect(decision.run).toBe(true);
         if (decision.run) {
             const amazon = decision.plans.find((plan) => plan.source === 'amazon.com');
-            // The whole plan: a browser session carrying the two declared marketplaces the harness will sweep
-            // under one imported session (#227). No credential fields — a session imports its login.
+            // The whole plan: a browser session carrying the three declared marketplaces the harness will sweep
+            // under one imported session (#227/#228). No credential fields — a session imports its login.
             expect(amazon).toEqual({
                 kind: 'session',
                 source: 'amazon.com',
                 browser: 'chrome',
                 profile: 'you@example.com',
-                instances: ['amazon.com', 'amazon.fr'],
+                instances: ['amazon.com', 'amazon.fr', 'amazon.de'],
             });
         }
     });

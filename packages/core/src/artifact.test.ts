@@ -36,4 +36,21 @@ describe('asReceiptArtifact', () => {
     it('rejects a non-string filename', () => {
         expect(() => asReceiptArtifact({ bytes, contentType: 'text/plain', filename: 42 })).toThrow(/filename/);
     });
+
+    it('carries a Date issuedAt when present (the fetch-time authoritative date, #240)', () => {
+        const issuedAt = new Date('2026-07-02T00:00:00.000Z');
+        const artifact = asReceiptArtifact({ bytes, contentType: 'application/pdf', issuedAt });
+        expect(artifact.issuedAt).toStrictEqual(issuedAt);
+    });
+
+    it('omits issuedAt entirely when absent (no undefined property)', () => {
+        const artifact = asReceiptArtifact({ bytes, contentType: 'application/pdf' });
+        expect('issuedAt' in artifact).toBe(false);
+    });
+
+    it('rejects a non-Date issuedAt', () => {
+        expect(() => asReceiptArtifact({ bytes, contentType: 'application/pdf', issuedAt: '2026-07-02' })).toThrow(
+            /issuedAt/,
+        );
+    });
 });
