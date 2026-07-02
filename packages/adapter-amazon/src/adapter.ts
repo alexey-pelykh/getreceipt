@@ -16,7 +16,7 @@ import type {
     SessionStore,
     StoredSession,
 } from '@getreceipt/auth';
-import { isWithinDateFilter, resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
+import { resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
@@ -33,15 +33,14 @@ import { renderInvoicePdf } from './render.js';
 import type { InvoiceRenderer } from './render.js';
 import {
     ENDPOINTS,
-    hasNextPage,
     INSTANCES,
     isOrderHistoryPage,
     LOCALE,
     ORDER_QUERY,
-    parseOrderDate,
+    parseInvoiceOrderDate,
+    parseOrderCount,
     parseOrders,
 } from './wire.js';
-import type { OrderDto } from './wire.js';
 
 /**
  * The source's CANONICAL identity (ADR-008): resolution, the SessionStore key (`login` + at-rest reuse), and the
@@ -222,8 +221,7 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
         const session = fromBrowserSession(auth);
         // The instance (#190) supplies the host, locale, and cookie scope; absent → the live amazon.fr instance defaults.
         const ctx = runContext(instance);
-        const orders = await listAllOrders(this.#transport, session, ctx);
-        return expandToRefs(orders, range, ctx.locale);
+        return listOrderRefs(this.#transport, session, ctx, range);
     }
 
     async fetch(auth: AuthHandle, ref: ReceiptRef, instance?: InstanceContext): Promise<ArtifactHandle> {
@@ -240,7 +238,15 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
         }
         // Render the validated print page to the canonical PDF artifact via the #172 port (marketplace-agnostic).
         const pdf = await this.#render(html);
-        const artifact: ReceiptArtifact = { bytes: pdf, contentType: 'application/pdf', filename: `${ref.id}.pdf` };
+        // The invoice carries the real order date in plaintext (the list's is CSD-locked, #240); when present it
+        // supersedes the coarse list-time provisional as the receipt's authoritative issued date.
+        const issuedAt = parseInvoiceOrderDate(html);
+        const artifact: ReceiptArtifact = {
+            bytes: pdf,
+            contentType: 'application/pdf',
+            filename: `${ref.id}.pdf`,
+            ...(issuedAt !== undefined ? { issuedAt } : {}),
+        };
         return artifact as unknown as ArtifactHandle;
     }
 }
@@ -272,54 +278,69 @@ function runContext(instance: InstanceContext | undefined): RunContext {
 }
 
 /**
- * Walk the paginated order history, returning every order across all pages (un-filtered). Each page is the
- * signed-in order history (its absence of the orders marker means a stale-session bounce → re-auth); paging
- * advances `startIndex` past the orders seen, stopping at the last page, an empty page, or the safety bound.
- * The seen-`startIndex` guard breaks a malformed pagination cycle. Runs against the instance's host/locale/cookie
- * scope ({@link RunContext}, #190).
+ * The time filters the window spans, as Amazon's `year-YYYY` values (#240): the order-history view is GATED by
+ * a time filter, so the adapter drives one per calendar year the window touches (UTC, newest-first). Bounded by
+ * the window — a normal window is one or two filters. Trimming WITHIN a year to the day is a follow-up: the
+ * per-order date is CSD-encrypted (not plaintext on the card), so the year is the granularity available here.
  */
-async function listAllOrders(transport: Transport, session: BrowserSession, ctx: RunContext): Promise<OrderDto[]> {
-    const all: OrderDto[] = [];
-    const seen = new Set<number>();
-    let startIndex = 0;
-    for (let page = 0; page < MAX_PAGES; page += 1) {
-        if (seen.has(startIndex)) {
-            break;
-        }
-        seen.add(startIndex);
-        const response = await requestSession(transport, session, ordersUrl(ctx.origin, startIndex), ctx);
-        const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
-        if (!isOrderHistoryPage(html)) {
-            // A 200 that is not the order history is a stale-session bounce (an interstitial sign-in) → re-auth.
-            throw browserSessionReauthRequired(CANONICAL_DOMAIN);
-        }
-        const orders = parseOrders(html, `${ctx.domain}:list`, ctx.locale);
-        all.push(...orders);
-        if (orders.length === 0 || !hasNextPage(html)) {
-            break;
-        }
-        startIndex += orders.length;
+function timeFiltersForRange(range: DateRange): string[] {
+    const filters: string[] = [];
+    for (let year = range.to.getUTCFullYear(); year >= range.from.getUTCFullYear(); year -= 1) {
+        filters.push(`year-${String(year)}`);
     }
-    return all;
+    return filters;
 }
 
 /**
- * Project orders into references: keep only those whose order date falls inside the inclusive window (the
- * order date is dated by the day, mirroring free.fr's instant convention), de-duplicating by order id while
- * preserving listing order. The date is parsed in the instance's `locale` ({@link parseOrderDate}, #190), and
- * the reference title uses the locale's order-word.
+ * List every order in the window as a reference, walking the time-filter years the window spans and, within
+ * each, the `startIndex` pages up to the page's declared order count. Each page MUST be the signed-in order
+ * history (its absence of the orders marker means a stale-session bounce → re-auth); a signed-in page with no
+ * order cards is an empty success, never re-auth. The per-card order DATE is CSD-encrypted (not plaintext,
+ * #240), so each ref carries a COARSE issued instant — Jan 1 (UTC) of the filter year it was found under,
+ * mirroring free.fr's coarse-instant convention. Refs are de-duplicated by order id, preserving first-seen
+ * order. Runs against the instance's host/locale/cookie scope ({@link RunContext}, #190).
  */
-function expandToRefs(orders: readonly OrderDto[], range: DateRange, locale: string): ReceiptRef[] {
-    const titlePrefix = locale.toLowerCase().startsWith('en') ? 'Order' : 'Commande';
+async function listOrderRefs(
+    transport: Transport,
+    session: BrowserSession,
+    ctx: RunContext,
+    range: DateRange,
+): Promise<ReceiptRef[]> {
     const byId = new Map<string, ReceiptRef>();
-    for (const order of orders) {
-        // Schema-validated to parse, but guard defensively — a non-date never reaches a ref.
-        const issuedAt = parseOrderDate(order.orderDate, locale);
-        if (issuedAt === undefined || !isWithinDateFilter(issuedAt, range, DESCRIPTOR.dateFilter)) {
-            continue; // honor the source's declared bound inclusivity (DateFilter), not a hardcoded both-ends
-        }
-        if (!byId.has(order.orderId)) {
-            byId.set(order.orderId, { id: order.orderId, issuedAt, title: `${titlePrefix} ${order.orderId}` });
+    for (const timeFilter of timeFiltersForRange(range)) {
+        // The per-card date is CSD-encrypted, so the filter year is the only date signal: date coarsely to Jan 1 UTC.
+        const issuedAt = new Date(Date.UTC(Number(timeFilter.slice('year-'.length)), 0, 1));
+        const seen = new Set<number>();
+        let startIndex = 0;
+        let total: number | undefined;
+        for (let page = 0; page < MAX_PAGES; page += 1) {
+            if (seen.has(startIndex)) {
+                break; // a malformed pagination that fails to advance can never loop
+            }
+            seen.add(startIndex);
+            const response = await requestSession(
+                transport,
+                session,
+                ordersUrl(ctx.origin, startIndex, timeFilter),
+                ctx,
+            );
+            const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
+            if (!isOrderHistoryPage(html)) {
+                // A 200 that is not the order history is a stale-session bounce (an interstitial sign-in) → re-auth.
+                throw browserSessionReauthRequired(CANONICAL_DOMAIN);
+            }
+            total ??= parseOrderCount(html);
+            const orders = parseOrders(html, `${ctx.domain}:list`);
+            for (const { orderId } of orders) {
+                if (!byId.has(orderId)) {
+                    byId.set(orderId, { id: orderId, issuedAt, title: `Order ${orderId}` });
+                }
+            }
+            startIndex += orders.length;
+            // Stop the year's walk at an empty page (the backstop) or once the declared total is reached.
+            if (orders.length === 0 || (total !== undefined && startIndex >= total)) {
+                break;
+            }
         }
     }
     return [...byId.values()];
@@ -365,9 +386,10 @@ async function requestSession(
     return response;
 }
 
-/** The order-history page URL at a pagination offset, on the instance's origin (#190). */
-function ordersUrl(origin: string, startIndex: number): URL {
+/** The order-history page URL at a pagination offset under a time filter, on the instance's origin (#190/#240). */
+function ordersUrl(origin: string, startIndex: number, timeFilter: string): URL {
     const url = new URL(ENDPOINTS.orderHistory, origin);
+    url.searchParams.set(ORDER_QUERY.timeFilter, timeFilter);
     if (startIndex > 0) {
         url.searchParams.set(ORDER_QUERY.startIndex, String(startIndex));
     }

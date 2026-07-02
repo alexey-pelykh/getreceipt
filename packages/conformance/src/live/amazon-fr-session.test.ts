@@ -113,24 +113,24 @@ const AMAZON_COOKIES: readonly FixtureCookie[] = [
 // --- synthetic amazon.fr HTML, derived from the wire contract's structural tokens (#88) -------------------
 
 /** An order row, validated against the wire schema so the fixture derives from it, not a hand-authored shape (#88). */
-function order(orderId: string, orderDate: string): OrderDto {
-    return wireFixture(orderSchema, { orderId, orderDate });
+function order(orderId: string): OrderDto {
+    return wireFixture(orderSchema, { orderId });
 }
 
-/** One order card: a French order date in the header + the invoice-print link carrying the orderID. */
+/** One order card, addressed by the slot-id carrying the order id (the per-card detail is CSD-encrypted, #240). */
 function renderCard(o: OrderDto): string {
     return (
-        `<div class="order-card"><span class="a-date">Commande effectuée le ${o.orderDate}</span>` +
-        `<a href="${ENDPOINTS.invoicePrint}?${ORDER_QUERY.orderId}=${o.orderId}" class="invoice">Facture</a></div>`
+        `<div class="order-card js-order-card" data-csa-c-slot-id="${LISTING.orderCardSlotPrefix}${o.orderId}">` +
+        `<div class="csd-encrypted-sensitive"></div></div>`
     );
 }
 
-/** The signed-in order-history page (carries the orders marker + a disabled "next" — a single, last page). */
+/** The signed-in "your-orders" page (carries the orders marker + a num-orders total — a single, complete page). */
 function renderOrdersPage(orders: readonly OrderDto[]): string {
-    const lastPage = `<li class="${LISTING.nextPageClass} ${LISTING.disabledClass}"></li>`;
     return (
-        `<!doctype html><html><body><div ${LISTING.ordersMarker}>` +
-        `${orders.map(renderCard).join('')}<ul class="a-pagination">${lastPage}</ul></div></body></html>`
+        `<!doctype html><html><body><section class="${LISTING.ordersMarker}-container">` +
+        `<span class="${LISTING.orderCountClass}">${String(orders.length)} commandes</span>` +
+        `${orders.map(renderCard).join('')}</section></body></html>`
     );
 }
 
@@ -184,7 +184,7 @@ const PLAN: LivePlan = { kind: 'session', source: 'amazon.fr', browser: 'chrome'
 
 describe('live harness — amazon.fr session source (synthetic fixtures, zero-capture)', () => {
     it('drives authenticate → list → fetch through runLiveCollection to a verified verdict, leaking no cookie', async () => {
-        server.use(ordersOk([order('404-1', '1 mai 2026'), order('404-2', '2 mai 2026')]), invoiceOk());
+        server.use(ordersOk([order('404-1'), order('404-2')]), invoiceOk());
 
         const run = await runLiveCollection(PLAN, {
             resolver: syntheticResolver(makeUserDataDir(AMAZON_COOKIES)),
@@ -209,7 +209,7 @@ describe('live harness — amazon.fr session source (synthetic fixtures, zero-ca
     });
 
     it('purges the throwaway output directory after the run (no fetched receipt survives)', async () => {
-        server.use(ordersOk([order('404-9', '4 mai 2026')]), invoiceOk());
+        server.use(ordersOk([order('404-9')]), invoiceOk());
         let used: string | undefined;
 
         await runLiveCollection(PLAN, {
@@ -291,7 +291,7 @@ describe('session-adapter error discipline (#205) — list/fetch surface only va
         // list succeeds, then the invoice fetch bounces to sign-in — the fetch leg's stale-session signal. It
         // too maps to the typed ReauthRequiredError, so the value-free discipline is proven on BOTH legs.
         server.use(
-            ordersOk([order('404-err', '4 mai 2026')]),
+            ordersOk([order('404-err')]),
             http.get(INVOICE_PRINT, () => new HttpResponse(null, { status: 302, headers: { location: SIGN_IN_URL } })),
         );
 

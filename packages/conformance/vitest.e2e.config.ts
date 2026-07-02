@@ -31,6 +31,11 @@ const e2eConfig = mergeConfig(sharedVitestConfig, {
     test: {
         name: '@getreceipt/conformance:e2e',
         include: ['**/*.e2e.test.ts'],
+        // Surface the harness's verdict matrix (and any diagnostic) directly on stderr: vitest's default
+        // console intercept buffers it away, so an operator-attended run would otherwise see only "skipped"
+        // with no per-source verdicts to act on. This run is human-attended and fenced out of CI, so
+        // unbuffered console is exactly what's wanted.
+        disableConsoleIntercept: true,
     },
 });
 (e2eConfig.test ??= {}).setupFiles = [];

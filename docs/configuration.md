@@ -317,7 +317,7 @@ sources:
     auth:
       browser: chrome
       profile: 'you@example.com'
-    instances: [amazon.com, amazon.fr]
+    instances: [amazon.com, amazon.fr, amazon.de]
 ```
 
 `instances:` is **optional** — omit it and the source collects the single canonical instance. The
@@ -353,11 +353,11 @@ login (re-import in your browser, or re-paste). There is no per-instance re-auth
 A marketplace is only **collectable** once it is a declared **and** validated instance. Amazon's instances are
 declared, but only some are validated against the live site:
 
-| instance         | status                                                                                                                                                                                                                                                                                 |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`amazon.fr`**  | **e2e-verified** — the working marketplace today.                                                                                                                                                                                                                                      |
-| **`amazon.com`** | **declared, not yet validated** — its live page structure and cookie/auth model are still synthetic; live validation is pending [#229](https://github.com/alexey-pelykh/getreceipt/issues/229). Treat `.com` collection as experimental until then.                                    |
-| **`amazon.de`**  | **not yet an instance** — recon ([#228](https://github.com/alexey-pelykh/getreceipt/issues/228)) found `amazon.de`'s order history is now a client-rendered SPA, so it is not simply addable; validation is tracked in [#230](https://github.com/alexey-pelykh/getreceipt/issues/230). |
+| instance         | status                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`amazon.fr`**  | **e2e-verified** — the working marketplace today.                                                                                                                                                                                                                                                                                                                          |
+| **`amazon.com`** | **declared, not yet validated** — its live page structure and cookie/auth model are still synthetic; live validation is pending [#229](https://github.com/alexey-pelykh/getreceipt/issues/229). Treat `.com` collection as experimental until then.                                                                                                                        |
+| **`amazon.de`**  | **declared, not yet validated** — added as an instance sharing amazon.fr's server-rendered order-card structure (per the [#228](https://github.com/alexey-pelykh/getreceipt/issues/228) recon); proven over synthetic fixtures, live validation pending [#230](https://github.com/alexey-pelykh/getreceipt/issues/230). Treat `.de` collection as experimental until then. |
 
 ### Bare-reference sugar
 

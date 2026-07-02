@@ -72,6 +72,9 @@ describe('live e2e harness (gated — skipped unless GETRECEIPT_E2E is configure
             // The sweep ran (the gate guarantees ≥1 plan); guard against acting on an empty matrix.
             expect(results.length, 'the sweep produced no source results').toBeGreaterThan(0);
             const report = matrix(results);
+            // Always surface the per-source matrix on stderr — vitest buries ctx.skip()/assert messages, so an
+            // operator-run sweep would otherwise show only "skipped" with no per-source verdicts to act on.
+            console.error(`\n===== [e2e verdict matrix] =====\n${report}\n===============================\n`);
 
             // 1) Contract drift is THE adapter fault — the make-or-break proof the oracle can fail. A real
             //    wire.ts Zod mismatch surfaces here and FAILS the run loudly; it is never masked by an
