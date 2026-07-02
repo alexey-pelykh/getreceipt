@@ -43,14 +43,12 @@ import {
     LOCALE,
     orderSchema,
     ORDER_QUERY,
-    parseEnglishDate,
-    parseFrenchDate,
-    parseOrderDate,
+    parseOrderCount,
     parseOrders,
 } from './wire.js';
 import type { OrderDto } from './wire.js';
 
-// Everything below runs against MSW-mocked HTTP — there is no live amazon.fr in CI — over a SYNTHETIC Chrome
+// Everything below runs against MSW-mocked HTTP — there is no live Amazon in CI — over a SYNTHETIC Chrome
 // cookie store (a temp user-data dir + an injected Safe Storage key, leak-sentinel cookie values), so no real
 // Keychain, browser, or home dir is touched (CONTRIBUTING § captures-stay-local): zero raw capture. Endpoints
 // AND the order-page STRUCTURE come from the in-repo contract (wire.ts: `ENDPOINTS`/`LISTING`/`ORDER_QUERY`):
@@ -140,31 +138,44 @@ const IMPORTED_COOKIES: ReadonlyArray<readonly [string, string]> = [
     ['session-id', SESSION_ID],
 ];
 
-// --- synthetic amazon.fr HTML (rendered from the wire contract's structural tokens, #88) ------------------
+// --- synthetic Amazon HTML (rendered from the wire contract's structural tokens, #88) ---------------------
 
-const WIDE: DateRange = { from: new Date('2020-01-01T00:00:00.000Z'), to: new Date('2030-12-31T23:59:59.999Z') };
+// A window spanning the fixtures' year (2026). The per-order date is CSD-encrypted (not plaintext on the card),
+// so the adapter dates each ref COARSELY to Jan 1 (UTC) of the time-filter year (#240) — 2026 here.
+const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
+const COARSE_2026 = '2026-01-01T00:00:00.000Z';
 
 /** An order row; validated against the wire schema so every positive fixture derives from it (#88). */
-function order(orderId: string, orderDate = '26 juin 2026'): OrderDto {
-    return wireFixture(orderSchema, { orderId, orderDate });
+function order(orderId: string): OrderDto {
+    return wireFixture(orderSchema, { orderId });
 }
 
-/** Render one order card: a French order date in the header + the invoice-print link carrying the orderID. */
+/**
+ * Render one order card, addressed by the `data-csa-c-slot-id` that carries the order id. On the live page the
+ * per-card detail (incl. the order date) is CSD-encrypted, so the card body is an opaque encrypted node — the
+ * order id in the slot-id is the ONLY plaintext the parser reads (#240).
+ */
 function renderCard(o: OrderDto): string {
     return (
-        `<div class="order-card"><span class="a-date">Commande effectuée le ${o.orderDate}</span>` +
-        `<a href="${ENDPOINTS.invoicePrint}?${ORDER_QUERY.orderId}=${o.orderId}" class="invoice">Facture</a></div>`
+        `<div class="order-card js-order-card" data-csa-c-slot-id="${LISTING.orderCardSlotPrefix}${o.orderId}">` +
+        `<div class="a-section csd-encrypted-sensitive" data-encrypted-data="ct-ciphertext"></div></div>`
     );
 }
 
-/** Render the signed-in order-history page (carries the orders marker + a pagination control). */
-function renderOrdersPage(orders: readonly OrderDto[], hasNext = false): string {
-    const next = hasNext
-        ? `<li class="${LISTING.nextPageClass}"><a href="#">Suivant</a></li>`
-        : `<li class="${LISTING.nextPageClass} ${LISTING.disabledClass}"></li>`;
+/**
+ * Render the signed-in "your-orders" page: the orders marker, the num-orders total (bounds the pagination
+ * walk), a time-filter control, and one card per order. `total` defaults to the page's own card count (a single
+ * complete page); pass a larger total to model a multi-page account. `countWord` models the ACCOUNT's render
+ * language (#228: `commandes` / `orders` / `Bestellungen`) — parsing ignores it, reading only the integer.
+ */
+function renderOrdersPage(orders: readonly OrderDto[], total = orders.length, countWord = 'commandes'): string {
     return (
-        `<!doctype html><html><body><div ${LISTING.ordersMarker}>` +
-        `${orders.map(renderCard).join('')}<ul class="a-pagination">${next}</ul></div></body></html>`
+        `<!doctype html><html><body>` +
+        `<section class="your-orders-content-container">` +
+        `<span class="num-orders">${String(total)} ${countWord}</span> passées` +
+        `<select name="timeFilter"><option value="year-2026">2026</option></select>` +
+        `${orders.map(renderCard).join('')}` +
+        `</section></body></html>`
     );
 }
 
@@ -245,7 +256,7 @@ if (FR_INSTANCE === undefined) {
 }
 
 describe('AmazonAdapter — AC1: registration + resolution', () => {
-    it('resolves canonical amazon.com AND the amazon.fr instance to the same adapter, each with its context (#226)', () => {
+    it('resolves canonical amazon.com AND the amazon.fr / amazon.de instances to the same adapter, each with its context (#226/#228)', () => {
         const registry = new SourceAdapterRegistry();
         registry.register(amazonAdapter);
         const resolver = new SourceResolver(registry);
@@ -260,12 +271,14 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
         // The expected contexts are read from the descriptor (derived from the wire contract), never re-authored (#88).
         const comInstance = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.com');
         const frInstance = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.fr');
+        const deInstance = amazonAdapter.descriptor.instances?.find((i) => i.domain === 'amazon.de');
         expect(comInstance).toBeDefined();
         expect(frInstance).toBeDefined();
+        expect(deInstance).toBeDefined();
 
-        // Addressing (ADR-008 §6): `from amazon.com` → the .com instance; `from amazon.fr` → the .fr instance —
-        // the SAME adapter, each carrying its host / locale / cookie scope. The canonical resolves as its own
-        // instance so the collection path routes uniformly; amazon.fr still resolves (back-compat).
+        // Addressing (ADR-008 §6): `from amazon.<tld>` → that marketplace's instance — the SAME adapter, each
+        // carrying its host / locale / cookie scope. The canonical resolves as its own instance so the collection
+        // path routes uniformly; amazon.fr still resolves (back-compat).
         const com = resolver.resolveInstance('amazon.com');
         expect(com.adapter).toBe(amazonAdapter);
         expect(com.instance).toEqual(comInstance);
@@ -274,10 +287,14 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
         expect(fr.adapter).toBe(amazonAdapter);
         expect(fr.instance).toEqual(frInstance);
         expect(fr.instance).toMatchObject({ domain: 'amazon.fr', cookieDomain: 'amazon.fr', locale: 'fr-FR' });
+        const de = resolver.resolveInstance('amazon.de');
+        expect(de.adapter).toBe(amazonAdapter);
+        expect(de.instance).toEqual(deInstance);
+        expect(de.instance).toMatchObject({ domain: 'amazon.de', cookieDomain: 'amazon.de', locale: 'de-DE' });
         expect(resolver.resolveInstance('AMAZON.FR').adapter).toBe(amazonAdapter);
     });
 
-    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.com+amazon.fr instances, and no aliases', () => {
+    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.com+amazon.fr+amazon.de instances, and no aliases', () => {
         const descriptor = amazonAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
@@ -294,10 +311,10 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
             requiresImpersonation: true,
         });
         expect(descriptor.aliasDomains).toEqual([]);
-        // The two instances this ONE adapter serves under ONE sign-in (#190); the canonical is listed as its own
-        // instance. The instances ARE the wire contract's (#88: derived, never re-authored beside the adapter) —
+        // The three instances this ONE adapter serves under ONE sign-in (#190/#228); the canonical is listed as its
+        // own instance. The instances ARE the wire contract's (#88: derived, never re-authored beside the adapter) —
         // hosts pass through the #103 publication gate, identity for this discovery-only source.
-        expect(descriptor.instances?.map((i) => i.domain)).toEqual(['amazon.com', 'amazon.fr']);
+        expect(descriptor.instances?.map((i) => i.domain)).toEqual(['amazon.com', 'amazon.fr', 'amazon.de']);
         expect(descriptor.instances).toEqual(WIRE_INSTANCES.map((i) => ({ ...i })));
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
     });
@@ -368,19 +385,20 @@ describe('AmazonAdapter — AC1: authenticate (import the browser session, no lo
     });
 });
 
-describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + locale + window)', () => {
-    it('parses the order history into refs addressed by order id, titled and dated from the card', async () => {
-        server.use(ordersOk([order('404-1234567-1234567', '26 juin 2026')]));
+describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + time filter + window)', () => {
+    it('parses the order history into refs addressed by order id, with a coarse issued instant from the filter year', async () => {
+        server.use(ordersOk([order('404-1234567-1234567')]));
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
 
         const refs = await a.list(await a.authenticate(creds()), WIDE);
 
         expect(refs.map((ref) => ref.id)).toEqual(['404-1234567-1234567']);
-        expect(refs[0]!.title).toBe('Commande 404-1234567-1234567');
-        expect(refs[0]!.issuedAt.toISOString()).toBe('2026-06-26T00:00:00.000Z');
+        expect(refs[0]!.title).toBe('Order 404-1234567-1234567');
+        // The per-card date is CSD-encrypted (not on the card), so the ref dates coarsely to Jan 1 of the filter year (#240).
+        expect(refs[0]!.issuedAt.toISOString()).toBe(COARSE_2026);
     });
 
-    it('addresses the order-history endpoint (no startIndex on the first page)', async () => {
+    it('addresses the order-history endpoint under the window year time filter (no startIndex on the first page)', async () => {
         let listRequest: Request | undefined;
         server.use(ordersOk([], (request) => (listRequest = request)));
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
@@ -389,26 +407,33 @@ describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + locale + window)
 
         const url = new URL(listRequest?.url ?? '');
         expect(url.pathname).toBe(ENDPOINTS.orderHistory);
+        expect(url.searchParams.get(ORDER_QUERY.timeFilter)).toBe('year-2026'); // the window's year gates the view
         expect(url.searchParams.get(ORDER_QUERY.startIndex)).toBeNull();
     });
 
-    it('filters to the window inclusively on both order-date bounds', async () => {
-        const from = new Date('2026-03-01T00:00:00.000Z');
-        const to = new Date('2026-05-01T00:00:00.000Z');
+    it('drives one time filter per window year (newest-first), dating each order coarsely to its filter year', async () => {
+        // The view is gated by a time filter; the adapter iterates the window's years and dates each ref to Jan 1
+        // (UTC) of the year it was found under — the only date signal available (the per-card date is CSD-encrypted).
+        const seenFilters: Array<string | null> = [];
         server.use(
-            ordersOk([
-                order('O-FEB', '15 février 2026'), // < from → excluded
-                order('O-MAR', '1 mars 2026'), // == from → included
-                order('O-APR', '10 avril 2026'), // between → included
-                order('O-MAY', '1 mai 2026'), // == to → included
-                order('O-JUN', '2 juin 2026'), // > to → excluded
-            ]),
+            http.get(ORDER_HISTORY, ({ request }) => {
+                const tf = new URL(request.url).searchParams.get(ORDER_QUERY.timeFilter);
+                seenFilters.push(tf);
+                if (tf === 'year-2026') return html(renderOrdersPage([order('O-2026')]));
+                if (tf === 'year-2025') return html(renderOrdersPage([order('O-2025')]));
+                return html(renderOrdersPage([]));
+            }),
         );
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
+        const from = new Date('2025-06-01T00:00:00.000Z');
+        const to = new Date('2026-06-01T00:00:00.000Z');
 
         const refs = await a.list(await a.authenticate(creds()), { from, to });
 
-        expect(refs.map((ref) => ref.id)).toEqual(['O-MAR', 'O-APR', 'O-MAY']);
+        expect(seenFilters).toEqual(['year-2026', 'year-2025']); // one filter per window year, newest-first
+        expect(refs.map((r) => r.id)).toEqual(['O-2026', 'O-2025']);
+        expect(refs.find((r) => r.id === 'O-2026')?.issuedAt.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+        expect(refs.find((r) => r.id === 'O-2025')?.issuedAt.toISOString()).toBe('2025-01-01T00:00:00.000Z');
     });
 
     it('returns an empty success for a signed-in order history with no orders', async () => {
@@ -418,8 +443,8 @@ describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + locale + window)
         expect(await a.list(await a.authenticate(creds()), WIDE)).toEqual([]);
     });
 
-    it('de-duplicates an order that repeats across overlapping pages, preserving listing order', async () => {
-        server.use(ordersOk([order('A-1', '1 mai 2026'), order('B-2', '2 mai 2026'), order('A-1', '1 mai 2026')]));
+    it('de-duplicates an order id that repeats in the listing, preserving first-seen order', async () => {
+        server.use(ordersOk([order('A-1'), order('B-2'), order('A-1')]));
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
 
         const refs = await a.list(await a.authenticate(creds()), WIDE);
@@ -427,16 +452,16 @@ describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + locale + window)
         expect(refs.map((ref) => ref.id)).toEqual(['A-1', 'B-2']);
     });
 
-    it('walks every page of a paginated order history (startIndex), then stops at the disabled "next"', async () => {
+    it('walks startIndex pages up to the num-orders total, then stops', async () => {
         const seenStartIndex: Array<string | null> = [];
         server.use(
             http.get(ORDER_HISTORY, ({ request }) => {
                 const start = new URL(request.url).searchParams.get(ORDER_QUERY.startIndex);
                 seenStartIndex.push(start);
-                // Page 1 (no startIndex): two orders + an enabled "next"; page 2 (startIndex=2): one order + disabled "next".
+                // Total is 3 across two pages: page 1 (no startIndex) has 2 cards; page 2 (startIndex=2) has 1.
                 return start === null
-                    ? html(renderOrdersPage([order('P1-A', '1 mai 2026'), order('P1-B', '2 mai 2026')], true))
-                    : html(renderOrdersPage([order('P2-A', '3 mai 2026')]));
+                    ? html(renderOrdersPage([order('P1-A'), order('P1-B')], 3))
+                    : html(renderOrdersPage([order('P2-A')], 3));
             }),
         );
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
@@ -444,13 +469,13 @@ describe('AmazonAdapter — AC2/AC3: list (your-orders scrape + locale + window)
         const refs = await a.list(await a.authenticate(creds()), WIDE);
 
         expect(refs.map((ref) => ref.id)).toEqual(['P1-A', 'P1-B', 'P2-A']);
-        expect(seenStartIndex).toEqual([null, '2']); // second page requested at the offset past page one
+        expect(seenStartIndex).toEqual([null, '2']); // second page requested at the offset past page one; stops at total
     });
 });
 
 describe('AmazonAdapter — AC2: fetch (invoice print page → rendered PDF)', () => {
     it('renders the invoice print page (addressed by orderID) to a faithful application/pdf artifact', async () => {
-        server.use(ordersOk([order('404-9-1', '4 mai 2026')]), invoiceOk());
+        server.use(ordersOk([order('404-9-1')]), invoiceOk());
         let renderedHtml: string | undefined;
         const render: InvoiceRenderer = (invoiceHtml) => {
             renderedHtml = invoiceHtml;
@@ -473,7 +498,7 @@ describe('AmazonAdapter — AC2: fetch (invoice print page → rendered PDF)', (
 
     it('rejects a fetched page that is not the requested invoice at the trust boundary, before rendering', async () => {
         server.use(
-            ordersOk([order('404-9-2', '4 mai 2026')]),
+            ordersOk([order('404-9-2')]),
             http.get(INVOICE_PRINT, () => html('<html><body>some other page</body></html>')),
         );
         let rendered = false;
@@ -529,7 +554,7 @@ describe('AmazonAdapter — AC4: stale session → reauth-required', () => {
 
     it('maps a sign-in redirect on the invoice fetch to a ReauthRequiredError', async () => {
         server.use(
-            ordersOk([order('404-9-3', '4 mai 2026')]),
+            ordersOk([order('404-9-3')]),
             http.get(INVOICE_PRINT, () => new HttpResponse(null, { status: 302, headers: { location: SIGN_IN_URL } })),
         );
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
@@ -559,11 +584,11 @@ describe('AmazonAdapter — AC4: stale session → reauth-required', () => {
 });
 
 describe('AmazonAdapter — AC5: boundary validation + secret hygiene', () => {
-    it('rejects a malformed order row (no parseable date) at the trust boundary, labeled by source:stage', async () => {
-        // A card whose date is not a French date → the order schema rejects it as drift.
+    it('rejects a malformed order id (a stray path char in the slot-id) at the trust boundary, labeled by source:stage', async () => {
+        // A card whose slot-id suffix is not a valid order id → the order schema rejects it as drift.
         const badPage =
-            `<html><body><div ${LISTING.ordersMarker}><div class="order-card"><span>no date here</span>` +
-            `<a href="${ENDPOINTS.invoicePrint}?${ORDER_QUERY.orderId}=404-BAD" class="invoice"></a></div></div></body></html>`;
+            `<section class="your-orders-content-container">` +
+            `<div class="order-card" data-csa-c-slot-id="${LISTING.orderCardSlotPrefix}404/BAD"></div></section>`;
         server.use(http.get(ORDER_HISTORY, () => html(badPage)));
         const a = adapter(makeUserDataDir(AMAZON_COOKIES));
         const auth = await a.authenticate(creds());
@@ -575,7 +600,7 @@ describe('AmazonAdapter — AC5: boundary validation + secret hygiene', () => {
     });
 
     it('drives a full collect() run end-to-end and leaks no cookie value into results, manifest, or persisted bytes', async () => {
-        server.use(ordersOk([order('404-1', '1 mai 2026'), order('404-2', '2 mai 2026')]), invoiceOk());
+        server.use(ordersOk([order('404-1'), order('404-2')]), invoiceOk());
         const dir = mkdtempSync(join(tmpdir(), 'amazon-out-'));
         try {
             const writer = new FilesystemReceiptWriter({ outDir: dir });
@@ -661,40 +686,33 @@ describe('AmazonAdapter — AC5: boundary validation + secret hygiene', () => {
     });
 });
 
-describe('wire.ts — the in-repo contract (schema-derived orders, French date parsing)', () => {
-    it('parses an order-history page in the documented shape and rejects a row missing its date', () => {
-        const orders = parseOrders(renderOrdersPage([order('404-7-7', '7 juillet 2026')]), 'amazon.fr:list');
-        expect(orders).toEqual([{ orderId: '404-7-7', orderDate: '7 juillet 2026' }]);
-
-        const noDate = `<div ${LISTING.ordersMarker}><a href="${ENDPOINTS.invoicePrint}?${ORDER_QUERY.orderId}=X" class="i"></a></div>`;
-        expect(() => parseOrders(noDate, 'amazon.fr:list')).toThrow(TrustBoundaryError);
+describe('wire.ts — the in-repo contract (schema-derived slot-id orders)', () => {
+    it('parses an order-history page into refs keyed by the slot-id order id', () => {
+        const orders = parseOrders(renderOrdersPage([order('404-7-7'), order('111-8-8')]), 'amazon.fr:list');
+        expect(orders).toEqual([{ orderId: '404-7-7' }, { orderId: '111-8-8' }]);
     });
 
-    it('parses French dates (accented + unaccented months) and rejects non-dates', () => {
-        expect(parseFrenchDate('8 août 2026')?.toISOString()).toBe('2026-08-08T00:00:00.000Z');
-        expect(parseFrenchDate('8 aout 2026')?.toISOString()).toBe('2026-08-08T00:00:00.000Z');
-        expect(parseFrenchDate('31 février 2026')).toBeUndefined(); // overflow is not a date
-        expect(parseFrenchDate('not a date')).toBeUndefined();
+    it('returns [] for a signed-in page carrying no order cards', () => {
+        expect(parseOrders(renderOrdersPage([]), 'amazon.fr:list')).toEqual([]);
     });
 
-    it('parses US-English dates (amazon.com instance, #190) and rejects non-dates', () => {
-        expect(parseEnglishDate('June 26, 2026')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        expect(parseEnglishDate('December 1, 2026')?.toISOString()).toBe('2026-12-01T00:00:00.000Z');
-        expect(parseEnglishDate('February 31, 2026')).toBeUndefined(); // overflow is not a date
-        expect(parseEnglishDate('26 juin 2026')).toBeUndefined(); // a French date is not an English one
+    it("reads only order-card slot-ids, ignoring the page's other CSA slots", () => {
+        const page =
+            `<section class="your-orders-content-container">` +
+            `<div data-csa-c-slot-id="amzn1.yourorders.filter.something"></div>` +
+            renderCard(order('404-9-9')) +
+            `</section>`;
+        expect(parseOrders(page, 'amazon.fr:list')).toEqual([{ orderId: '404-9-9' }]);
     });
 
-    it('parseOrderDate routes by instance locale, and accepts EITHER format when locale is absent (#190)', () => {
-        // The instance locale picks the format: en → English, anything else → French.
-        expect(parseOrderDate('June 26, 2026', 'en-US')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        expect(parseOrderDate('26 juin 2026', 'fr-FR')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        // A locale rejects the OTHER locale's format (so a drifted page surfaces at the boundary).
-        expect(parseOrderDate('June 26, 2026', 'fr-FR')).toBeUndefined();
-        expect(parseOrderDate('26 juin 2026', 'en-US')).toBeUndefined();
-        // No locale (the wire-schema boundary) accepts either real date.
-        expect(parseOrderDate('26 juin 2026')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        expect(parseOrderDate('June 26, 2026')?.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        expect(parseOrderDate('not a date')).toBeUndefined();
+    it('rejects a malformed slot-id order id at the trust boundary', () => {
+        const bad = `<div data-csa-c-slot-id="${LISTING.orderCardSlotPrefix}x/y"></div>`;
+        expect(() => parseOrders(bad, 'amazon.fr:list')).toThrow(TrustBoundaryError);
+    });
+
+    it('reads the num-orders total (and is undefined when the page carries none)', () => {
+        expect(parseOrderCount(renderOrdersPage([order('A-1')], 67))).toBe(67);
+        expect(parseOrderCount('<html><body>no count here</body></html>')).toBeUndefined();
     });
 });
 
@@ -810,20 +828,22 @@ describe('AmazonAdapter — #189: persist + reuse the imported session at rest',
     });
 });
 
-describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#190)', () => {
+describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#190/#228)', () => {
     // The instance contexts come from the SHIPPED descriptor (the contract), never re-authored here (#88).
     const INSTANCES = amazonAdapter.descriptor.instances ?? [];
     const FR_CTX = INSTANCES.find((i) => i.domain === 'amazon.fr');
     const COM_CTX = INSTANCES.find((i) => i.domain === 'amazon.com');
-    if (FR_CTX === undefined || COM_CTX === undefined) {
-        throw new Error('amazon adapter must declare amazon.fr + amazon.com instances (#190)');
+    const DE_CTX = INSTANCES.find((i) => i.domain === 'amazon.de');
+    if (FR_CTX === undefined || COM_CTX === undefined || DE_CTX === undefined) {
+        throw new Error('amazon adapter must declare amazon.fr + amazon.com + amazon.de instances (#190/#228)');
     }
 
     // Leak-sentinel cookie values, one per marketplace, in the SHARED jar imported once (#190 auth-once).
     const FR_AT = 'amazon-fr-at-LEAK-SENTINEL';
     const COM_AT = 'amazon-com-at-LEAK-SENTINEL';
+    const DE_AT = 'amazon-de-at-LEAK-SENTINEL';
 
-    /** One shared session jar holding BOTH marketplaces' cookies — the auth-once handle each instance filters (#190). */
+    /** One shared session jar holding ALL marketplaces' cookies — the auth-once handle each instance filters (#190). */
     function sharedSession(): AuthHandle {
         const cookie = (name: string, value: string, domain: string): BrowserCookie => ({
             name,
@@ -837,44 +857,58 @@ describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#19
         const session: BrowserSession = {
             browser: 'chrome',
             domain: 'amazon.fr',
-            cookies: [cookie('at-acbfr', FR_AT, '.amazon.fr'), cookie('at-acbus', COM_AT, '.amazon.com')],
+            cookies: [
+                cookie('at-acbfr', FR_AT, '.amazon.fr'),
+                cookie('at-acbus', COM_AT, '.amazon.com'),
+                cookie('at-acbde', DE_AT, '.amazon.de'),
+            ],
         };
         // The opaque handle's inverse of fromBrowserSession (white-box: the adapter casts it straight back).
         return session as unknown as AuthHandle;
     }
 
     /** Serve an instance's order history from ITS host, capturing the request so host/locale/cookie threading is assertable. */
-    function ordersFor(host: string, orders: readonly OrderDto[], sink: { request?: Request }) {
+    function ordersFor(
+        host: string,
+        orders: readonly OrderDto[],
+        sink: { request?: Request },
+        countWord = 'commandes',
+    ) {
         return http.get(`${host}${ENDPOINTS.orderHistory}`, ({ request }) => {
             sink.request = request;
-            return html(renderOrdersPage(orders));
+            return html(renderOrdersPage(orders, orders.length, countWord));
         });
     }
 
-    it('lists each instance against ITS host, locale, and cookie scope, parsing the locale-specific date (AC8)', async () => {
+    it('lists each instance against ITS host, locale, and cookie scope — parsing is language-independent (AC8, #228)', async () => {
         const frReq: { request?: Request } = {};
         const comReq: { request?: Request } = {};
-        // Same page STRUCTURE for both marketplaces (the shared-structure assumption #191 validates); only the
-        // date FORMAT differs (French `DD mois YYYY` vs US-English `Month DD, YYYY`).
+        const deReq: { request?: Request } = {};
+        // Same page STRUCTURE across marketplaces (the shared-structure assumption, #191); the ACCOUNT render
+        // language differs (.fr "commandes", .com "orders", and THIS .de account renders English "orders", not
+        // German "Bestellungen", #228). Parsing reads language-independent slot-ids + counts, so all parse alike.
         server.use(
-            ordersFor(FR_CTX.host, [order('404-FR-0000001', '26 juin 2026')], frReq),
-            ordersFor(COM_CTX.host, [order('111-COM-0000002', 'June 26, 2026')], comReq),
+            ordersFor(FR_CTX.host, [order('404-FR-0000001')], frReq, 'commandes'),
+            ordersFor(COM_CTX.host, [order('111-COM-0000002')], comReq, 'orders'),
+            ordersFor(DE_CTX.host, [order('303-DE-0000003')], deReq, 'orders'),
         );
         const auth = sharedSession();
-        const adapter = new AmazonAdapter({ render: stubRender });
+        const testAdapter = new AmazonAdapter({ render: stubRender });
 
-        const fr = await adapter.list(auth, WIDE, FR_CTX);
-        const com = await adapter.list(auth, WIDE, COM_CTX);
+        const fr = await testAdapter.list(auth, WIDE, FR_CTX);
+        const com = await testAdapter.list(auth, WIDE, COM_CTX);
+        const de = await testAdapter.list(auth, WIDE, DE_CTX);
 
-        // SEPARATE data per instance: each returned only its own order, both dated to the same instant from
-        // different locale formats (proving locale-aware parsing).
+        // SEPARATE data per instance: each returned only its own order.
         expect(fr.map((r) => r.id)).toEqual(['404-FR-0000001']);
         expect(com.map((r) => r.id)).toEqual(['111-COM-0000002']);
-        expect(fr[0]?.issuedAt.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        expect(com[0]?.issuedAt.toISOString()).toBe('2026-06-26T00:00:00.000Z');
-        // The locale also drives the reference title word.
-        expect(fr[0]?.title).toBe('Commande 404-FR-0000001');
-        expect(com[0]?.title).toBe('Order 111-COM-0000002');
+        expect(de.map((r) => r.id)).toEqual(['303-DE-0000003']);
+        // All date coarsely to the filter year (the per-card date is CSD-encrypted) and carry a language-neutral title.
+        for (const refs of [fr, com, de]) {
+            expect(refs[0]?.issuedAt.toISOString()).toBe(COARSE_2026);
+        }
+        expect(fr[0]?.title).toBe('Order 404-FR-0000001');
+        expect(de[0]?.title).toBe('Order 303-DE-0000003');
 
         // amazon.fr request: addressed its own host, sent fr-FR, and carried ONLY the .fr cookie.
         expect(new URL(frReq.request?.url ?? '').host).toBe('www.amazon.fr');
@@ -887,6 +921,25 @@ describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#19
         expect(comReq.request?.headers.get('accept-language')).toBe('en-US');
         expect(comReq.request?.headers.get('cookie')).toContain(COM_AT);
         expect(comReq.request?.headers.get('cookie')).not.toContain(FR_AT);
+
+        // amazon.de request: its own host, de-DE, and ONLY the .de cookie.
+        expect(new URL(deReq.request?.url ?? '').host).toBe('www.amazon.de');
+        expect(deReq.request?.headers.get('accept-language')).toBe('de-DE');
+        expect(deReq.request?.headers.get('cookie')).toContain(DE_AT);
+        expect(deReq.request?.headers.get('cookie')).not.toContain(FR_AT);
+    });
+
+    it('parses a GERMAN-rendered amazon.de page identically to an English-rendered one (#228 language-independence)', async () => {
+        // The SAME .de instance, but the account now renders German ("Bestellungen"): the language-independent
+        // slot-id + count parse yields the same order — no per-language date parser (the date is CSD-encrypted).
+        const deReq: { request?: Request } = {};
+        server.use(ordersFor(DE_CTX.host, [order('303-DE-0000004')], deReq, 'Bestellungen'));
+
+        const de = await new AmazonAdapter({ render: stubRender }).list(sharedSession(), WIDE, DE_CTX);
+
+        expect(de.map((r) => r.id)).toEqual(['303-DE-0000004']);
+        expect(de[0]?.issuedAt.toISOString()).toBe(COARSE_2026);
+        expect(deReq.request?.headers.get('accept-language')).toBe('de-DE');
     });
 
     it('fetches an invoice from the addressed instance host (AC8)', async () => {
@@ -898,10 +951,10 @@ describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#19
                 return html(renderInvoice(orderId));
             }),
         );
-        const adapter = new AmazonAdapter({ render: stubRender });
+        const testAdapter = new AmazonAdapter({ render: stubRender });
         const ref = { id: '111-COM-0000002', issuedAt: new Date('2026-06-26T00:00:00.000Z') };
 
-        const artifact = asReceiptArtifact(await adapter.fetch(sharedSession(), ref, COM_CTX));
+        const artifact = asReceiptArtifact(await testAdapter.fetch(sharedSession(), ref, COM_CTX));
 
         // The fetch addressed amazon.com (not the canonical .fr) with the .com cookie, and produced the PDF artifact.
         expect(new URL(invoiceReq?.url ?? '').host).toBe('www.amazon.com');
@@ -951,15 +1004,11 @@ describe('AmazonAdapter — #226: canonical realign (amazon.com source identity)
     it('namespaces output per instance so the SAME order id on two marketplaces cannot clobber (#190/#226)', async () => {
         const SHARED_ID = '404-SHARED-01';
         server.use(
-            http.get(`${FR_INSTANCE.host}${ENDPOINTS.orderHistory}`, () =>
-                html(renderOrdersPage([order(SHARED_ID, '1 mai 2026')])),
-            ),
+            http.get(`${FR_INSTANCE.host}${ENDPOINTS.orderHistory}`, () => html(renderOrdersPage([order(SHARED_ID)]))),
             http.get(`${FR_INSTANCE.host}${ENDPOINTS.invoicePrint}`, ({ request }) =>
                 html(renderInvoice(new URL(request.url).searchParams.get(ORDER_QUERY.orderId) ?? '')),
             ),
-            http.get(`${COM_INSTANCE.host}${ENDPOINTS.orderHistory}`, () =>
-                html(renderOrdersPage([order(SHARED_ID, 'May 1, 2026')])),
-            ),
+            http.get(`${COM_INSTANCE.host}${ENDPOINTS.orderHistory}`, () => html(renderOrdersPage([order(SHARED_ID)]))),
             http.get(`${COM_INSTANCE.host}${ENDPOINTS.invoicePrint}`, ({ request }) =>
                 html(renderInvoice(new URL(request.url).searchParams.get(ORDER_QUERY.orderId) ?? '')),
             ),
