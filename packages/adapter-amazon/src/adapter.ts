@@ -107,6 +107,11 @@ const DESCRIPTOR: SourceDescriptor = {
     // amazon.fr gates the order host on the TLS/HTTP-2 fingerprint, so collection MUST run over a
     // browser-impersonating transport; the bundled wiring asserts one is injected (#101).
     requiresImpersonation: true,
+    // The order-history list client-side-encrypts each order's date (Siege CSD, #240), so list() can only
+    // bucket a ref to its filter YEAR — over-inclusive for any sub-year window. The real date arrives at
+    // fetch time (the invoice's plaintext orderDate → artifact.issuedAt), so collect() window-filters on
+    // THAT and, since the list is newest-first, stops past the window (#243).
+    listWindow: { precision: 'coarse', order: 'newest-first' },
 };
 
 /**

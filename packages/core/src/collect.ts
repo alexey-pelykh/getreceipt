@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { asReceiptArtifact } from './artifact.js';
 import { resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';
 import type { ChallengeObserver, ChallengeOutcome } from './challenge-observer.js';
 import type { ChallengeResolver } from './challenge.js';
+import { isWithinDateFilter } from './date-filter.js';
 import { ReauthRequiredError } from './errors.js';
 import type { RateLimiter } from './rate-limiter.js';
 import { Semaphore } from './semaphore.js';
 import type {
+    ArtifactHandle,
     AuthHandle,
     CredentialContext,
+    DateFilter,
     DateRange,
     InstanceContext,
     ReceiptRef,
@@ -96,6 +100,15 @@ export interface CollectSucceeded extends CollectResultBase {
     readonly written: readonly ReceiptRef[];
     /** Receipts the writer already had, skipped without fetching, in listing order. */
     readonly skipped: readonly ReceiptRef[];
+    /**
+     * Receipts FETCHED but filtered out as outside the requested window (#243). Only a `coarse`-list
+     * source ({@link @getreceipt/core!ListWindow}) produces these: its `list()` can't precisely
+     * date-filter, so an out-of-window receipt is only discovered by fetching it (its authoritative date
+     * rides on the artifact) — never written, but the wire boundary WAS crossed. Omitted/empty for an
+     * exact-list source. Present so a run that fetched real receipts yet wrote none (all fell outside the
+     * window) is not mis-read as a degenerate/empty subject. Each ref carries its authoritative fetched date.
+     */
+    readonly outOfWindow?: readonly ReceiptRef[];
 }
 
 /** The run failed; the error was captured, not thrown past the boundary. */
@@ -256,6 +269,13 @@ async function runInstance(
         return summarizeErrors([error], source, window, [], []);
     }
 
+    // A coarse-list source (#243) can't precisely window-filter in list(), so its refs are over-inclusive
+    // and dated only provisionally — window-filter on the authoritative fetch-time date instead, fetching
+    // sequentially so a newest-first source can stop past the window (bounds fan-out + anti-bot exposure).
+    if (adapter.descriptor.listWindow?.precision === 'coarse') {
+        return collectCoarseWindowed(adapter, auth, source, window, writer, rateLimiter, instance, refs);
+    }
+
     const dispositions = new Array<Disposition | undefined>(refs.length);
     const settled = await Promise.allSettled(
         refs.map((ref, index) =>
@@ -277,6 +297,103 @@ async function runInstance(
         return summarizeErrors(errors, source, window, written, skipped);
     }
     return { outcome: 'succeeded', source, window, written, skipped };
+}
+
+/**
+ * The fetch/write pass for a COARSE-list source (#243, e.g. amazon): `list()` can't precisely date-filter,
+ * so refs arrive over-inclusive with only a provisional date, newest-first. Fetch in listing order and
+ * window-filter on the AUTHORITATIVE fetched date ({@link @getreceipt/core!ReceiptArtifact.issuedAt}) — write
+ * the in-window ones, set aside the out-of-window ones, and, because refs are newest-first, STOP at the first
+ * ref older than the window (every later ref is older still). This bounds a narrow query to its window instead
+ * of fetching the whole coarse bucket (a year, for amazon) — fixing over-collection AND cutting the fetch count
+ * (hence anti-bot step-up exposure). A ref whose date can't be resolved is written (never dropped) and is never
+ * a stop boundary, so a parser regression degrades toward over-fetch, never toward dropping an in-window
+ * receipt. Sequential by construction — an early-stop can't schedule-then-cancel — so it does NOT use the
+ * shared fetch semaphore. A fetch error (typically amazon's re-auth step-up) stops the pass and surfaces via
+ * the same {@link summarizeErrors} reauth-precedence mapping the parallel path uses, with partial progress kept.
+ */
+async function collectCoarseWindowed(
+    adapter: SourceAdapter,
+    auth: AuthHandle,
+    source: string,
+    window: DateRange,
+    writer: ReceiptWriter,
+    rateLimiter: RateLimiter | undefined,
+    instance: InstanceContext | undefined,
+    refs: readonly ReceiptRef[],
+): Promise<CollectResult> {
+    const dateFilter = adapter.descriptor.dateFilter;
+    const written: ReceiptRef[] = [];
+    const skipped: ReceiptRef[] = [];
+    const outOfWindow: ReceiptRef[] = [];
+    for (const ref of refs) {
+        if (await writer.has(source, ref)) {
+            skipped.push(ref);
+            continue;
+        }
+        let artifact: ArtifactHandle;
+        try {
+            const fetchOp = (): Promise<ArtifactHandle> => adapter.fetch(auth, ref, instance);
+            artifact = await (rateLimiter === undefined ? fetchOp() : rateLimiter.run(fetchOp));
+        } catch (error) {
+            // Break rather than attempt the rest: on any fetch error the run's verdict is already sealed (the
+            // parallel path also fails the whole run on one error), so continuing only deepens exposure to a
+            // source that just errored (for amazon, the intermittent step-up). Partial progress is preserved.
+            return summarizeErrors([error], source, window, written, skipped);
+        }
+        // The authoritative date the fetch revealed supersedes the ref's coarse list-time provisional — carry
+        // it on the emitted ref so the RESULT surface (CLI/MCP), not just the persisted artifact, is corrected.
+        const issuedAt = asReceiptArtifact(artifact).issuedAt;
+        const resolved = issuedAt === undefined ? ref : { ...ref, issuedAt };
+        switch (classifyAgainstWindow(issuedAt, window, dateFilter)) {
+            case 'write':
+                await writer.write(source, ref, artifact);
+                written.push(resolved);
+                break;
+            case 'skip-continue':
+                outOfWindow.push(resolved);
+                break;
+            case 'skip-stop':
+                outOfWindow.push(resolved);
+                return succeededWindowed(source, window, written, skipped, outOfWindow);
+        }
+    }
+    return succeededWindowed(source, window, written, skipped, outOfWindow);
+}
+
+/**
+ * Classify a fetched receipt's authoritative date against the window for the coarse-list path (#243), reusing
+ * the source's declared bound inclusivity via {@link isWithinDateFilter} (single home for the comparison):
+ *  - `write` — inside the window, OR undateable (never drop a receipt we can't place, and never treat it as a
+ *    boundary — an undefined date only ever continues, so a parser regression errs toward over-fetch).
+ *  - `skip-continue` — newer than the window (`--until` in the past): older refs may still be in range.
+ *  - `skip-stop` — older than the window: with newest-first refs, every later ref is older → stop the walk.
+ */
+function classifyAgainstWindow(
+    issuedAt: Date | undefined,
+    window: DateRange,
+    dateFilter: DateFilter,
+): 'write' | 'skip-continue' | 'skip-stop' {
+    if (issuedAt === undefined || isWithinDateFilter(issuedAt, window, dateFilter)) {
+        return 'write';
+    }
+    const olderThanFrom = dateFilter.fromInclusive
+        ? issuedAt.getTime() < window.from.getTime()
+        : issuedAt.getTime() <= window.from.getTime();
+    return olderThanFrom ? 'skip-stop' : 'skip-continue';
+}
+
+/** Build a `succeeded` result for the coarse path, attaching `outOfWindow` only when non-empty (exact-path parity otherwise). */
+function succeededWindowed(
+    source: string,
+    window: DateRange,
+    written: readonly ReceiptRef[],
+    skipped: readonly ReceiptRef[],
+    outOfWindow: readonly ReceiptRef[],
+): CollectSucceeded {
+    return outOfWindow.length === 0
+        ? { outcome: 'succeeded', source, window, written, skipped }
+        : { outcome: 'succeeded', source, window, written, skipped, outOfWindow };
 }
 
 /**

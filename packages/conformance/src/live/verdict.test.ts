@@ -79,6 +79,24 @@ describe('verdictFor — success promotes only on real evidence', () => {
         expect(verdict.verifiedAt).toBeUndefined();
         expect(verdict.detail).toContain('zero receipts');
     });
+
+    it('counts out-of-window receipts (#243) as evidence — they were FETCHED, so the wire boundary WAS crossed', () => {
+        // A coarse-list run that fetched real receipts but wrote none (all fell outside the window) is a
+        // VERIFIED flow, not a degenerate empty subject: without counting outOfWindow it would mis-read as
+        // inconclusive-empty ("nothing crossed the boundary"), which is factually wrong.
+        const result: CollectResult = {
+            outcome: 'succeeded',
+            source: SOURCE,
+            window: WINDOW,
+            written: [],
+            skipped: [],
+            outOfWindow: [REF],
+        };
+        const verdict = verdictFor(result, fixedClock);
+        expect(verdict.signal).toBe('verified');
+        expect(verdict.state).toBe('e2e-verified');
+        expect(verdict.detail).toContain('1 out-of-window');
+    });
 });
 
 describe('verdictFor — failure classification (distinct signals, no bare red/green)', () => {

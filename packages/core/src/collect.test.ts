@@ -774,3 +774,178 @@ describe('collectInstances — one config, shared auth, data per instance (#190)
         expect(writer.writtenPaths).toEqual(['amazon.com/COM-1']);
     });
 });
+
+describe('collect — coarse-list window (#243)', () => {
+    // A coarse-list source (e.g. amazon): list() can't precisely date-filter, so refs carry only a coarse
+    // provisional date; the authoritative date arrives at FETCH time on the artifact. `real` maps each id to
+    // the date its fetch reveals; the list refs all carry the same coarse Jan-1 provisional.
+    const COARSE = { precision: 'coarse', order: 'newest-first' } as const;
+    const COARSE_PROVISIONAL = '2026-01-01T00:00:00.000Z';
+
+    /** An artifact `asReceiptArtifact()` accepts, carrying the authoritative fetched date (or none, for a degraded parse). */
+    function datedArtifact(issuedAt: Date | undefined): ArtifactHandle {
+        return brand<ArtifactHandle>({
+            bytes: new Uint8Array([1]),
+            contentType: 'application/pdf',
+            ...(issuedAt !== undefined ? { issuedAt } : {}),
+        });
+    }
+
+    /** A coarse adapter whose refs (newest-first) each fetch to the date `real[id]` reveals. */
+    function coarseProbe(ids: readonly string[], real: Record<string, Date | undefined>): AdapterProbe {
+        return makeAdapter({
+            descriptor: { listWindow: COARSE },
+            refs: ids.map((id) => ref(id, COARSE_PROVISIONAL)),
+            fetch: async (_auth, r) => datedArtifact(real[r.id]),
+        });
+    }
+
+    const win = (from: string, to: string): DateRange => ({ from: new Date(from), to: new Date(to) });
+
+    it('writes in-window receipts with the AUTHORITATIVE fetched date, superseding the coarse provisional', async () => {
+        const probe = coarseProbe(['a', 'b'], {
+            a: new Date('2026-05-10T00:00:00.000Z'),
+            b: new Date('2026-04-02T00:00:00.000Z'),
+        });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(probe.fetched).toEqual(['a', 'b']); // sequential, in listing order
+        expect(writer.written).toEqual(['a', 'b']);
+        if (result.outcome === 'succeeded') {
+            // The result surface carries the real fetched date, NOT the coarse Jan-1 provisional (#243 result-leak fix).
+            expect(result.written.map((r) => r.issuedAt.toISOString())).toEqual([
+                '2026-05-10T00:00:00.000Z',
+                '2026-04-02T00:00:00.000Z',
+            ]);
+            expect(result.outOfWindow).toBeUndefined(); // all in-window → omitted (exact-path parity)
+        }
+    });
+
+    it('stops at the first ref OLDER than the window (newest-first) — later refs are never fetched', async () => {
+        const probe = coarseProbe(['a', 'b', 'c', 'd'], {
+            a: new Date('2026-06-01T00:00:00.000Z'), // in
+            b: new Date('2026-04-01T00:00:00.000Z'), // in
+            c: new Date('2026-02-01T00:00:00.000Z'), // older than from → out, and STOP
+            d: new Date('2026-01-15T00:00:00.000Z'), // never reached
+        });
+        const writer = makeWriter();
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(probe.fetched).toEqual(['a', 'b', 'c']); // c fetched to learn its date; d never fetched (early-stop)
+        expect(writer.written).toEqual(['a', 'b']); // c is out-of-window, not written
+        if (result.outcome === 'succeeded') {
+            expect(result.outOfWindow?.map((r) => r.id)).toEqual(['c']);
+        }
+    });
+
+    it('skips too-NEW refs but keeps walking (a past --until), only stopping on the older boundary', async () => {
+        const probe = coarseProbe(['a', 'b', 'c'], {
+            a: new Date('2026-06-01T00:00:00.000Z'), // newer than to → out, but CONTINUE
+            b: new Date('2026-04-01T00:00:00.000Z'), // in
+            c: new Date('2026-02-01T00:00:00.000Z'), // older than from → out, and STOP
+        });
+        const writer = makeWriter();
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(probe.fetched).toEqual(['a', 'b', 'c']); // walked past the too-new head
+        expect(writer.written).toEqual(['b']);
+        if (result.outcome === 'succeeded') {
+            expect(result.outOfWindow?.map((r) => r.id)).toEqual(['a', 'c']); // too-new + too-old
+        }
+    });
+
+    it('writes an UNDATEABLE receipt (never drops it) and never early-stops on it', async () => {
+        const probe = coarseProbe(['a', 'b'], { a: undefined, b: undefined }); // parser degraded to no date
+        const writer = makeWriter();
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(probe.fetched).toEqual(['a', 'b']); // no early-stop on an undefined date
+        expect(writer.written).toEqual(['a', 'b']); // both written (inclusive degrade — never under-collect)
+        if (result.outcome === 'succeeded') {
+            // Nothing authoritative to supersede with → the ref keeps its coarse provisional date.
+            expect(result.written.map((r) => r.issuedAt.toISOString())).toEqual([
+                COARSE_PROVISIONAL,
+                COARSE_PROVISIONAL,
+            ]);
+            expect(result.outOfWindow).toBeUndefined();
+        }
+    });
+
+    it('skips a receipt the writer already has WITHOUT fetching it, then continues the walk', async () => {
+        const probe = coarseProbe(['a', 'b'], {
+            a: new Date('2026-06-01T00:00:00.000Z'),
+            b: new Date('2026-05-01T00:00:00.000Z'),
+        });
+        const writer = makeWriter({ has: (_source, r) => r.id === 'a' }); // already have 'a'
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(probe.fetched).toEqual(['b']); // 'a' skipped without a fetch
+        expect(writer.written).toEqual(['b']);
+        if (result.outcome === 'succeeded') {
+            expect(result.skipped.map((r) => r.id)).toEqual(['a']);
+        }
+    });
+
+    it('a fetch re-auth stops the pass, surfaces reauth-required, and keeps partial progress on disk', async () => {
+        const probe = makeAdapter({
+            descriptor: { listWindow: COARSE },
+            refs: ['a', 'b', 'c'].map((id) => ref(id, COARSE_PROVISIONAL)),
+            fetch: async (_auth, r) => {
+                if (r.id === 'b') {
+                    throw new ReauthRequiredError('free.fr', 'step-up');
+                }
+                return datedArtifact(new Date('2026-06-01T00:00:00.000Z'));
+            },
+        });
+        const writer = makeWriter();
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: writer.writer,
+            window: win('2026-03-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'),
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('reauth-required'); // reauth precedence, via the shared summarizeErrors mapping
+        expect(probe.fetched).toEqual(['a', 'b']); // stopped at b; c never fetched (no deeper exposure)
+        expect(writer.written).toEqual(['a']); // partial progress persisted before the stop
+    });
+});

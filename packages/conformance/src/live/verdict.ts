@@ -54,7 +54,11 @@ export type Clock = () => Date;
 export function verdictFor(result: CollectResult, now: Clock = () => new Date()): LiveVerdict {
     switch (result.outcome) {
         case 'succeeded': {
-            const receiptCount = result.written.length + result.skipped.length;
+            // outOfWindow receipts (#243, coarse-list path) WERE fetched — the wire.ts boundary was crossed —
+            // so they count toward "something was validated" even though none were written. Without this, a
+            // coarse run that fetched real receipts but wrote none (all fell outside the window) would be
+            // mis-classified `inconclusive-empty` ("nothing crossed the boundary"), which is factually wrong.
+            const receiptCount = result.written.length + result.skipped.length + (result.outOfWindow?.length ?? 0);
             if (receiptCount === 0) {
                 // Degenerate subject — nothing crossed the wire.ts boundary, so "succeeded" proves nothing.
                 return {
@@ -63,10 +67,12 @@ export function verdictFor(result: CollectResult, now: Clock = () => new Date())
                     detail: 'inconclusive: zero receipts in the retention window (nothing to validate)',
                 };
             }
+            const outOfWindow = result.outOfWindow?.length ?? 0;
+            const outOfWindowDetail = outOfWindow === 0 ? '' : `, ${String(outOfWindow)} out-of-window`;
             return {
                 signal: 'verified',
                 state: 'e2e-verified',
-                detail: `verified: ${String(result.written.length)} written, ${String(result.skipped.length)} skipped`,
+                detail: `verified: ${String(result.written.length)} written, ${String(result.skipped.length)} skipped${outOfWindowDetail}`,
                 verifiedAt: now(),
             };
         }
