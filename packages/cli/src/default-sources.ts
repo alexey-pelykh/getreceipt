@@ -2,6 +2,7 @@
 import { AmazonAdapter, ENDPOINTS as amazonEndpoints } from '@getreceipt/adapter-amazon';
 import { freeFrAdapter } from '@getreceipt/adapter-free-fr';
 import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais-com';
+import { mobileFreeFrAdapter } from '@getreceipt/adapter-mobile-free-fr';
 import { ENDPOINTS, MonoprixAdapter } from '@getreceipt/adapter-monoprix-fr';
 import { particuliersAlpiqFrAdapter } from '@getreceipt/adapter-particuliers-alpiq-fr';
 import { proFreeFrAdapter } from '@getreceipt/adapter-pro-free-fr';
@@ -23,9 +24,10 @@ import { defaultReadableSessionStore } from './sessions.js';
  * through to plain `fetch`, keeping the live-validated OIDC flow off the native path. amazon.fr's order
  * host (`www.amazon.fr`) is likewise fingerprint-gated, so it too runs over a Chrome-impersonating
  * transport scoped to that host (read from its wire `origin`); its session is the user's imported browser
- * cookies, never a login (#181). grandfrais, free.fr, and pro.free.fr are not impersonation-wired and stay
- * on plain `fetch` — pro.free.fr's cookie session in particular is INCOMPATIBLE with the impersonating
- * transport (it drops Set-Cookie; see its adapter). The `requiresImpersonation` wiring gate
+ * cookies, never a login (#181). grandfrais, free.fr, pro.free.fr, and mobile.free.fr are not
+ * impersonation-wired and stay on plain `fetch` — pro.free.fr's cookie session in particular is INCOMPATIBLE
+ * with the impersonating transport (it drops Set-Cookie; see its adapter), and mobile.free.fr is a plain-tier
+ * session-import source (#125) that needs none. The `requiresImpersonation` wiring gate
  * (impersonation-gate.test.ts) asserts every source DECLARING the need is actually constructed this way.
  */
 export function buildBundledAdapters(): readonly SourceAdapter[] {
@@ -39,7 +41,15 @@ export function buildBundledAdapters(): readonly SourceAdapter[] {
         transport: createImpersonatingTransport({ impersonateHosts: [new URL(amazonEndpoints.origin).host] }),
         sessionReuse: { store: defaultReadableSessionStore() },
     });
-    return [grandfraisAdapter, monoprix, freeFrAdapter, proFreeFrAdapter, particuliersAlpiqFrAdapter, amazon];
+    return [
+        grandfraisAdapter,
+        monoprix,
+        freeFrAdapter,
+        proFreeFrAdapter,
+        mobileFreeFrAdapter,
+        particuliersAlpiqFrAdapter,
+        amazon,
+    ];
 }
 
 /**
