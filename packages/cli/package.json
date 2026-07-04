@@ -43,6 +43,7 @@
     "@getreceipt/adapter-amazon": "workspace:^",
     "@getreceipt/adapter-free-fr": "workspace:^",
     "@getreceipt/adapter-grandfrais-com": "workspace:^",
+    "@getreceipt/adapter-mobile-free-fr": "workspace:^",
     "@getreceipt/adapter-monoprix-fr": "workspace:^",
     "@getreceipt/adapter-particuliers-alpiq-fr": "workspace:^",
     "@getreceipt/adapter-pro-free-fr": "workspace:^",

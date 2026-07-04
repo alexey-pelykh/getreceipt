@@ -203,6 +203,17 @@ sources:
 credential — you don't write it (and a literal `kind: session` without the pair is rejected). A session
 carries no credential, so pairing `browser`/`profile` with a `ref`/`username`/`secret` is also rejected.
 
+Not every session source is multi-marketplace. **`mobile.free.fr`** (Free Mobile) is a **single-instance**
+session source — configured the same way under its own key, pointed at the browser profile you use to sign
+in to your Free Mobile account:
+
+```yaml
+sources:
+  mobile.free.fr:
+    browser: chrome
+    profile: Default
+```
+
 #### Platform support
 
 How a `session` source imports a profile depends on how that browser stores its cookies.
@@ -671,7 +682,7 @@ output) so a months-old or never-verified confirmation is self-evident. A `stale
 source still **warns but proceeds**: getreceipt fetches your own receipts with your own credentials,
 so staleness is a visible advisory, never a block on collection or on release.
 
-The six bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`particuliers.alpiq.fr`**, and **`amazon.com`** (Amazon orders via an imported browser session; a [multi-marketplace source](#multi-marketplace-instances-amazon) whose `amazon.fr` instance is the working marketplace today) — are currently `unverified`.
+The seven bundled sources — **`grandfrais.com`**, **`monoprix.fr`**, **`free.fr`** (Free residential / Freebox), **`pro.free.fr`** (Free Pro), **`mobile.free.fr`** (Free Mobile invoices via an imported browser session), **`particuliers.alpiq.fr`**, and **`amazon.com`** (Amazon orders via an imported browser session; a [multi-marketplace source](#multi-marketplace-instances-amazon) whose `amazon.fr` instance is the working marketplace today) — are currently `unverified`.
 
 Verification is produced **only** by the project's live conformance oracle, **not** by your own
 collections: a successful `collect` does not mark a source verified. For what each state means, where
