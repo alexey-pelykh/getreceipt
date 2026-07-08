@@ -7,6 +7,7 @@ vi.mock('@getreceipt/transport-impersonate', () => ({
     createImpersonatingTransport: vi.fn(() => () => Promise.resolve(new Response())),
 }));
 
+import { INSTANCE_HOSTS as AMAZON_INSTANCE_HOSTS } from '@getreceipt/adapter-amazon';
 import { createImpersonatingTransport } from '@getreceipt/transport-impersonate';
 
 import { buildBundledAdapters } from './default-sources.js';
@@ -32,5 +33,25 @@ describe('impersonation wiring gate', () => {
         // One impersonating-transport construction per declaring source. Declare-without-wire →
         // calls < requiring → FAIL; wire-without-declare → calls > requiring → FAIL.
         expect(vi.mocked(createImpersonatingTransport)).toHaveBeenCalledTimes(requiring.length);
+    });
+
+    it('impersonates EVERY Amazon marketplace host, not just the canonical (#251)', () => {
+        vi.mocked(createImpersonatingTransport).mockClear();
+
+        buildBundledAdapters();
+
+        // The union of every host handed to an impersonating transport across all bundled sources. A
+        // source-level construction count (the test above) does NOT see this — #250 broadened the Amazon
+        // cookie import to .com/.de but left the transport on .fr, so .com/.de requested over a plain stack.
+        const impersonated = [
+            ...new Set(
+                vi.mocked(createImpersonatingTransport).mock.calls.flatMap(([options]) => options.impersonateHosts),
+            ),
+        ];
+        for (const host of AMAZON_INSTANCE_HOSTS) {
+            expect(impersonated).toContain(host);
+        }
+        // Non-vacuous: the contract must carry all three marketplaces (.com + .fr + .de).
+        expect(AMAZON_INSTANCE_HOSTS).toHaveLength(3);
     });
 });

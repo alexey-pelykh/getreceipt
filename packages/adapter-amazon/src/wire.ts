@@ -62,6 +62,14 @@ export const INSTANCES = [
     { domain: 'amazon.de', host: 'https://www.amazon.de', cookieDomain: 'amazon.de', locale: 'de-DE' },
 ] as const;
 
+/**
+ * Every marketplace order host, the exact set the composition root must TLS-impersonate (#101). Derived from
+ * {@link INSTANCES} so it can never drift from the marketplaces the adapter serves: #250 broadened the cookie
+ * import to all three cookieDomains but left the transport scoped to .fr only, so .com/.de went out on a plain
+ * stack into Amazon's fingerprint gate (#251).
+ */
+export const INSTANCE_HOSTS: readonly string[] = INSTANCES.map((instance) => new URL(instance.host).host);
+
 /** Query-parameter names the listing pagination and the invoice page address. */
 export const ORDER_QUERY = {
     /** Item-based pagination offset on the order-history page. */
