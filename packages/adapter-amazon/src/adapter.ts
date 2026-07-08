@@ -5,6 +5,7 @@ import {
     browserSessionToStoredSession,
     fromBrowserSession,
     fromCredentialContext,
+    importBrowserSessionMulti,
     importSession,
     ReauthDetector,
     reuseOrImportBrowserSession,
@@ -52,12 +53,14 @@ import {
 const CANONICAL_DOMAIN = 'amazon.com';
 
 /**
- * The instance whose LIVE browser session + page structure are validated today. amazon.com's live cookie/auth model
- * is the #191 recon spike, so the (source-level, ADR-008 §4) session import and the no-explicit-instance run context
- * read the amazon.fr instance until then — keeping `from amazon.fr` byte-for-byte. When #191 validates amazon.com the
- * import becomes the shared multi-marketplace jar; the canonical identity above is unaffected.
+ * The DEFAULT instance a no-explicit-instance run resolves to (host, locale, cookie scope) and the domain a
+ * manual-paste session scopes to — amazon.fr, keeping a bare `from amazon.fr` (and the pre-#190 no-instance path)
+ * byte-for-byte. This is NOT the import scope: the browser session now imports the shared multi-marketplace jar
+ * (all instance cookieDomains, {@link SHARED_COOKIE_DOMAINS}) so every instance authenticates under the ONE sign-in
+ * (#190). A no-instance run still scopes its cookies to THIS default, so the wider jar never leaks .com/.de cookies
+ * to the default host.
  */
-const LIVE_SESSION_DOMAIN = 'amazon.fr';
+const DEFAULT_INSTANCE_DOMAIN = 'amazon.fr';
 
 /** Host-publication finding (#103): the order/invoice host is a baked public constant with no runtime discovery → publishable. */
 const DISCOVERY_ONLY = true;
@@ -80,6 +83,14 @@ const INSTANCE_CONTEXTS: readonly InstanceContext[] = INSTANCES.map((instance) =
     cookieDomain: instance.cookieDomain,
     locale: instance.locale,
 }));
+
+/**
+ * The registrable cookie domains the ONE sign-in populates — the union the browser session imports so every
+ * instance's requests authenticate (#190). Canonical-first (the merged handle's identity is its first member),
+ * mirroring {@link INSTANCE_CONTEXTS} order. Each imported cookie keeps its own host-key, so the per-request
+ * {@link cookieHeader} filter still sends only an instance's own cookies to it — the import is wide, the wire is not.
+ */
+const SHARED_COOKIE_DOMAINS: readonly string[] = INSTANCE_CONTEXTS.map((instance) => instance.cookieDomain);
 
 /** Safety bound on the order-history pagination walk — a malformed "next" can never loop unbounded. */
 const MAX_PAGES = 50;
@@ -223,14 +234,21 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
     }
 
     /**
-     * Import the resolved session DIRECTLY from the cookie store (or paste), scoped to the live-validated
-     * instance ({@link LIVE_SESSION_DOMAIN}, amazon.fr): no credential exchange, no browser launch — read the
-     * store the user signed into, OR parse the session they pasted (#218). The store key + re-auth stay
-     * SOURCE-level (the canonical, ADR-008 §4/§5). A stale session surfaces LATER, at list/fetch. Shared by
-     * `authenticate`'s fresh-import path and `reimport`'s force-fresh retry (#243) — both bypass at-rest reuse.
+     * Import the resolved session DIRECTLY from the cookie store (or paste): no credential exchange, no browser
+     * launch — read the store the user signed into, OR parse the session they pasted (#218). The browser store,
+     * populated by the ONE sign-in across every marketplace, imports the SHARED multi-marketplace jar (all
+     * {@link SHARED_COOKIE_DOMAINS}) so each instance's requests authenticate under that one login (#190); each
+     * cookie keeps its own host-key, so {@link cookieHeader} still sends only an instance's own cookies to it. A
+     * pasted session is single-domain by nature (a `Cookie:`-header paste carries no per-cookie domain), so it
+     * scopes to the default instance ({@link DEFAULT_INSTANCE_DOMAIN}). The store key + re-auth stay SOURCE-level
+     * (the canonical, ADR-008 §4/§5). A stale session surfaces LATER, at list/fetch. Shared by `authenticate`'s
+     * fresh-import path and `reimport`'s force-fresh retry (#243) — both bypass at-rest reuse.
      */
     #importFresh(descriptor: SessionDescriptor): AuthHandle {
-        return importSession(descriptor, LIVE_SESSION_DOMAIN, this.#importOptions);
+        if ('paste' in descriptor) {
+            return importSession(descriptor, DEFAULT_INSTANCE_DOMAIN, this.#importOptions);
+        }
+        return importBrowserSessionMulti(descriptor, SHARED_COOKIE_DOMAINS, this.#importOptions);
     }
 
     toStoredSession(auth: AuthHandle): StoredSession {
@@ -296,9 +314,10 @@ function resolveSessionDescriptor(credentials: CredentialContext): SessionDescri
 /**
  * The per-run wire parameters an optional {@link InstanceContext} resolves to (#190): the request origin, the
  * `Accept-Language` + date-parsing locale, the cookie scope that selects which of the shared session's cookies
- * travel, and the domain (for diagnostics). Absent instance → the live amazon.fr instance ({@link LIVE_SESSION_DOMAIN})
- * defaults, so a no-explicit-instance run is byte-for-byte the pre-#190 behavior. (Production always addresses an
- * explicit instance — the canonical resolves as its own instance — so this default is a direct-caller convenience.)
+ * travel, and the domain (for diagnostics). Absent instance → the default amazon.fr instance
+ * ({@link DEFAULT_INSTANCE_DOMAIN}) supplies all four, so a no-explicit-instance run keeps the pre-#190 host, locale,
+ * and (now-scoped) .fr cookies. (Production always addresses an explicit instance — the canonical resolves as its
+ * own instance — so this default is a direct-caller convenience.)
  */
 interface RunContext {
     readonly origin: string;
@@ -311,8 +330,10 @@ function runContext(instance: InstanceContext | undefined): RunContext {
     return {
         origin: instance?.host ?? ORIGIN,
         locale: instance?.locale ?? LOCALE.acceptLanguage,
-        cookieDomain: instance?.cookieDomain,
-        domain: instance?.domain ?? LIVE_SESSION_DOMAIN,
+        // A no-instance run scopes cookies to the default instance too (not the whole jar): the shared import now
+        // spans every marketplace, so an unscoped header would leak .com/.de cookies to the default .fr host (#190).
+        cookieDomain: instance?.cookieDomain ?? DEFAULT_INSTANCE_DOMAIN,
+        domain: instance?.domain ?? DEFAULT_INSTANCE_DOMAIN,
     };
 }
 

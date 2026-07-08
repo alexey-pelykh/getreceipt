@@ -25,6 +25,7 @@ import {
     fromBrowserSession,
     fromCredentialContext,
     importBrowserSession,
+    importBrowserSessionMulti,
     importPastedSession,
     importSession,
     resolveBrowserSession,
@@ -258,6 +259,73 @@ describe('importBrowserSession — success (composes resolve #176 + read #177)',
         );
 
         expect(session.cookies.map((c) => c.name).sort()).toEqual(['host-only', 'session', 'ubid']);
+    });
+});
+
+describe('importBrowserSessionMulti — shared multi-marketplace jar (#190)', () => {
+    // One store holding THREE registrable domains' cookies — what a single Amazon sign-in populates.
+    const MULTI: readonly FixtureCookie[] = [
+        { host_key: '.amazon.com', name: 'at-com', encrypted_value: encryptV10('COM', KEY, '.amazon.com') },
+        { host_key: 'www.amazon.fr', name: 'at-fr', encrypted_value: encryptV10('FR', KEY, 'www.amazon.fr') },
+        { host_key: '.amazon.de', name: 'at-de', encrypted_value: encryptV10('DE', KEY, '.amazon.de') },
+        { host_key: 'google.com', name: 'unrelated', encrypted_value: encryptV10('X', KEY, 'google.com') },
+    ];
+
+    it('merges each registrable domain into ONE jar, every cookie keeping its own host-key; unrelated domains excluded', () => {
+        const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: MULTI });
+
+        const session = fromBrowserSession(
+            importBrowserSessionMulti(
+                { browser: 'chrome', profile: 'Default' },
+                ['amazon.com', 'amazon.fr', 'amazon.de'],
+                {
+                    userDataDir,
+                    key: KEY,
+                },
+            ),
+        );
+
+        // The union spans all three marketplaces; the unrelated jar never rides along.
+        expect(session.cookies.map((c) => c.name).sort()).toEqual(['at-com', 'at-de', 'at-fr']);
+        // Each cookie kept ITS OWN domain host-key — the property that lets the per-request filter scope by instance.
+        expect(byName(session.cookies, 'at-com').domain).toBe('.amazon.com');
+        expect(byName(session.cookies, 'at-fr').domain).toBe('www.amazon.fr');
+        expect(byName(session.cookies, 'at-de').domain).toBe('.amazon.de');
+        // Handle identity is the FIRST (canonical) domain — the persistence/store key, not a travel filter.
+        expect(session.domain).toBe('amazon.com');
+        expect(session.browser).toBe('chrome');
+        // Values stay Secret-fenced through the merge (exposed only at the point of use).
+        expect(byName(session.cookies, 'at-com').value.expose()).toBe('COM');
+    });
+
+    it('a domain with no cookies in the store contributes an empty jar (no throw); the others still merge', () => {
+        // .fr-only store → the .com and .de reads are empty, so the union is just the .fr cookie.
+        const userDataDir = makeUserDataDir({
+            cookiesIn: 'Default',
+            cookies: [{ host_key: '.amazon.fr', name: 'at-fr', encrypted_value: encryptV10('FR', KEY, '.amazon.fr') }],
+        });
+
+        const session = fromBrowserSession(
+            importBrowserSessionMulti(
+                { browser: 'chrome', profile: 'Default' },
+                ['amazon.com', 'amazon.fr', 'amazon.de'],
+                {
+                    userDataDir,
+                    key: KEY,
+                },
+            ),
+        );
+
+        expect(session.cookies.map((c) => c.name)).toEqual(['at-fr']);
+    });
+
+    it('rejects an empty domain list with a typed, value-free error', () => {
+        const userDataDir = makeUserDataDir({ cookiesIn: 'Default', cookies: MULTI });
+
+        expectStoreError(
+            () => importBrowserSessionMulti({ browser: 'chrome', profile: 'Default' }, [], { userDataDir, key: KEY }),
+            'invalid-domain',
+        );
     });
 });
 

@@ -1068,6 +1068,57 @@ describe('AmazonAdapter — AC8: multi-instance fan-out over synthetic data (#19
         expect(artifact.contentType).toBe('application/pdf');
         expect(artifact.filename).toBe('111-COM-0000002.pdf');
     });
+
+    /** A synthetic Chrome STORE the ONE sign-in populated across all three marketplaces (+ a decoy that must not import). */
+    const SHARED_STORE: readonly FixtureCookie[] = [
+        { host_key: '.amazon.fr', name: 'at-acbfr', encrypted_value: encryptV10(FR_AT, '.amazon.fr') },
+        { host_key: '.amazon.com', name: 'at-acbus', encrypted_value: encryptV10(COM_AT, '.amazon.com') },
+        { host_key: '.amazon.de', name: 'at-acbde', encrypted_value: encryptV10(DE_AT, '.amazon.de') },
+        { host_key: '.notamazon.fr', name: 'decoy', encrypted_value: encryptV10('X-LEAK-SENTINEL', '.notamazon.fr') },
+    ];
+
+    it('authenticate() imports the SHARED jar FROM THE STORE (the real #importFresh path), then each instance sends ONLY its own cookies on the wire (#190/#191/#228)', async () => {
+        const frReq: { request?: Request } = {};
+        const comReq: { request?: Request } = {};
+        const deReq: { request?: Request } = {};
+        server.use(
+            ordersFor(FR_CTX.host, [order('404-FR-0000001')], frReq, 'commandes'),
+            ordersFor(COM_CTX.host, [order('111-COM-0000002')], comReq, 'orders'),
+            ordersFor(DE_CTX.host, [order('303-DE-0000003')], deReq, 'orders'),
+        );
+        const a = adapter(makeUserDataDir(SHARED_STORE));
+        // The real import path: authenticate → #importFresh → importBrowserSessionMulti over the store (NOT a hand-built jar).
+        const auth = await a.authenticate(creds());
+
+        await a.list(auth, WIDE, FR_CTX);
+        await a.list(auth, WIDE, COM_CTX);
+        await a.list(auth, WIDE, DE_CTX);
+
+        // The cross-domain NON-EMISSION invariant, on the wire surface: the union import authenticates EACH
+        // marketplace with its OWN cookie and never another's — widening the import did not widen what travels.
+        expect(frReq.request?.headers.get('cookie')).toContain(FR_AT);
+        expect(frReq.request?.headers.get('cookie')).not.toContain(COM_AT);
+        expect(frReq.request?.headers.get('cookie')).not.toContain(DE_AT);
+        expect(comReq.request?.headers.get('cookie')).toContain(COM_AT);
+        expect(comReq.request?.headers.get('cookie')).not.toContain(FR_AT);
+        expect(comReq.request?.headers.get('cookie')).not.toContain(DE_AT);
+        expect(deReq.request?.headers.get('cookie')).toContain(DE_AT);
+        expect(deReq.request?.headers.get('cookie')).not.toContain(FR_AT);
+        expect(deReq.request?.headers.get('cookie')).not.toContain(COM_AT);
+    });
+
+    it('a no-explicit-instance run scopes to the default (amazon.fr) — the shared jar never leaks .com/.de cookies to the default host (#190)', async () => {
+        let req: Request | undefined;
+        server.use(ordersOk([], (request) => (req = request))); // ordersOk serves the DEFAULT (.fr) order host
+        const a = adapter(makeUserDataDir(SHARED_STORE));
+
+        await a.list(await a.authenticate(creds()), WIDE); // no instance argument → the default instance
+
+        const cookie = req?.headers.get('cookie') ?? '';
+        expect(cookie).toContain(FR_AT); // the default is amazon.fr
+        expect(cookie).not.toContain(COM_AT);
+        expect(cookie).not.toContain(DE_AT);
+    });
 });
 
 describe('AmazonAdapter — #226: canonical realign (amazon.com source identity)', () => {

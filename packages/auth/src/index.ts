@@ -107,6 +107,7 @@ export {
     browserSessionToStoredSession,
     fromBrowserSession,
     importBrowserSession,
+    importBrowserSessionMulti,
     importSession,
     resolveBrowserSession,
     reuseOrImportBrowserSession,

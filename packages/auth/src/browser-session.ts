@@ -13,7 +13,7 @@ import type { ReauthDetector } from './reauth-detector.js';
 import { Secret } from './secret.js';
 import { reuseStoredSession, toReauthRequiredError } from './session-reuse.js';
 import type { SessionStore, StoredSession } from './session.js';
-import { SessionStoreError } from './errors.js';
+import { CookieReadError, SessionStoreError } from './errors.js';
 
 /**
  * The `{ browser, profile }` pair a `session` source points at — the essence of the config's
@@ -147,6 +147,39 @@ export function importSession(
         return importPastedSession(descriptor.paste.expose(), domain);
     }
     return importBrowserSession(descriptor, domain, options);
+}
+
+/**
+ * Import an already-authenticated browser session spanning SEVERAL registrable domains that ONE sign-in
+ * populated — the multi-instance analogue of {@link importBrowserSession} (#190). A single Amazon sign-in
+ * populates the cookie store for amazon.com / amazon.fr / amazon.de (separate eTLD+1s, no shared parent), and
+ * ONE adapter serves all three as data instances under that one auth. Each domain is read via the EXACT same
+ * scoped path as {@link importBrowserSession} — scoped to that domain and its subdomains, nothing else — and the
+ * per-domain jars are merged into ONE handle. The reads are DISJOINT (a cookie has one host-key, and no host-key
+ * ends in two DIFFERENT registrable domains), so the merge introduces no duplication and WIDENS NOTHING: every
+ * cookie keeps its own `domain` host-key, so the consumer's per-request cookie-domain filter still sends only an
+ * instance's own cookies to that instance. Widening the IMPORT does not widen what travels on any one request.
+ *
+ * The handle's own `domain` is the FIRST domain (the caller passes the canonical first) — the session-level
+ * identity + persistence key ({@link browserSessionToStoredSession} stores under it), NOT a per-request travel
+ * filter. Every {@link importBrowserSession} guarantee holds per read: {@link Secret}-fenced values, no browser
+ * launch, structured {@link @getreceipt/auth!BrowserCookieStoreError} failures. A domain with no cookies in the
+ * store contributes an empty jar (no error). `domains` must be non-empty and its members distinct registrable
+ * domains.
+ */
+export function importBrowserSessionMulti(
+    descriptor: BrowserSessionDescriptor,
+    domains: readonly string[],
+    options: ImportBrowserSessionOptions = {},
+): AuthHandle {
+    const [primary] = domains;
+    if (primary === undefined) {
+        throw new CookieReadError('no target domains to import a browser session for', 'invalid-domain');
+    }
+    // Compose the single-domain import per domain — each read owns its scoping + validation, so a bad profile or
+    // unreadable store fails closed exactly as importBrowserSession does; the disjoint jars concat into one.
+    const jars = domains.map((domain) => fromBrowserSession(importBrowserSession(descriptor, domain, options)));
+    return asAuthHandle({ browser: descriptor.browser, domain: primary, cookies: jars.flatMap((jar) => jar.cookies) });
 }
 
 /**
