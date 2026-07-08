@@ -763,3 +763,130 @@ describe('from <canonical> --all-instances — one sign-in, data per instance (#
         }
     });
 });
+
+describe('from <domain> — attended re-auth loop (--reauth, #247)', () => {
+    const window = { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') };
+    const reauthResult: CollectResult = {
+        outcome: 'reauth-required',
+        source: 'shop.example',
+        window,
+        reason: 'session expired',
+    };
+    const okResult: CollectResult = { outcome: 'succeeded', source: 'shop.example', window, written: [], skipped: [] };
+
+    /** A `collect` seam yielding the queued outcomes in order (the last repeats), counting its calls. */
+    function scriptedCollect(...results: readonly CollectResult[]): {
+        collect: () => Promise<CollectResult>;
+        calls: () => number;
+    } {
+        let index = 0;
+        let calls = 0;
+        return {
+            collect: () => {
+                calls += 1;
+                const result = results[Math.min(index, results.length - 1)]!;
+                index += 1;
+                return Promise.resolve(result);
+            },
+            calls: () => calls,
+        };
+    }
+
+    it('on a TTY: a mid-collect reauth-required prompts once, then the resume succeeds (exit 0)', async () => {
+        const scripted = scriptedCollect(reauthResult, okResult);
+        const prompts: string[] = [];
+        const { out, err, error } = await runFrom(['shop.example', '--reauth'], {
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: (_io, prompt) => {
+                prompts.push(prompt);
+                return Promise.resolve(''); // operator re-authed, pressed Enter
+            },
+        });
+        expect(error).toBeUndefined(); // resumed to success → exit 0
+        expect(scripted.calls()).toBe(2); // initial + one resume
+        expect(prompts).toHaveLength(1); // exactly one prompt
+        expect(err).toContain('Re-authentication is required to continue collecting from shop.example');
+        expect(out).toContain('shop.example — succeeded');
+    });
+
+    it('bound=1: a resume that still needs re-auth stops after one prompt (exit 5, no coercive loop)', async () => {
+        const scripted = scriptedCollect(reauthResult, reauthResult); // never clears
+        const prompts: string[] = [];
+        const { error } = await runFrom(['shop.example', '--reauth'], {
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: (_io, prompt) => {
+                prompts.push(prompt);
+                return Promise.resolve('');
+            },
+        });
+        expect(error).toMatchObject({ exitCode: 5 }); // honest reauth-required, not a re-prompt
+        expect(scripted.calls()).toBe(2); // initial + exactly one resume
+        expect(prompts).toHaveLength(1);
+    });
+
+    it('--reauth without a TTY: never prompts, never reads stdin — exit 5 (no hang)', async () => {
+        const scripted = scriptedCollect(reauthResult);
+        let readLineCalled = false;
+        const { error } = await runFrom(['shop.example', '--reauth'], {
+            collect: scripted.collect,
+            isInteractive: () => false, // piped / CI
+            readLine: () => {
+                readLineCalled = true;
+                return Promise.resolve('');
+            },
+        });
+        expect(error).toMatchObject({ exitCode: 5 });
+        expect(readLineCalled).toBe(false); // the blocked branch never reads stdin
+        expect(scripted.calls()).toBe(1); // no resume
+    });
+
+    it('without --reauth: a reauth-required outcome never prompts, even on a TTY (loop not entered, exit 5)', async () => {
+        const scripted = scriptedCollect(reauthResult);
+        let readLineCalled = false;
+        const { error } = await runFrom(['shop.example'], {
+            collect: scripted.collect,
+            isInteractive: () => true, // interactive, but no flag
+            readLine: () => {
+                readLineCalled = true;
+                return Promise.resolve('');
+            },
+        });
+        expect(error).toMatchObject({ exitCode: 5 });
+        expect(readLineCalled).toBe(false);
+        expect(scripted.calls()).toBe(1);
+    });
+
+    it('--json --reauth on a TTY: the prompt goes to stderr, a clean JSON document to stdout', async () => {
+        const scripted = scriptedCollect(reauthResult, okResult);
+        const { out, err, error } = await runFrom(['shop.example', '--reauth', '--json'], {
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: () => Promise.resolve(''),
+        });
+        expect(error).toBeUndefined();
+        expect(err).toContain('Re-authentication is required'); // human prompt on stderr
+        const parsed = JSON.parse(out) as { outcome: string }; // stdout is a single clean JSON document
+        expect(parsed.outcome).toBe('succeeded');
+    });
+
+    it('--all-instances --reauth: a batch reauth-required prompts once, then the resume succeeds (exit 0)', async () => {
+        // With no configured instances the batch degrades to a single shared-auth run; one shared re-auth
+        // heals it, so a single prompt resumes the whole batch.
+        const scripted = scriptedCollect(reauthResult, okResult);
+        const prompts: string[] = [];
+        const { out, error } = await runFrom(['shop.example', '--all-instances', '--reauth'], {
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: (_io, prompt) => {
+                prompts.push(prompt);
+                return Promise.resolve('');
+            },
+        });
+        expect(error).toBeUndefined();
+        expect(scripted.calls()).toBe(2);
+        expect(prompts).toHaveLength(1);
+        expect(out).toContain('shop.example — succeeded');
+    });
+});

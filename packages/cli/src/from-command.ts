@@ -15,7 +15,9 @@ import { DEFAULT_PROFILE } from './config-render.js';
 import { consentExitCodeFor, ConsentRequiredError, createConsentGate, type ConsentGate } from './consent-gate.js';
 import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
+import { promptLine } from './interactive-challenge-resolver.js';
 import { OperationError } from './operation-runner.js';
+import { attendedReauthPrompt, runWithAttendedReauth } from './reauth-loop.js';
 import {
     defaultCollectionDeps,
     runCollect,
@@ -50,6 +52,13 @@ export interface FromCommandEnv {
     /** Auth-once / data-per-instance collection for `--all-instances` (#190). */
     readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
+    /**
+     * Whether we can prompt for an attended re-auth (#247): stdin AND stderr a TTY. Defaults to the real
+     * check; injectable so the loop is testable without a TTY. A non-TTY run never prompts, never reads stdin.
+     */
+    readonly isInteractive: () => boolean;
+    /** Reads one operator line for the attended re-auth prompt; defaults to the shared {@link promptLine}. Injectable for tests. */
+    readonly readLine: (io: CliIO, prompt: string) => Promise<string>;
 }
 
 interface FromOptions {
@@ -62,10 +71,20 @@ interface FromOptions {
     readonly acceptConsent?: boolean;
     /** Collect every configured instance of a multi-instance source under one shared auth (#190). */
     readonly allInstances?: boolean;
+    /** Opt into the attended re-auth loop (#247): on a mid-collect step-up, prompt to re-authenticate in the browser and resume. */
+    readonly reauth?: boolean;
 }
 
 function defaultEnv(): FromCommandEnv {
-    return { io: processStreamsIO(), consent: createConsentGate(), ...defaultCollectionDeps() };
+    return {
+        io: processStreamsIO(),
+        consent: createConsentGate(),
+        // Attended re-auth (#247) gates on BOTH streams being a TTY (the prompt shows on stderr), mirroring
+        // the consent gate; the readline helper is the one the interactive challenge resolver already uses.
+        isInteractive: () => process.stdin.isTTY === true && process.stderr.isTTY === true,
+        readLine: promptLine,
+        ...defaultCollectionDeps(),
+    };
 }
 
 /** A non-zero exit signal whose user-facing text was ALREADY written via {@link CliIO} — it carries no message of its own. */
@@ -97,6 +116,10 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
         .option(
             '--all-instances',
             'collect every configured instance of a multi-instance source (e.g. amazon.fr and amazon.com) under one shared sign-in',
+        )
+        .option(
+            '--reauth',
+            'on a mid-collect re-auth step-up, pause to let you sign in again in your browser, then resume (interactive terminals only)',
         )
         .action(async (domain: string, options: FromOptions, command: Command) => {
             // Consent gate FIRST — before any service is touched with the user's credentials (#32).
@@ -138,7 +161,15 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
             if (options.allInstances === true) {
                 let report: BatchReport;
                 try {
-                    report = await runCollectAllInstances(params, deps);
+                    // A step-up hits the ONE shared session (authenticate runs once, #190), so a single
+                    // re-auth heals every instance — prompt once, re-run the whole batch (skips written).
+                    report = await runWithAttendedReauth({
+                        runOnce: () => runCollectAllInstances(params, deps),
+                        needsReauth: (r) => r.sources.some((s) => s.ok && s.result.outcome === 'reauth-required'),
+                        reauth: options.reauth === true,
+                        isInteractive: env.isInteractive,
+                        onReauth: attendedReauthPrompt(env.io, domain, env.readLine),
+                    });
                 } catch (error) {
                     if (error instanceof OperationError) {
                         env.io.writeErr(`✗ ${error.message}\n`);
@@ -156,7 +187,13 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
 
             let result: OperationResult;
             try {
-                result = await runCollect(params, deps);
+                result = await runWithAttendedReauth({
+                    runOnce: () => runCollect(params, deps),
+                    needsReauth: (r) => r.outcome === 'reauth-required',
+                    reauth: options.reauth === true,
+                    isInteractive: env.isInteractive,
+                    onReauth: attendedReauthPrompt(env.io, domain, env.readLine),
+                });
             } catch (error) {
                 if (error instanceof OperationError) {
                     env.io.writeErr(`✗ ${error.message}\n`);
