@@ -24,11 +24,12 @@ export type {
     ReceiptMetadatum,
     ReceiptRef,
     RelativeDateWindow,
+    SessionReimportableAdapter,
     SourceAdapter,
     SourceDescriptor,
     TransportTier,
 } from './source-adapter.js';
-export { isAuthChallengeRequired } from './source-adapter.js';
+export { isAuthChallengeRequired, isSessionReimportable } from './source-adapter.js';
 export { resolveCredentialShape } from './credential-shape.js';
 export type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeType } from './challenge.js';
 export { MAX_AUTH_CHALLENGE_ROUNDS, resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';

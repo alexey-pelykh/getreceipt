@@ -18,6 +18,7 @@ import type {
     RelativeDateWindow,
     SourceAdapter,
 } from './source-adapter.js';
+import { isSessionReimportable } from './source-adapter.js';
 import type { ReceiptWriter } from './writer.js';
 
 /** Everything one `collect()` run needs. Optional knobs default to safe, human-tempo behavior. */
@@ -181,7 +182,12 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
         // recorded its outcome on `challenges` before the throw, so it still reaches the report.
         return withChallenges(summarizeErrors([error], source, window, [], []));
     }
-    return withChallenges(await runInstance(adapter, auth, source, window, writer, semaphore, rateLimiter, instance));
+    // The LIST re-auth retry seam (#243 D1): present only when the source can force-fresh re-import; undefined
+    // (every non-session adapter) disables the retry, so a list bounce surfaces reauth-required as before.
+    const reimport = buildReimport(adapter, credentials, request.challengeResolver, source, observer);
+    return withChallenges(
+        await runInstance(adapter, auth, source, window, writer, semaphore, rateLimiter, instance, reimport),
+    );
 }
 
 /**
@@ -215,6 +221,9 @@ export async function collectInstances(request: CollectInstancesRequest): Promis
         return [withChallenges(summarizeErrors([error], canonical, window, [], []))];
     }
 
+    // One re-auth retry seam for the source (#243 D1), keyed on the canonical like the shared session; each
+    // instance's runInstance retries its own list bounce independently and bounded. Undefined disables it.
+    const reimport = buildReimport(adapter, credentials, request.challengeResolver, canonical, observer);
     const results: CollectResult[] = [];
     for (const instance of instances) {
         const result = await runInstance(
@@ -226,6 +235,7 @@ export async function collectInstances(request: CollectInstancesRequest): Promis
             semaphore,
             rateLimiter,
             instance,
+            reimport,
         );
         results.push(result);
         // The shared session died mid-run: every remaining instance would hit the same reauth, so stop and
@@ -255,6 +265,81 @@ async function authenticateOnce(
 }
 
 /**
+ * The bound on the LIST re-auth retry (#243 D1): how many force-fresh re-imports {@link runInstance} attempts
+ * on a bouncing list before giving up and surfacing reauth-required. One is enough for a token rotation — a
+ * fresh import picks up the rotated token that already landed on disk (#185); a bounce that persists past it is
+ * a genuinely dead session, not a rotation, so re-importing again would only loop coercively.
+ */
+const MAX_LIST_REAUTH_RETRIES = 1;
+
+/** A force-fresh re-import: yields a new {@link AuthHandle} read past any at-rest reuse cache (#189/#243). */
+type Reimport = () => Promise<AuthHandle>;
+
+/** A list result paired with the (possibly re-imported) handle the fetch pass must use (#243 D1). */
+interface ListedWithAuth {
+    readonly refs: readonly ReceiptRef[];
+    readonly auth: AuthHandle;
+}
+
+/**
+ * Build the force-fresh re-import closure for the LIST re-auth retry seam (#243 D1) — present only when the
+ * adapter opts into {@link SessionReimportableAdapter}. Mirrors {@link authenticateOnce}: it resolves any
+ * interactive challenge the re-import emits (a session import never challenges today, so a no-op) and yields
+ * the fresh handle. Undefined for a non-reimportable source — the retry is then disabled and a list bounce
+ * surfaces reauth-required immediately, so every non-session adapter is byte-for-byte unchanged.
+ */
+function buildReimport(
+    adapter: SourceAdapter,
+    credentials: CredentialContext,
+    challengeResolver: ChallengeResolver | undefined,
+    source: string,
+    observer: ChallengeObserver,
+): Reimport | undefined {
+    if (!isSessionReimportable(adapter)) {
+        return undefined;
+    }
+    const reimportable = adapter;
+    return async () =>
+        resolveAuthChallenges(await reimportable.reimport(credentials), challengeResolver, { source, observer });
+}
+
+/**
+ * List with a bounded force-fresh re-import retry on a re-auth bounce (#243 D1). A `session` source's order
+ * LIST can intermittently 302 → sign-in when its token rotates mid-run even though a fresh token already
+ * landed on disk (#185); re-importing (force-fresh, bypassing at-rest reuse #189) and retrying the LIST
+ * recovers the unattended run instead of a spurious re-auth. Only a {@link ReauthRequiredError} is retried
+ * (the rotation bounce), and only while the source is reimportable and the {@link MAX_LIST_REAUTH_RETRIES}
+ * bound is unspent — any other list error, a non-reimportable source, or a bounce that persists past the
+ * bound propagates unchanged (→ {@link summarizeErrors} → reauth-required/failed, exactly as before #243).
+ * Scoped to the LIST ONLY: an invoice-fetch step-up (amazon's `max_auth_age`, #247) demands interactive
+ * re-auth a disk re-import can't satisfy, so `fetch` is never retried here. Returns the refs AND the handle
+ * to use downstream — the fresh one after a recovered bounce, the original otherwise.
+ */
+async function listWithReauthRetry(
+    adapter: SourceAdapter,
+    auth: AuthHandle,
+    window: DateRange,
+    instance: InstanceContext | undefined,
+    reimport: Reimport | undefined,
+): Promise<ListedWithAuth> {
+    let current = auth;
+    for (let reimports = 0; ; reimports += 1) {
+        try {
+            return { refs: await adapter.list(current, window, instance), auth: current };
+        } catch (error) {
+            if (
+                reimport === undefined ||
+                reimports >= MAX_LIST_REAUTH_RETRIES ||
+                !(error instanceof ReauthRequiredError)
+            ) {
+                throw error;
+            }
+            current = await reimport();
+        }
+    }
+}
+
+/**
  * The post-auth half: `list` → fetch/write every receipt for ONE instance (or the whole source when
  * `instance` is undefined), under the shared session and semaphore. Never throws — a `list` failure
  * (including a stale-session bounce) or any per-receipt error collapses into one structured result.
@@ -268,27 +353,32 @@ async function runInstance(
     semaphore: Semaphore,
     rateLimiter: RateLimiter | undefined,
     instance: InstanceContext | undefined,
+    reimport: Reimport | undefined,
 ): Promise<CollectResult> {
-    let refs: readonly ReceiptRef[];
+    let listed: ListedWithAuth;
     try {
-        refs = await adapter.list(auth, window, instance);
+        listed = await listWithReauthRetry(adapter, auth, window, instance, reimport);
     } catch (error) {
         // list runs before any write, so there is no partial progress.
         return summarizeErrors([error], source, window, [], []);
     }
+    // A recovered re-auth bounce hands back a FRESH session (#243 D1) — the fetch pass must use it, not the
+    // bounced handle. No bounce → this is the original handle unchanged.
+    const { refs, auth: effectiveAuth } = listed;
 
     // A coarse-list source (#243) can't precisely window-filter in list(), so its refs are over-inclusive
     // and dated only provisionally — window-filter on the authoritative fetch-time date instead, fetching
     // sequentially so a newest-first source can stop past the window (bounds fan-out + anti-bot exposure).
     if (adapter.descriptor.listWindow?.precision === 'coarse') {
-        return collectCoarseWindowed(adapter, auth, source, window, writer, rateLimiter, instance, refs);
+        return collectCoarseWindowed(adapter, effectiveAuth, source, window, writer, rateLimiter, instance, refs);
     }
 
     const dispositions = new Array<Disposition | undefined>(refs.length);
     const settled = await Promise.allSettled(
         refs.map((ref, index) =>
             semaphore.run(async () => {
-                const op = (): Promise<Disposition> => processReceipt(adapter, writer, source, auth, ref, instance);
+                const op = (): Promise<Disposition> =>
+                    processReceipt(adapter, writer, source, effectiveAuth, ref, instance);
                 dispositions[index] = await (rateLimiter === undefined ? op() : rateLimiter.run(op));
             }),
         ),
