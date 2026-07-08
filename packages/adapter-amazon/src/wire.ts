@@ -51,8 +51,9 @@ export const ENDPOINTS = {
  *
  * SCOPE NOTE: amazon.com's and amazon.de's LIVE page structure + cookie/auth model are validated via the
  * #191/#228 recon (order-card structure identical to the live-validated amazon.fr) and proven here over
- * SYNTHETIC fixtures. Until amazon.com is live-validated the adapter imports the amazon.fr instance's session
- * ({@link ENDPOINTS.origin} is that instance's order host). The fields are structurally an
+ * SYNTHETIC fixtures. The adapter imports the SHARED multi-marketplace jar — every instance's cookieDomain under
+ * the ONE sign-in (#190) — so each marketplace authenticates on its own requests; a live end-to-end validation of
+ * .com/.de against real accounts is still pending (#191/#228). The fields are structurally an
  * {@link @getreceipt/core!InstanceContext} (the adapter routes each `host` through the #103 gate).
  */
 export const INSTANCES = [
