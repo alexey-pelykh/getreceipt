@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { AmazonAdapter, ENDPOINTS as amazonEndpoints } from '@getreceipt/adapter-amazon';
+import { AmazonAdapter, INSTANCE_HOSTS as AMAZON_INSTANCE_HOSTS } from '@getreceipt/adapter-amazon';
 import { freeFrAdapter } from '@getreceipt/adapter-free-fr';
 import { grandfraisAdapter } from '@getreceipt/adapter-grandfrais-com';
 import { mobileFreeFrAdapter } from '@getreceipt/adapter-mobile-free-fr';
@@ -21,14 +21,17 @@ import { defaultReadableSessionStore } from './sessions.js';
  * monoprix's collection host (`client.monoprix.fr`) is Cloudflare-gated on the TLS/HTTP-2 fingerprint,
  * so it is driven by a Chrome-impersonating transport SCOPED to exactly that host (read from the wire
  * contract's `apiOrigin` — single source of truth); auth (`sso.monoprix.fr`) and every other host fall
- * through to plain `fetch`, keeping the live-validated OIDC flow off the native path. amazon.fr's order
- * host (`www.amazon.fr`) is likewise fingerprint-gated, so it too runs over a Chrome-impersonating
- * transport scoped to that host (read from its wire `origin`); its session is the user's imported browser
- * cookies, never a login (#181). grandfrais, free.fr, pro.free.fr, and mobile.free.fr are not
+ * through to plain `fetch`, keeping the live-validated OIDC flow off the native path. Amazon's order hosts
+ * are likewise fingerprint-gated, so they run over a Chrome-impersonating transport scoped to EVERY
+ * marketplace host (`AMAZON_INSTANCE_HOSTS` — .com + .fr + .de, from the wire contract), not just .fr: #250
+ * broadened the cookie import to all three but left the transport on .fr alone, so .com/.de went out on a
+ * plain stack and were fingerprint-challenged (#251). Its session is the user's imported browser cookies,
+ * never a login (#181). grandfrais, free.fr, pro.free.fr, and mobile.free.fr are not
  * impersonation-wired and stay on plain `fetch` — pro.free.fr's cookie session in particular is INCOMPATIBLE
  * with the impersonating transport (it drops Set-Cookie; see its adapter), and mobile.free.fr is a plain-tier
  * session-import source (#125) that needs none. The `requiresImpersonation` wiring gate
- * (impersonation-gate.test.ts) asserts every source DECLARING the need is actually constructed this way.
+ * (impersonation-gate.test.ts) asserts every source DECLARING the need is actually constructed this way, AND
+ * that every Amazon marketplace host is impersonation-covered (#251 — a source-level count alone missed .com/.de).
  */
 export function buildBundledAdapters(): readonly SourceAdapter[] {
     const monoprix = new MonoprixAdapter({
@@ -38,7 +41,7 @@ export function buildBundledAdapters(): readonly SourceAdapter[] {
     // browser cookie read when a still-fresh session was stored by `login amazon.fr`. The store is NULL until
     // that first login creates the sessions dir, so an un-logged-in run imports fresh (the basic per-run path).
     const amazon = new AmazonAdapter({
-        transport: createImpersonatingTransport({ impersonateHosts: [new URL(amazonEndpoints.origin).host] }),
+        transport: createImpersonatingTransport({ impersonateHosts: AMAZON_INSTANCE_HOSTS }),
         sessionReuse: { store: defaultReadableSessionStore() },
     });
     return [

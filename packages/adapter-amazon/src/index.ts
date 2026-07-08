@@ -13,5 +13,5 @@ export type { InvoiceRenderer } from './render.js';
 // `ENDPOINTS` scopes the impersonating transport to the TLS-fingerprint-gated order host (#101); exporting
 // `LISTING`/`ORDER_QUERY`/`orderSchema` lets a cross-package conformance fixture derive its order pages from the
 // same schema the adapter parses, instead of a hand-authored shape that could drift from it (#184).
-export { ENDPOINTS, LISTING, ORDER_QUERY, orderSchema } from './wire.js';
+export { ENDPOINTS, INSTANCE_HOSTS, LISTING, ORDER_QUERY, orderSchema } from './wire.js';
 export type { OrderDto } from './wire.js';
