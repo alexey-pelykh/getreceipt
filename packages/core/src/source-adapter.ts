@@ -317,3 +317,36 @@ export interface SourceAdapter {
     /** Fetch the artifact for a single reference, for the given multi-instance {@link InstanceContext} when present (#190). */
     fetch(auth: AuthHandle, ref: ReceiptRef, instance?: InstanceContext): Promise<ArtifactHandle>;
 }
+
+/**
+ * An opt-in capability a `session` adapter adds so the `collect()` pipeline can recover a mid-run session
+ * bounce (#243): force a FRESH session import that BYPASSES any at-rest reuse cache (#189), picking up a
+ * token that rotated on disk since {@link SourceAdapter.authenticate} ran. amazon's order LIST intermittently
+ * `302`s → sign-in when its token rotates even though a fresh token already landed on disk within seconds
+ * (#185); the pipeline re-imports and retries the LIST rather than surfacing a spurious re-auth.
+ *
+ * The retry LOOP is a cross-cutting concern the pipeline owns (see the {@link SourceAdapter} note); this
+ * interface exposes only the force-fresh IMPORT primitive, because only the adapter knows how to read its
+ * own session store bypassing reuse. Companion to {@link SourceAdapter}, mirroring `@getreceipt/auth`'s
+ * `SessionPersistableAdapter`: an adapter that cannot re-import (no reusable token, or no at-rest cache to
+ * bypass) simply does not implement it, and the pipeline's retry is disabled for that source — a LIST bounce
+ * then surfaces `reauth-required` immediately, exactly as before #243.
+ */
+export interface SessionReimportableAdapter {
+    /**
+     * Force-fresh re-import the session, BYPASSING at-rest reuse (#189) — the whole point is to pick up a
+     * rotated token a still-"fresh" stored session would mask. Returns an {@link AuthResult} exactly like
+     * {@link SourceAdapter.authenticate} (a session import never challenges today, but the union keeps the
+     * seam symmetric). Per the session-adapter error discipline it MUST throw only value-free typed errors.
+     */
+    reimport(credentials: CredentialContext): Promise<AuthResult>;
+}
+
+/**
+ * Whether `adapter` opts into the {@link SessionReimportableAdapter} force-fresh re-import capability (#243).
+ * Keys off the `reimport` method, mirroring `@getreceipt/auth`'s `isSessionPersistable`. A source without it
+ * gets no LIST re-auth retry — the pipeline falls back to surfacing the bounce as `reauth-required`.
+ */
+export function isSessionReimportable(adapter: object): adapter is SessionReimportableAdapter {
+    return typeof (adapter as Partial<SessionReimportableAdapter>).reimport === 'function';
+}

@@ -12,6 +12,7 @@ import {
 import type {
     BrowserSession,
     ImportBrowserSessionOptions,
+    SessionDescriptor,
     SessionPersistableAdapter,
     SessionStore,
     StoredSession,
@@ -25,6 +26,7 @@ import type {
     InstanceContext,
     ReceiptArtifact,
     ReceiptRef,
+    SessionReimportableAdapter,
     SourceAdapter,
     SourceDescriptor,
 } from '@getreceipt/core';
@@ -161,7 +163,7 @@ export interface AmazonAdapterOptions {
  * source no longer accepts surfaces, at `list`/`fetch`, as the SAME `reauth-required` outcome every source
  * uses ({@link browserSessionReauthRequired}, #180) — pointing the user at their browser to sign in again.
  */
-export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
+export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, SessionReimportableAdapter {
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
     readonly #transport: Transport;
     readonly #importOptions: ImportBrowserSessionOptions;
@@ -182,21 +184,8 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
     }
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
-        const resolved = fromCredentialContext(credentials);
-        if (resolved.session === undefined) {
-            // A session source must carry a resolved session descriptor (#180) — a browser { browser, profile }
-            // pair OR a manual-paste descriptor (#218); surface a typed, value-free failure that never echoes config.
-            throw new AuthenticationError(
-                'amazon: session authentication requires a configured browser or pasted session',
-                'invalid-credentials',
-            );
-        }
-        const descriptor = resolved.session;
-        // Import the session scoped to the live-validated instance ({@link LIVE_SESSION_DOMAIN}, amazon.fr): no
-        // credential exchange, no browser launch — read the cookie store the user signed into, OR parse the session
-        // they pasted (#218). The store key + re-auth stay SOURCE-level (the canonical, ADR-008 §4/§5). A stale
-        // session surfaces LATER, at list/fetch.
-        const importFresh = (): AuthHandle => importSession(descriptor, LIVE_SESSION_DOMAIN, this.#importOptions);
+        const descriptor = resolveSessionDescriptor(credentials);
+        const importFresh = (): AuthHandle => this.#importFresh(descriptor);
         if (this.#sessionReuse === undefined) {
             return importFresh(); // basic per-run path (#179): no at-rest store wired.
         }
@@ -213,6 +202,35 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
             throw resolution.error;
         }
         return resolution.auth;
+    }
+
+    /**
+     * Force-fresh re-import for the pipeline's LIST re-auth retry seam (#243 D1) — the
+     * {@link @getreceipt/core!SessionReimportableAdapter} capability. A list `302 → /ap/signin` is a token
+     * ROTATION (#185), not a dead session: the in-use token is stale but a fresh one already landed on disk,
+     * so import DIRECTLY from the cookie store, BYPASSING at-rest reuse (#189). Reuse would hand back the same
+     * stale stored session (its wall-clock freshness is unchanged) and the retry would bounce again, so the
+     * bypass is load-bearing, not incidental. Re-persist the fresh session so the next run's reuse sees the
+     * rotated token too, keeping the at-rest cache honest. The invoice `max_auth_age` step-up is NOT recovered
+     * this way (it needs interactive re-auth, #247) — the pipeline scopes this retry to `list`, never `fetch`.
+     */
+    async reimport(credentials: CredentialContext): Promise<AuthHandle> {
+        const auth = this.#importFresh(resolveSessionDescriptor(credentials));
+        if (this.#sessionReuse !== undefined) {
+            await this.#sessionReuse.store.save(CANONICAL_DOMAIN, browserSessionToStoredSession(auth));
+        }
+        return auth;
+    }
+
+    /**
+     * Import the resolved session DIRECTLY from the cookie store (or paste), scoped to the live-validated
+     * instance ({@link LIVE_SESSION_DOMAIN}, amazon.fr): no credential exchange, no browser launch — read the
+     * store the user signed into, OR parse the session they pasted (#218). The store key + re-auth stay
+     * SOURCE-level (the canonical, ADR-008 §4/§5). A stale session surfaces LATER, at list/fetch. Shared by
+     * `authenticate`'s fresh-import path and `reimport`'s force-fresh retry (#243) — both bypass at-rest reuse.
+     */
+    #importFresh(descriptor: SessionDescriptor): AuthHandle {
+        return importSession(descriptor, LIVE_SESSION_DOMAIN, this.#importOptions);
     }
 
     toStoredSession(auth: AuthHandle): StoredSession {
@@ -258,6 +276,22 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter {
 
 /** A ready-to-register adapter instance — a front-end registers this into its {@link @getreceipt/core!SourceAdapterRegistry}. */
 export const amazonAdapter: SourceAdapter = new AmazonAdapter();
+
+/**
+ * Resolve the session descriptor a `session` source must carry (#180) — a browser `{ browser, profile }` pair
+ * OR a manual-paste descriptor (#218) — or fail typed and value-free (never echoing config). Shared by
+ * `authenticate` and `reimport` so both agree on what a configured session is.
+ */
+function resolveSessionDescriptor(credentials: CredentialContext): SessionDescriptor {
+    const resolved = fromCredentialContext(credentials);
+    if (resolved.session === undefined) {
+        throw new AuthenticationError(
+            'amazon: session authentication requires a configured browser or pasted session',
+            'invalid-credentials',
+        );
+    }
+    return resolved.session;
+}
 
 /**
  * The per-run wire parameters an optional {@link InstanceContext} resolves to (#190): the request origin, the

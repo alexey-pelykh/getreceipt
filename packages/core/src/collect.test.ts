@@ -21,11 +21,13 @@ import type {
     ChallengeResolver,
     CollectFailed,
     CollectReauthRequired,
+    CollectSucceeded,
     CredentialContext,
     DateRange,
     InstanceContext,
     ReceiptRef,
     ReceiptWriter,
+    SessionReimportableAdapter,
     SourceAdapter,
     SourceDescriptor,
 } from './index.js';
@@ -1032,5 +1034,163 @@ describe('collect — coarse-list window (#243)', () => {
         if (result.outcome === 'succeeded') {
             expect(result.resolvedDates).toBeUndefined(); // no fetched artifact → no ratio to report
         }
+    });
+});
+
+// --- #243 D1: LIST re-auth retry via force-fresh session re-import ----------
+// A `session` source's order LIST intermittently 302 → sign-in when its token rotates mid-run even though a
+// fresh token already landed on disk (#185). The pipeline force-fresh re-imports and retries the LIST —
+// bounded, and scoped to list only (never the invoice fetch, whose max_auth_age step-up needs interactive
+// re-auth, #247). Each auth handle carries a generation (authenticate → 0, each reimport → 1, 2, …) so a test
+// can assert the fetch pass runs on the FRESH handle, not the bounced one.
+interface ReimportProbe {
+    readonly adapter: SourceAdapter & SessionReimportableAdapter;
+    readonly log: string[];
+    listAttempts(): number;
+    reimports(): number;
+}
+
+function makeReimportProbe(options: {
+    bounceCount: number;
+    refs?: readonly ReceiptRef[];
+    coarse?: boolean;
+}): ReimportProbe {
+    const log: string[] = [];
+    let listAttempts = 0;
+    let reimports = 0;
+    const refs = options.refs ?? [];
+    const gen = (auth: AuthHandle): number => (auth as unknown as { gen: number }).gen;
+    const adapter: SourceAdapter & SessionReimportableAdapter = {
+        descriptor: {
+            ...baseDescriptor,
+            authKind: 'session',
+            credentialShapes: ['none'],
+            ...(options.coarse ? { listWindow: { precision: 'coarse', order: 'newest-first' } as const } : {}),
+        },
+        authenticate: async () => {
+            log.push('authenticate');
+            return brand<AuthHandle>({ gen: 0 });
+        },
+        list: async (auth) => {
+            listAttempts += 1;
+            log.push(`list@${String(gen(auth))}`);
+            if (listAttempts <= options.bounceCount) {
+                throw new ReauthRequiredError('free.fr', 'the imported browser session is no longer signed in');
+            }
+            return refs;
+        },
+        fetch: async (auth, receiptRef) => {
+            log.push(`fetch@${String(gen(auth))}:${receiptRef.id}`);
+            // A real artifact (the coarse-list path reads `bytes` via asReceiptArtifact); undated → always written.
+            return brand<ArtifactHandle>({
+                id: receiptRef.id,
+                bytes: new Uint8Array([1]),
+                contentType: 'application/pdf',
+            });
+        },
+        reimport: async () => {
+            reimports += 1;
+            log.push('reimport');
+            return brand<AuthHandle>({ gen: reimports });
+        },
+    };
+    return { adapter, log, listAttempts: () => listAttempts, reimports: () => reimports };
+}
+
+describe('collect — #243 D1: LIST re-auth retry via force-fresh session re-import', () => {
+    it('retries the LIST via a force-fresh re-import on a re-auth bounce, then succeeds on the fresh session', async () => {
+        const probe = makeReimportProbe({ bounceCount: 1, refs: [ref('r1')] });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(probe.reimports()).toBe(1);
+        // Bounce on the original handle (gen 0) → reimport → retry lists on the FRESH handle (gen 1) → the fetch
+        // pass ALSO runs on gen 1, never the bounced handle.
+        expect(probe.log).toEqual(['authenticate', 'list@0', 'reimport', 'list@1', 'fetch@1:r1', 'write:r1']);
+        expect((result as CollectSucceeded).written.map((r) => r.id)).toEqual(['r1']);
+    });
+
+    it('bounds the retry: a bounce that persists past the bound surfaces reauth-required (no coercive loop)', async () => {
+        const probe = makeReimportProbe({ bounceCount: 99, refs: [ref('r1')] }); // never recovers
+
+        const result = await collect({
+            adapter: probe.adapter,
+            credentials,
+            writer: makeWriter({ log: probe.log }).writer,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('reauth-required');
+        // Exactly ONE force-fresh re-import (MAX_LIST_REAUTH_RETRIES = 1): list@0 → reimport → list@1 → give up.
+        expect(probe.reimports()).toBe(1);
+        expect(probe.listAttempts()).toBe(2);
+        expect(probe.log).toEqual(['authenticate', 'list@0', 'reimport', 'list@1']);
+    });
+
+    it('does not re-import when the LIST does not bounce — the no-bounce contract is unchanged', async () => {
+        const probe = makeReimportProbe({ bounceCount: 0, refs: [ref('r1'), ref('r2')] });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(probe.reimports()).toBe(0);
+        // One list on the original handle, straight into the fetch pass — no reimport, byte-identical to pre-#243.
+        expect(probe.log).toEqual(['authenticate', 'list@0', 'fetch@0:r1', 'write:r1', 'fetch@0:r2', 'write:r2']);
+    });
+
+    it('recovers on the coarse-list (amazon) fetch path too: the fresh handle flows into the coarse fetch pass', async () => {
+        const probe = makeReimportProbe({ bounceCount: 1, coarse: true, refs: [ref('r1')] });
+        const writer = makeWriter({ log: probe.log });
+
+        const result = await collect({ adapter: probe.adapter, credentials, writer: writer.writer, now: NOW });
+
+        expect(result.outcome).toBe('succeeded');
+        expect(probe.reimports()).toBe(1);
+        expect(probe.log).toEqual(['authenticate', 'list@0', 'reimport', 'list@1', 'fetch@1:r1', 'write:r1']);
+    });
+
+    it('leaves a non-reimportable adapter unchanged: a LIST bounce surfaces reauth-required with no retry', async () => {
+        // Blast-radius proof for the 6 non-session adapters: without the reimport capability the pipeline builds
+        // no retry seam, so a list bounce surfaces reauth-required on the first attempt, exactly as before #243.
+        let listAttempts = 0;
+        const adapter: SourceAdapter = {
+            descriptor: baseDescriptor,
+            authenticate: async () => brand<AuthHandle>({}),
+            list: async () => {
+                listAttempts += 1;
+                throw new ReauthRequiredError('free.fr', 'the imported browser session is no longer signed in');
+            },
+            fetch: async () => brand<ArtifactHandle>({}),
+        };
+
+        const result = await collect({ adapter, credentials, writer: makeWriter().writer, now: NOW });
+
+        expect(result.outcome).toBe('reauth-required');
+        expect(listAttempts).toBe(1); // no capability → no retry
+    });
+
+    it('never re-imports an invoice-fetch step-up — the retry is scoped to the LIST (#247 owns the fetch step-up)', async () => {
+        // A fetch-stage reauth (amazon's max_auth_age invoice step-up, out of scope for D1) must NOT be retried:
+        // a disk re-import can't satisfy a recent-password demand. It surfaces reauth-required with zero re-imports.
+        const probe = makeReimportProbe({ bounceCount: 0, refs: [ref('r1')] });
+        const stepUpAdapter: SourceAdapter & SessionReimportableAdapter = {
+            ...probe.adapter,
+            fetch: async () => {
+                throw new ReauthRequiredError('free.fr', 'a recent authentication is required');
+            },
+        };
+
+        const result = await collect({
+            adapter: stepUpAdapter,
+            credentials,
+            writer: makeWriter({ log: probe.log }).writer,
+            now: NOW,
+        });
+
+        expect(result.outcome).toBe('reauth-required');
+        expect(probe.reimports()).toBe(0); // the fetch step-up is never re-imported
     });
 });

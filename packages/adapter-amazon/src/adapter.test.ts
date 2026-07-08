@@ -25,6 +25,7 @@ import {
     asReceiptArtifact,
     collect,
     FilesystemReceiptWriter,
+    isSessionReimportable,
     ReauthRequiredError,
     SourceAdapterRegistry,
     SourceResolver,
@@ -853,6 +854,82 @@ describe('AmazonAdapter — #189: persist + reuse the imported session at rest',
         expect(session.cookies.map((c) => c.name)).toEqual(['at-acbfr', 'sess-at-acbfr', 'session-id']); // browser read
         expect(saves).toBe(1); // the absent branch attempted a persist — which the NULL store discards
         expect(await nullStore.load(AMAZON)).toBeUndefined(); // nothing at rest: persistence stayed opt-in
+    });
+});
+
+describe('AmazonAdapter — #243 D1: force-fresh reimport for the LIST re-auth retry', () => {
+    // A list 302 → sign-in is a token ROTATION (#185): a fresh token is already on disk, so the pipeline's
+    // retry seam re-imports and retries. The re-import MUST force-fresh — reuse (#189) would hand back the same
+    // stale stored session (its wall-clock freshness is unchanged) and the retry would bounce again.
+    const AMAZON = 'amazon.com'; // the SOURCE canonical / store key (ADR-008 §4)
+    const FUTURE_SECONDS = Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000);
+
+    /** A still-fresh stored session with ONE sentinel cookie — provably the STORED one, not the 3-cookie browser import. */
+    function freshStoredSession(): StoredSession {
+        const session: BrowserSession = {
+            domain: AMAZON,
+            cookies: [
+                {
+                    name: 'session-id',
+                    value: new Secret('stored-SENTINEL'),
+                    domain: `.${AMAZON}`,
+                    path: '/',
+                    secure: true,
+                    httpOnly: true,
+                    expires: FUTURE_SECONDS,
+                },
+            ],
+        };
+        return browserSessionToStoredSession(session as unknown as AuthHandle);
+    }
+
+    it('exposes the reimport capability so the pipeline builds the LIST retry seam', () => {
+        expect(isSessionReimportable(amazonAdapter)).toBe(true);
+    });
+
+    it('reads the browser fresh, BYPASSING a still-fresh stored session (force-fresh)', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        await store.save(AMAZON, freshStoredSession()); // reuse WOULD return this still-fresh stored session
+        const a = new AmazonAdapter({
+            importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
+            sessionReuse: { store },
+        });
+
+        // authenticate reuses the stored 1-cookie sentinel — proving reuse is live on this store...
+        expect(fromBrowserSession(await a.authenticate(creds())).cookies.map((c) => c.name)).toEqual(['session-id']);
+        // ...but reimport force-fresh reads the BROWSER (3-cookie import), bypassing the still-fresh stored session.
+        expect(fromBrowserSession(await a.reimport(creds())).cookies.map((c) => c.name)).toEqual([
+            'at-acbfr',
+            'sess-at-acbfr',
+            'session-id',
+        ]);
+    });
+
+    it('re-persists the fresh session, so the next run reuses the rotated token', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        await store.save(AMAZON, freshStoredSession()); // the OLD sentinel session
+        const a = new AmazonAdapter({
+            importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
+            sessionReuse: { store },
+        });
+
+        await a.reimport(creds());
+
+        // The old sentinel is overwritten with the freshly-imported session → the next reuse gets the rotated token.
+        const stored = await store.load(AMAZON);
+        expect(stored).toBeDefined();
+        expect(
+            fromBrowserSession(storedSessionToBrowserSession(stored!)).cookies.map((c) => [c.name, c.value.expose()]),
+        ).toEqual(IMPORTED_COOKIES);
+    });
+
+    it('without a session store, imports fresh with nothing to persist [opt-in]', async () => {
+        const a = adapter(makeUserDataDir(AMAZON_COOKIES)); // no sessionReuse
+        expect(fromBrowserSession(await a.reimport(creds())).cookies.map((c) => c.name)).toEqual([
+            'at-acbfr',
+            'sess-at-acbfr',
+            'session-id',
+        ]);
     });
 });
 
