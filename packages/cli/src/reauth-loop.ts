@@ -69,3 +69,52 @@ export function attendedReauthPrompt(
         await readLine(io, `Sign in to ${source} again in your browser, then press Enter to resume (Ctrl-C to stop): `);
     };
 }
+
+/**
+ * Open the getreceipt-OWNED persistent profile in a headful window for an attended sign-in and hand back a handle
+ * to close it — the shape `@getreceipt/browser`'s `openProfileForSignIn` provides (#255). Injected into
+ * {@link browserReauthPrompt} so the CLI stays Playwright-free; the wiring that supplies the real opener (and the
+ * resolved profile dir) is the config-selectability follow-up (#264).
+ */
+export type SignInWindowOpener = (
+    profileDir: string,
+    signInUrl: string,
+) => Promise<{ readonly close: () => Promise<void> }>;
+
+/**
+ * Build the {@link AttendedReauthOptions.onReauth} action for the browser-DRIVEN tier (#255). Where
+ * {@link attendedReauthPrompt} tells the operator to sign in again in their OWN browser (the HTTP path re-imports
+ * from that cookie store), the browser tier's session lives in getreceipt's OWNED persistent profile — so this
+ * OPENS a headful window at that profile ({@link SignInWindowOpener}), waits for the operator's resume signal,
+ * then closes it. The signed-in cookies persist in the profile on disk, so {@link runWithAttendedReauth}'s next
+ * `runOnce` re-navigates headless and resumes.
+ *
+ * The window opens INSIDE this action, which the loop reaches ONLY when opted-in AND interactive — so an
+ * unattended (piped / scheduled) run NEVER launches a window (#255 AC3): the gate is structural, not a flag check
+ * here. Redaction-safe: FIXED literals over the `source` domain only (already public in the invocation) — never
+ * the adapter's `reason` (a prompt-injection fence) nor any account/session material; all output on stderr so a
+ * `--json` stdout stays clean. Pressing Enter is the go-ahead (Ctrl-C aborts); the window is closed in a
+ * `finally` so it never leaks on the resume path. getreceipt never handles the operator's password/OTP.
+ */
+export function browserReauthPrompt(
+    io: CliIO,
+    source: string,
+    profileDir: string,
+    signInUrl: string,
+    openSignInWindow: SignInWindowOpener,
+    readLine: (io: CliIO, prompt: string) => Promise<string> = promptLine,
+): () => Promise<void> {
+    return async () => {
+        io.writeErr(`\nRe-authentication is required to continue collecting from ${source}.\n`);
+        io.writeErr(
+            'Opening a sign-in window in the getreceipt-owned browser profile — sign in there, not in your everyday browser.\n',
+        );
+        io.writeErr('Already-saved receipts are skipped on resume — this resumes the run, it does not restart it.\n');
+        const signInWindow = await openSignInWindow(profileDir, signInUrl);
+        try {
+            await readLine(io, `Sign in to ${source} in the window, then press Enter to resume (Ctrl-C to stop): `);
+        } finally {
+            await signInWindow.close();
+        }
+    };
+}

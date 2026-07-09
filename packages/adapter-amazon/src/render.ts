@@ -22,14 +22,15 @@ export const renderInvoicePdf: InvoiceRenderer = async (invoiceHtml) => {
 
 /**
  * Fetches an invoice PRINT page inside a persistent browser profile and renders it — the browser-driven
- * collection tier's `fetch` seam (#253). Returns BOTH the PDF and the page HTML so the adapter keeps the
- * HTTP path's source-drift guard and authoritative-date extraction. Defaults to {@link fetchInvoiceViaBrowser};
- * a stub swaps in so unit tests skip launching a browser, exactly as {@link InvoiceRenderer} + `transport` do.
+ * collection tier's `fetch` seam (#253). Returns the PDF, the page HTML (so the adapter keeps the HTTP path's
+ * source-drift guard and authoritative-date extraction), AND the URL the navigation ended on (so the adapter
+ * routes a `max_auth_age` sign-in bounce to re-auth, #255). Defaults to {@link fetchInvoiceViaBrowser}; a stub
+ * swaps in so unit tests skip launching a browser, exactly as {@link InvoiceRenderer} + `transport` do.
  */
 export type BrowserInvoiceFetcher = (
     profileDir: string,
     url: URL,
-) => Promise<{ readonly pdf: Uint8Array; readonly html: string }>;
+) => Promise<{ readonly pdf: Uint8Array; readonly html: string; readonly finalUrl: string }>;
 
 /**
  * Drive the invoice print page inside the getreceipt-OWNED persistent profile via the `@getreceipt/browser`

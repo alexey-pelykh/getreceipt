@@ -8,9 +8,11 @@ import { join } from 'node:path';
 
 import { Secret } from '@getreceipt/auth';
 import type { AuthHandle } from '@getreceipt/core';
+import type { BrowserContext } from 'playwright';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { render, renderUrlInProfile } from './render.js';
+import { openProfileForSignIn, render, renderUrlInProfile } from './render.js';
+import type { PersistentContextLauncher } from './render.js';
 
 /**
  * A self-contained receipt — no external sub-resources, so it renders with zero network. The
@@ -170,7 +172,7 @@ describe('renderUrlInProfile', () => {
         const profileDir = await mkdtemp(join(tmpdir(), 'getreceipt-profile-'));
         profileDirs.push(profileDir);
 
-        const { pdf, html } = await renderUrlInProfile(
+        const { pdf, html, finalUrl } = await renderUrlInProfile(
             profileDir,
             `${origin}/gp/css/summary/print.html?orderID=404-9-1`,
         );
@@ -181,5 +183,75 @@ describe('renderUrlInProfile', () => {
         // and authoritative-date extraction, so a PDF-only return would lose that.
         expect(html).toContain('Facture');
         expect(html).toContain('404-9-1');
+        // The URL we landed on comes back too — no redirect here, so it is the invoice URL we requested.
+        expect(finalUrl).toContain('/gp/css/summary/print.html');
+    });
+
+    it('reports the sign-in URL as finalUrl after a step-up redirect, so a caller routes it to re-auth (#255)', async () => {
+        const origin = await startServer((req, res) => {
+            if ((req.url ?? '').includes('/ap/signin')) {
+                res.setHeader('content-type', 'text/html');
+                res.end('<!doctype html><html><body><h1>Sign-In</h1></body></html>');
+                return;
+            }
+            // The invoice request is bounced to the sign-in path — the shape a max_auth_age step-up takes.
+            res.statusCode = 302;
+            res.setHeader('location', '/ap/signin?openid.return_to=x');
+            res.end();
+        });
+        const profileDir = await mkdtemp(join(tmpdir(), 'getreceipt-profile-'));
+        profileDirs.push(profileDir);
+
+        const { finalUrl } = await renderUrlInProfile(
+            profileDir,
+            `${origin}/gp/css/summary/print.html?orderID=404-9-1`,
+        );
+
+        // Playwright follows the redirect; page.url() is the sign-in path — the browser-tier step-up signal.
+        expect(finalUrl).toContain('/ap/signin');
+    });
+});
+
+describe('openProfileForSignIn (#255)', () => {
+    it('launches the profile HEADFUL, navigates to the sign-in URL, and closes only on demand', async () => {
+        const gotos: string[] = [];
+        let launchedDir: string | undefined;
+        let launchedHeadless: boolean | undefined;
+        let closed = false;
+        // A fake persistent-context launcher: a headful launch cannot run in CI (no display), so the launcher is
+        // injected and the helper's contract (headful + navigate + caller-owned close) is verified without a browser.
+        const fakeContext = {
+            newPage: () =>
+                Promise.resolve({
+                    goto: (url: string) => {
+                        gotos.push(url);
+                        return Promise.resolve(null);
+                    },
+                }),
+            close: () => {
+                closed = true;
+                return Promise.resolve();
+            },
+        };
+        const launch: PersistentContextLauncher = (profileDir, options) => {
+            launchedDir = profileDir;
+            launchedHeadless = options?.headless;
+            return Promise.resolve(fakeContext as unknown as BrowserContext);
+        };
+
+        const signInWindow = await openProfileForSignIn(
+            '/profiles/personal',
+            'https://www.amazon.fr/ap/signin',
+            launch,
+        );
+
+        // HEADFUL is the load-bearing property: an unattended headless window no one can see is the premortem risk (#255).
+        expect(launchedHeadless).toBe(false);
+        expect(launchedDir).toBe('/profiles/personal');
+        expect(gotos).toEqual(['https://www.amazon.fr/ap/signin']);
+        // It stays open until the caller (the attended re-auth loop) closes it — never auto-closes mid-sign-in.
+        expect(closed).toBe(false);
+        await signInWindow.close();
+        expect(closed).toBe(true);
     });
 });

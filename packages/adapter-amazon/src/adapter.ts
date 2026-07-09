@@ -319,12 +319,19 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
 
     /**
      * Browser-driven invoice fetch (#253): navigate the print page inside the warm persistent profile — its own
-     * session carries the request (no cookie injection), clearing the `max_auth_age` step-up an HTTP cookie-replay
-     * hits — then apply the SAME source-drift guard + authoritative-date extraction as the HTTP path to the
-     * returned HTML. Returning `{ pdf, html }` from the browser seam is what lets both paths share that check.
+     * session carries the request (no cookie injection), clearing the steady-state auth an HTTP cookie-replay
+     * hits. The warm profile clears MOST step-ups, but an old-invoice / `.com`/`.de` `max_auth_age` bounce STILL
+     * lands the navigation on the sign-in path even here (#255): detect that via `finalUrl` FIRST and route it to
+     * re-auth (the browser-tier mirror of {@link requestSession}'s redirect-to-signIn check) — otherwise the
+     * sign-in page, missing the order id, would mis-surface as a generic drift error. Past that, apply the SAME
+     * source-drift guard + authoritative-date extraction as the HTTP path. Returning `{ pdf, html, finalUrl }`
+     * from the browser seam is what lets both paths share those checks.
      */
     async #fetchViaBrowser(profileDir: string, ref: ReceiptRef, url: URL, ctx: RunContext): Promise<ArtifactHandle> {
-        const { pdf, html } = await this.#browserFetch(profileDir, url);
+        const { pdf, html, finalUrl } = await this.#browserFetch(profileDir, url);
+        if (finalUrl.includes(ENDPOINTS.signIn)) {
+            throw browserSessionReauthRequired(CANONICAL_DOMAIN);
+        }
         if (!html.includes(ref.id)) {
             throw new TrustBoundaryError(`${ctx.domain}:fetch`, [{ path: '<root>', code: 'not_an_invoice' }]);
         }
