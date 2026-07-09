@@ -354,6 +354,53 @@ describe('resolveLiveGate — session sources (no credential to resolve)', () =>
     });
 });
 
+describe('resolveLiveGate — multi-account (`accounts:`) sessions fail closed (#254)', () => {
+    const ACCOUNTS: GetReceiptConfig['sources'][string] = {
+        kind: 'session',
+        accounts: [
+            { account: 'personal', browser: 'chrome', profile: 'Personal' },
+            { account: 'business', browser: 'chrome', profile: 'Work' },
+        ],
+    };
+
+    it('skips a multi-account source rather than building a malformed `{ browser: undefined }` plan', () => {
+        // Sole source is multi-account → no usable plan → the gate does NOT run, and its reason carries the
+        // secret-free skip note (sweeping per-account sessions is the deferred collect-loop lift, not this item).
+        const decision = resolveLiveGate(
+            { [OPT_IN_ENV]: '1' },
+            { loadConfig: fakeLoadConfig(configWith({ 'amazon.com': ACCOUNTS })) },
+        );
+        expect(decision.run).toBe(false);
+        if (!decision.run) {
+            expect(decision.reason).toContain('multi-account');
+        }
+    });
+
+    it('drops the multi-account source from a mixed config but keeps its usable siblings', () => {
+        const decision = resolveLiveGate(
+            { [OPT_IN_ENV]: '1' },
+            {
+                loadConfig: fakeLoadConfig(
+                    configWith({
+                        'amazon.com': ACCOUNTS,
+                        'grandfrais.com': {
+                            kind: 'password',
+                            username: 'a@example.com',
+                            secret: { ref: 'op://Private/gf/pw' },
+                        },
+                    }),
+                ),
+            },
+        );
+        expect(decision.run).toBe(true);
+        if (decision.run) {
+            // Only the password sibling becomes a plan; the multi-account source is NOT turned into a session plan.
+            expect(decision.plans).toHaveLength(1);
+            expect(decision.plans[0]).toMatchObject({ kind: 'password', source: 'grandfrais.com' });
+        }
+    });
+});
+
 describe('resolveLiveGate — multi-instance session sources (#227/#190)', () => {
     it('threads a configured session `instances` list onto the plan', () => {
         const cfg = configWith({

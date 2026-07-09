@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import {
+    accountSessionKey,
     AuthenticationError,
     browserSessionReauthRequired,
     browserSessionToStoredSession,
@@ -226,6 +227,9 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
         const resolution = await reuseOrImportBrowserSession({
             store: this.#sessionReuse.store,
             detector: this.#sessionReuse.detector,
+            // Per-account STORAGE key (#254): two Amazon accounts persist disjoint sessions; the re-auth SIGNAL
+            // stays SOURCE-level (the bare canonical, ADR-008 §5). Single-account → both are the canonical.
+            key: sessionStoreKey(credentials),
             domain: CANONICAL_DOMAIN,
             importFresh,
         });
@@ -248,7 +252,9 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
     async reimport(credentials: CredentialContext): Promise<AuthHandle> {
         const auth = this.#importFresh(resolveSessionDescriptor(credentials));
         if (this.#sessionReuse !== undefined) {
-            await this.#sessionReuse.store.save(CANONICAL_DOMAIN, browserSessionToStoredSession(auth));
+            // Re-persist under the SAME per-account key the reuse path loads from (#254), so the rotated token
+            // lands where the next run's reuse looks — keyed on the identity, not the bare source.
+            await this.#sessionReuse.store.save(sessionStoreKey(credentials), browserSessionToStoredSession(auth));
         }
         return auth;
     }
@@ -344,6 +350,18 @@ function resolveSessionDescriptor(credentials: CredentialContext): SessionDescri
         );
     }
     return resolved.session;
+}
+
+/**
+ * The at-rest {@link SessionStore} key for the run's authenticated identity (#254): the canonical source
+ * scoped to the configured account when one is set ({@link accountSessionKey} → `amazon.com:${account}`),
+ * else the bare {@link CANONICAL_DOMAIN} — so two Amazon accounts (personal + Business) persist DISJOINT
+ * sessions and never collide on the `amazon.com` key, while a legacy single-account config keeps its existing
+ * key untouched (zero migration). The account rides on the resolved credentials; the re-auth SIGNAL stays
+ * SOURCE-level (ADR-008 §5), never this per-account key.
+ */
+function sessionStoreKey(credentials: CredentialContext): string {
+    return accountSessionKey(CANONICAL_DOMAIN, fromCredentialContext(credentials).account);
 }
 
 /**

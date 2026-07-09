@@ -93,19 +93,9 @@ interface FixtureCookie {
     readonly encrypted_value: Buffer;
 }
 
-/** Write a Chromium-shaped `cookies` table to `dbPath`, then a user-data dir around it (Local State + Default profile). */
-function makeUserDataDir(cookies: readonly FixtureCookie[]): string {
-    const dir = mkdtempSync(join(tmpdir(), 'getreceipt-amazon-test-'));
-    tempDirs.push(dir);
-    writeFileSync(
-        join(dir, 'Local State'),
-        JSON.stringify({
-            profile: { info_cache: { Default: { name: 'Personal', user_name: 'alice@personal.example' } } },
-        }),
-        'utf8',
-    );
-    mkdirSync(join(dir, 'Default'));
-    const db = new DatabaseSync(join(dir, 'Default', 'Cookies'));
+/** Write a Chromium-shaped `cookies` table at `dbPath` — the schema every profile fixture's Cookies DB shares. */
+function writeCookieDb(dbPath: string, cookies: readonly FixtureCookie[]): void {
+    const db = new DatabaseSync(dbPath);
     db.exec(
         `CREATE TABLE cookies (
             host_key TEXT NOT NULL, name TEXT NOT NULL, encrypted_value BLOB,
@@ -119,6 +109,39 @@ function makeUserDataDir(cookies: readonly FixtureCookie[]): string {
         statement.run(cookie.host_key, cookie.name, cookie.encrypted_value);
     }
     db.close();
+}
+
+/** Write a Chromium-shaped `cookies` table to `dbPath`, then a user-data dir around it (Local State + Default profile). */
+function makeUserDataDir(cookies: readonly FixtureCookie[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'getreceipt-amazon-test-'));
+    tempDirs.push(dir);
+    writeFileSync(
+        join(dir, 'Local State'),
+        JSON.stringify({
+            profile: { info_cache: { Default: { name: 'Personal', user_name: 'alice@personal.example' } } },
+        }),
+        'utf8',
+    );
+    mkdirSync(join(dir, 'Default'));
+    writeCookieDb(join(dir, 'Default', 'Cookies'), cookies);
+    return dir;
+}
+
+/**
+ * A user-data dir with SEVERAL profiles, each its own Cookies DB (#254) — models two Amazon accounts (two
+ * sign-ins, two warm jars) living in ONE browser. Each key is a profile DIRECTORY name resolvable by
+ * {@link resolveBrowserSession}'s profile field; the values are that account's disjoint cookie set.
+ */
+function makeAccountProfilesDir(profiles: Record<string, readonly FixtureCookie[]>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'getreceipt-amazon-accounts-'));
+    tempDirs.push(dir);
+    const infoCache: Record<string, { name: string }> = {};
+    for (const [profileDir, cookies] of Object.entries(profiles)) {
+        infoCache[profileDir] = { name: profileDir };
+        mkdirSync(join(dir, profileDir));
+        writeCookieDb(join(dir, profileDir, 'Cookies'), cookies);
+    }
+    writeFileSync(join(dir, 'Local State'), JSON.stringify({ profile: { info_cache: infoCache } }), 'utf8');
     return dir;
 }
 
@@ -241,6 +264,19 @@ function adapter(userDataDir: string, render?: InvoiceRenderer): AmazonAdapter {
 function creds(profile = 'Default'): CredentialContext {
     return asCredentialContext({
         kind: 'session',
+        session: resolveBrowserSession({ kind: 'session', browser: 'chrome', profile }),
+    });
+}
+
+/**
+ * Session credentials carrying an ACCOUNT identity (#254) — the shape the account-loop lift will resolve per
+ * account. The `account` seeds the per-identity {@link @getreceipt/auth!accountSessionKey} store key, while the
+ * `profile` selects which of the browser's warm jars this account imports.
+ */
+function accountCreds(account: string, profile: string): CredentialContext {
+    return asCredentialContext({
+        kind: 'session',
+        account,
         session: resolveBrowserSession({ kind: 'session', browser: 'chrome', profile }),
     });
 }
@@ -929,6 +965,94 @@ describe('AmazonAdapter — #189: persist + reuse the imported session at rest',
         expect(session.cookies.map((c) => c.name)).toEqual(['at-acbfr', 'sess-at-acbfr', 'session-id']); // browser read
         expect(saves).toBe(1); // the absent branch attempted a persist — which the NULL store discards
         expect(await nullStore.load(AMAZON)).toBeUndefined(); // nothing at rest: persistence stayed opt-in
+    });
+});
+
+describe('AmazonAdapter — #254: account as outer key (per-account session store key)', () => {
+    const AMAZON = 'amazon.com';
+    // Two accounts, ONE browser: distinct profiles → distinct warm jars. Same auth-cookie NAMES (as two real
+    // amazon.fr logins would have) but DIFFERENT values (two distinct identities), so the jars share no credential.
+    const PERSONAL_COOKIES: readonly FixtureCookie[] = [
+        { host_key: '.amazon.fr', name: 'at-acbfr', encrypted_value: encryptV10('personal-at-SENTINEL', '.amazon.fr') },
+        {
+            host_key: 'www.amazon.fr',
+            name: 'session-id',
+            encrypted_value: encryptV10('personal-sid-SENTINEL', 'www.amazon.fr'),
+        },
+    ];
+    const BUSINESS_COOKIES: readonly FixtureCookie[] = [
+        { host_key: '.amazon.fr', name: 'at-acbfr', encrypted_value: encryptV10('business-at-SENTINEL', '.amazon.fr') },
+        {
+            host_key: 'www.amazon.fr',
+            name: 'session-id',
+            encrypted_value: encryptV10('business-sid-SENTINEL', 'www.amazon.fr'),
+        },
+    ];
+
+    /** An adapter over a two-profile browser + a shared session store, so both accounts persist into the ONE store. */
+    function twoAccountAdapter(store: SessionStore): AmazonAdapter {
+        const userDataDir = makeAccountProfilesDir({ Personal: PERSONAL_COOKIES, Business: BUSINESS_COOKIES });
+        return new AmazonAdapter({ importOptions: { userDataDir, key: KEY }, sessionReuse: { store } });
+    }
+
+    /** The reconstructed cookie VALUES of the session stored under `key` (the credentials the account signed in with). */
+    async function storedValues(store: SessionStore, key: string): Promise<string[]> {
+        const stored = await store.load(key);
+        expect(stored).toBeDefined();
+        return fromBrowserSession(storedSessionToBrowserSession(stored!)).cookies.map((c) => c.value.expose());
+    }
+
+    it('[AC1] persists two accounts under DISTINCT account-scoped keys (`amazon.com:<account>`), never the bare canonical', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        const a = twoAccountAdapter(store);
+
+        await a.authenticate(accountCreds('personal', 'Personal'));
+        await a.authenticate(accountCreds('business', 'Business'));
+
+        // Each account persisted under its OWN key — no collision, no overwrite of the other.
+        expect(await store.load(`${AMAZON}:personal`)).toBeDefined();
+        expect(await store.load(`${AMAZON}:business`)).toBeDefined();
+        // The bare canonical is NEVER the key once an account is set — that is the seam #254 introduces.
+        expect(await store.load(AMAZON)).toBeUndefined();
+    });
+
+    it('[AC1] loads each account back from its OWN key — the reuse path is per-identity, no cross-load', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        const a = twoAccountAdapter(store);
+        await a.authenticate(accountCreds('personal', 'Personal'));
+        await a.authenticate(accountCreds('business', 'Business'));
+
+        // Key `:personal` holds the personal jar, `:business` the business jar — the stored session-id proves which.
+        expect(await storedValues(store, `${AMAZON}:personal`)).toContain('personal-sid-SENTINEL');
+        expect(await storedValues(store, `${AMAZON}:business`)).toContain('business-sid-SENTINEL');
+    });
+
+    it("[AC5] two accounts' warm jars never share a cookie (disjoint credentials, no cross-contamination)", async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        const a = twoAccountAdapter(store);
+        await a.authenticate(accountCreds('personal', 'Personal'));
+        await a.authenticate(accountCreds('business', 'Business'));
+
+        const personal = new Set(await storedValues(store, `${AMAZON}:personal`));
+        const business = await storedValues(store, `${AMAZON}:business`);
+        expect(business.length).toBeGreaterThan(0); // guard against a degenerate empty-jar pass
+        // No cookie VALUE (credential) appears in BOTH jars — the two identities never cross-contaminate.
+        for (const value of business) {
+            expect(personal.has(value)).toBe(false);
+        }
+    });
+
+    it('[backward-compat / D1] a single-account run (no `account`) keys on the BARE canonical — zero migration', async () => {
+        const store = new KeyringSessionStore(new InMemoryKeyring());
+        const a = new AmazonAdapter({
+            importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
+            sessionReuse: { store },
+        });
+        await a.authenticate(creds()); // creds() carries no account
+
+        // The existing at-rest key is untouched: the session lands under the bare canonical, not `amazon.com:…`.
+        expect(await store.load(AMAZON)).toBeDefined();
+        expect(await store.load(`${AMAZON}:Default`)).toBeUndefined();
     });
 });
 

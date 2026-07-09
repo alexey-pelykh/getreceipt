@@ -899,6 +899,219 @@ describe('parseConfig — #218 manual-paste session arm + secure-supply', () => 
     });
 });
 
+describe('parseConfig — #254 multi-account (`accounts:` outer key)', () => {
+    it('[AC2] parses an `accounts:` list to N account-scoped session credentials (account + browser + profile + instances)', () => {
+        const { config, warnings } = parseConfig({
+            sources: {
+                amazon: {
+                    accounts: [
+                        {
+                            account: 'personal',
+                            browser: 'chrome',
+                            profile: 'personal',
+                            instances: ['amazon.com', 'amazon.fr'],
+                        },
+                        { account: 'business', browser: 'chrome', profile: 'business', instances: ['amazon.de'] },
+                    ],
+                },
+            },
+        });
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon'];
+        expect(source?.kind).toBe('session');
+        expect(source?.accounts).toHaveLength(2);
+        expect(source?.accounts?.[0]).toEqual({
+            account: 'personal',
+            browser: 'chrome',
+            profile: 'personal',
+            instances: ['amazon.com', 'amazon.fr'],
+        });
+        expect(source?.accounts?.[1]).toEqual({
+            account: 'business',
+            browser: 'chrome',
+            profile: 'business',
+            instances: ['amazon.de'],
+        });
+    });
+
+    it('[AC2] accepts an account without an explicit `instances` list (a single-instance account)', () => {
+        const { config } = parseConfig({
+            sources: { amazon: { accounts: [{ account: 'solo', browser: 'firefox', profile: 'default-release' }] } },
+        });
+        const account = config.sources['amazon']?.accounts?.[0];
+        expect(account).toEqual({ account: 'solo', browser: 'firefox', profile: 'default-release' });
+        expect(account?.instances).toBeUndefined();
+    });
+
+    it('[AC2] honors a redundant literal `kind: session` alongside `accounts:` (derived, never summoned)', () => {
+        const { config } = parseConfig({
+            sources: { amazon: { kind: 'session', accounts: [{ account: 'a', browser: 'chrome', profile: 'p' }] } },
+        });
+        expect(config.sources['amazon']?.kind).toBe('session');
+        expect(config.sources['amazon']?.accounts).toHaveLength(1);
+    });
+
+    it('[AC3] a single-account `{browser, profile, instances}` config parses IDENTICALLY to today — no `accounts` key materializes', () => {
+        const { config } = parseConfig({
+            sources: { amazon: { browser: 'chrome', profile: 'Profile 1', instances: ['amazon.com', 'amazon.fr'] } },
+        });
+        const source = config.sources['amazon'];
+        expect(source?.kind).toBe('session');
+        expect(source?.browser).toBe('chrome');
+        expect(source?.profile).toBe('Profile 1');
+        expect(source?.instances).toEqual(['amazon.com', 'amazon.fr']);
+        // The additive branch leaves the single-account shape untouched — the `accounts` KEY is absent, not just undefined.
+        expect(source?.accounts).toBeUndefined();
+        expect('accounts' in (source ?? {})).toBe(false);
+    });
+
+    it('[AC4] rejects two accounts with a duplicate `account` key (value-free, path-localized)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: {
+                    amazon: {
+                        accounts: [
+                            { account: 'acct-x9', browser: 'chrome', profile: 'one' },
+                            { account: 'acct-x9', browser: 'chrome', profile: 'two' },
+                        ],
+                    },
+                },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.accounts[1].account');
+        expect((caught as ConfigError).message).toContain('unique');
+        // Value-free: the path localizes WHICH entry; the account key (which can be an email) is never echoed.
+        expect((caught as ConfigError).message).not.toContain('acct-x9');
+    });
+
+    it('[AC4] rejects two accounts sharing one browser `profile` (a shared cookie jar cross-contaminates)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: {
+                    amazon: {
+                        accounts: [
+                            { account: 'personal', browser: 'chrome', profile: 'dir-alpha' },
+                            { account: 'business', browser: 'chrome', profile: 'dir-alpha' },
+                        ],
+                    },
+                },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.accounts[1].profile');
+        expect((caught as ConfigError).message).toContain('cross-contaminate');
+        // Value-free: the profile (which can be an account email) is never echoed — only the path localizes it.
+        expect((caught as ConfigError).message).not.toContain('dir-alpha');
+    });
+
+    it('[AC4] rejects an empty `accounts:` list', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { amazon: { accounts: [] } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.accounts');
+        expect((caught as ConfigError).message).toContain('at least one');
+    });
+
+    it('[AC4] rejects `accounts:` mixed with a top-level `browser`/`profile` (one account OR a list, not both)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: {
+                    amazon: {
+                        browser: 'chrome',
+                        profile: 'p',
+                        accounts: [{ account: 'a', browser: 'chrome', profile: 'q' }],
+                    },
+                },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon');
+        expect((caught as ConfigError).message).toContain('not both');
+    });
+
+    it('[AC4] rejects a source-level `instances:` alongside `accounts:` (instances move UNDER each account)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: {
+                    amazon: {
+                        accounts: [{ account: 'a', browser: 'chrome', profile: 'p' }],
+                        instances: ['amazon.com'],
+                    },
+                },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.instances');
+    });
+
+    it('[AC4] rejects a non-`session` `kind:` alongside `accounts:`', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: {
+                    amazon: { kind: 'password', accounts: [{ account: 'a', browser: 'chrome', profile: 'p' }] },
+                },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.kind');
+    });
+
+    it('[AC4] rejects an account entry carrying a credential (an account is a browser session, not a login)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: { amazon: { accounts: [{ account: 'a', browser: 'chrome', profile: 'p', ref: 'op://V/i' }] } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.accounts[0]');
+    });
+
+    it('[AC4] rejects an account entry missing its `account` key', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { amazon: { accounts: [{ browser: 'chrome', profile: 'p' }] } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.accounts[0].account');
+    });
+
+    it('[AC4] rejects an off-vocabulary `browser` in an account entry (reuses the closed BrowserKind vocab)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({ sources: { amazon: { accounts: [{ account: 'a', browser: 'safari', profile: 'p' }] } } });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.accounts[0].browser');
+    });
+});
+
 describe('parseConfig — #155 strict mode (fail closed on inline-literal secrets)', () => {
     const secret = 'super-secret-password';
     const inlineSecretConfig = { sources: { 'free.fr': { auth: { kind: 'password', secret } } } };

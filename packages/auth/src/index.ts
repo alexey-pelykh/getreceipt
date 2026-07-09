@@ -11,6 +11,7 @@ export {
     resolveConfigFilePath,
 } from './config.js';
 export type {
+    AccountAuthConfig,
     ApiTokenAuthShape,
     AuthShape,
     BrowserKind,
@@ -23,6 +24,7 @@ export type {
     GetReceiptConfig,
     MfaConfig,
     MfaType,
+    MultiAccountSessionAuthShape,
     NoneAuthShape,
     PasskeyAuthShape,
     PastedSessionAuthShape,
@@ -57,6 +59,7 @@ export {
     SecretLeakDetectedError,
 } from './secret-leakage.js';
 export type { ScannableFile, SecretLeak } from './secret-leakage.js';
+export { accountSessionKey } from './session.js';
 export type { SessionStore, StoredSession } from './session.js';
 export { ReauthDetector } from './reauth-detector.js';
 export type { ReauthAssessment, ReauthDetectorOptions } from './reauth-detector.js';

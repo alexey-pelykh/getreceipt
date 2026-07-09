@@ -75,6 +75,7 @@ export interface NoneAuthShape {
     readonly browser?: never;
     readonly profile?: never;
     readonly paste?: never;
+    readonly accounts?: never;
 }
 
 /** Single-item login: ONE reference to a 1Password LOGIN item resolving BOTH username and secret — the item-level alternative to per-field credentials. */
@@ -86,6 +87,7 @@ export interface PasswordSingleRefAuthShape {
     readonly browser?: never;
     readonly profile?: never;
     readonly paste?: never;
+    readonly accounts?: never;
 }
 
 /** Per-field password: username and/or secret as separate {@link CredentialValue}s. */
@@ -97,6 +99,7 @@ export interface PasswordPerFieldAuthShape {
     readonly browser?: never;
     readonly profile?: never;
     readonly paste?: never;
+    readonly accounts?: never;
 }
 
 /**
@@ -112,6 +115,7 @@ export interface ApiTokenAuthShape {
     readonly browser?: never;
     readonly profile?: never;
     readonly paste?: never;
+    readonly accounts?: never;
 }
 
 /** Passkey — no stored credential. A placeholder arm; the credential flow is the #150 spike. */
@@ -123,6 +127,7 @@ export interface PasskeyAuthShape {
     readonly browser?: never;
     readonly profile?: never;
     readonly paste?: never;
+    readonly accounts?: never;
 }
 
 /**
@@ -143,6 +148,7 @@ export interface BrowserSessionAuthShape {
     readonly username?: never;
     readonly secret?: never;
     readonly paste?: never;
+    readonly accounts?: never;
 }
 
 /**
@@ -165,6 +171,46 @@ export interface PastedSessionAuthShape {
     readonly ref?: never;
     readonly username?: never;
     readonly secret?: never;
+    readonly accounts?: never;
+}
+
+/**
+ * One authenticated identity (account) under a multi-account source (#254): the account KEY plus the
+ * browser session to import it from and the marketplace instances to collect under it. `account` is the
+ * OUTER key — one dedicated profile + one warm jar + one sign-in — and marketplaces (#190) move UNDER each
+ * account. Fail-closed uniqueness (no two accounts share an `account` OR a `profile`) is enforced at parse
+ * time: two accounts on one profile would cross-contaminate their cookie jars (one warm jar per account is
+ * load-bearing). An account is a browser session, so it carries no credential and no `paste`.
+ */
+export interface AccountAuthConfig {
+    /** The account key — the OUTER identity disambiguating two sign-ins to one source (e.g. `personal`, `business`). */
+    readonly account: string;
+    /** Which browser's cookie store to import this account's session from. */
+    readonly browser: BrowserKind;
+    /** The browser profile to read for this account — a profile directory name OR an account email (resolved in #176). */
+    readonly profile: string;
+    /** The marketplace instances to collect under this account (#190), e.g. `[amazon.com, amazon.fr]`; omit for single-instance. */
+    readonly instances?: readonly string[];
+}
+
+/**
+ * Multi-account session (#254): ONE source authenticating SEVERAL accounts, each its own imported browser
+ * session ({@link AccountAuthConfig}) — the multi-account analogue of the single {@link BrowserSessionAuthShape}.
+ * `kind: session` is DERIVED from the presence of an `accounts:` list; it carries NO top-level
+ * `browser`/`profile`/`paste`/credential — those live PER-ACCOUNT under {@link accounts}. Additive and
+ * discriminated: a config WITHOUT `accounts:` parses exactly as before (zero migration), so this arm is only
+ * reachable when the user opts into the list.
+ */
+export interface MultiAccountSessionAuthShape {
+    readonly kind: 'session';
+    /** The accounts this source authenticates (≥1; each with a UNIQUE `account` key AND a UNIQUE `profile`). */
+    readonly accounts: readonly AccountAuthConfig[];
+    readonly browser?: never;
+    readonly profile?: never;
+    readonly paste?: never;
+    readonly ref?: never;
+    readonly username?: never;
+    readonly secret?: never;
 }
 
 /**
@@ -181,7 +227,8 @@ export type AuthShape =
     | ApiTokenAuthShape
     | PasskeyAuthShape
     | BrowserSessionAuthShape
-    | PastedSessionAuthShape;
+    | PastedSessionAuthShape
+    | MultiAccountSessionAuthShape;
 
 /**
  * Per-domain authentication configuration: a credential {@link AuthShape} plus orthogonal optional
@@ -367,6 +414,13 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
         throw new ConfigError('expected a source mapping or a bare reference string', path);
     }
 
+    // Multi-account session (#254): a source-level `accounts:` list is the multi-account form. It is checked
+    // FIRST — it is mutually exclusive with the single-source shapes below (a source is EITHER one account or a
+    // list, never both) — and a source WITHOUT it parses exactly as before (the additive branch).
+    if (raw.accounts !== undefined) {
+        return parseMultiAccount(raw, path);
+    }
+
     // Session sugar: a mapping carrying `browser`/`profile` (imported) OR `paste` (manual-paste, #218) at the
     // TOP level (no `auth:` block) desugars to the session auth block — the mapping analogue of the bare-ref
     // string sugar above, so the terse session form parses without an `auth:` wrapper. Only the credential-less
@@ -428,6 +482,96 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     // not the auth block, so it sits beside an `auth:` block AND beside the session shorthand alike (#190).
     const instances = parseInstances(raw.instances, `${path}.instances`);
     return instances === undefined ? shape : { ...shape, instances };
+}
+
+/**
+ * Parse the multi-account session form (#254): a source-level `accounts:` list, each entry an
+ * {@link AccountAuthConfig} (its own account key + browser session + instances). Mutually exclusive with the
+ * single-source shapes — a top-level `browser`/`profile`/`paste`, an `auth:` block, a source-level
+ * `instances:` (instances move UNDER each account), or a non-`session` `kind:` alongside `accounts:` are all
+ * rejected fail-closed. Enforces the AC4 uniqueness invariant: no two accounts share an `account` key OR a
+ * `profile` — a shared profile would cross-contaminate the two accounts' cookie jars. Throws
+ * {@link ConfigError}, which never echoes a configured value (an account/profile can be an email).
+ */
+function parseMultiAccount(raw: Record<string, unknown>, path: string): DomainAuthConfig {
+    if (raw.browser !== undefined || raw.profile !== undefined || raw.paste !== undefined || raw.auth !== undefined) {
+        throw new ConfigError(
+            'use either `accounts:` (the multi-account form) or a single top-level `browser`/`profile`/`paste`/`auth:` — not both; each account under `accounts:` carries its own session',
+            path,
+        );
+    }
+    // Instances are per-account in the multi-account form — a source-level list would be ambiguous (which account?).
+    if (raw.instances !== undefined) {
+        throw new ConfigError(
+            'list `instances` UNDER each `accounts:` entry, not at the source level (each account collects its own marketplaces)',
+            `${path}.instances`,
+        );
+    }
+    // `kind` is derived (accounts ARE sessions); a literal is honored only as a VALIDATION constraint, never summoned.
+    if (raw.kind !== undefined && raw.kind !== 'session') {
+        throw new ConfigError(
+            '`accounts:` is the multi-account `session` form and takes no other `kind`',
+            `${path}.kind`,
+        );
+    }
+    if (!Array.isArray(raw.accounts)) {
+        throw new ConfigError('`accounts` must be a list of account entries', `${path}.accounts`);
+    }
+    if (raw.accounts.length === 0) {
+        throw new ConfigError('`accounts` must list at least one account, or be omitted', `${path}.accounts`);
+    }
+    const seenAccounts = new Set<string>();
+    const seenProfiles = new Set<string>();
+    const accounts = raw.accounts.map((entry, index) => {
+        const account = parseAccount(entry, `${path}.accounts[${index}]`);
+        // Fail-closed uniqueness (#254 AC4) — value-free: the path localizes WHICH entry, so the message need
+        // not echo the account/profile (either can be an email). One warm jar per account is load-bearing, so
+        // a duplicate account key OR a shared profile is a data-integrity error, not a silently-merged pair.
+        if (seenAccounts.has(account.account)) {
+            throw new ConfigError(
+                'duplicate `account` — each account key must be unique across the source',
+                `${path}.accounts[${index}].account`,
+            );
+        }
+        if (seenProfiles.has(account.profile)) {
+            throw new ConfigError(
+                'two accounts share a `profile` — each account needs its own browser profile (a shared cookie jar cross-contaminates the two identities)',
+                `${path}.accounts[${index}].profile`,
+            );
+        }
+        seenAccounts.add(account.account);
+        seenProfiles.add(account.profile);
+        return account;
+    });
+    return { kind: 'session', accounts };
+}
+
+/**
+ * Parse one `accounts:` entry (#254) into an {@link AccountAuthConfig}: a non-empty `account` key plus a
+ * browser session (`browser` + `profile`) and optional per-account `instances`. An account is a browser
+ * session by construction, so a credential (`ref`/`username`/`secret`) or a `paste` reference is rejected —
+ * those are not the multi-account shape. Reuses the single-source field parsers ({@link parseBrowser},
+ * {@link parseProfile}, {@link parseInstances}) so an account validates identically to a top-level session.
+ */
+function parseAccount(raw: unknown, path: string): AccountAuthConfig {
+    if (!isRecord(raw)) {
+        throw new ConfigError('each `accounts` entry must be a mapping', path);
+    }
+    if (raw.paste !== undefined || raw.ref !== undefined || raw.username !== undefined || raw.secret !== undefined) {
+        throw new ConfigError(
+            'an `accounts` entry is a browser session — it takes `account`, `browser`, and `profile` (no credential, no `paste`)',
+            path,
+        );
+    }
+    if (typeof raw.account !== 'string' || raw.account.length === 0) {
+        throw new ConfigError('each `accounts` entry needs a non-empty `account` key', `${path}.account`);
+    }
+    const browser = parseBrowser(raw.browser, `${path}.browser`);
+    const profile = parseProfile(raw.profile, `${path}.profile`);
+    const instances = parseInstances(raw.instances, `${path}.instances`);
+    return instances === undefined
+        ? { account: raw.account, browser, profile }
+        : { account: raw.account, browser, profile, instances };
 }
 
 /**

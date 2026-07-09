@@ -17,6 +17,14 @@ import type { Secret } from './secret.js';
  */
 export interface ResolvedCredentials {
     readonly kind: AuthKind;
+    /**
+     * The authenticated IDENTITY this credential resolves for (#254): the account key a multi-account source
+     * scopes its {@link SessionStore} key to ({@link accountSessionKey} → `${canonicalDomain}:${account}`).
+     * Absent for a single-account source — the store key stays the bare canonical domain (ADR-008 §4), so a
+     * legacy config's at-rest session is untouched. Threaded from the front-end's per-account resolution to
+     * the adapter's `authenticate`/`reimport`, where it seeds the per-identity store key.
+     */
+    readonly account?: string;
     /** The resolved login identifier as a plain string — the front-end dereferences a configured username reference to its value before building this. */
     readonly username?: string;
     /** The resolved secret, still fenced — adapters call {@link Secret.expose} only at the point of use. */

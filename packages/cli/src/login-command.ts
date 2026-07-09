@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import {
+    accountSessionKey,
     CredentialResolver,
+    fromCredentialContext,
     isSessionPersistable,
     loadConfig as authLoadConfig,
     resolveConfigFilePath,
@@ -153,7 +155,14 @@ export function createLoginCommand(overrides: Partial<LoginCommandEnv> = {}): Co
                 throw exitWith(EXIT_CODES.usage, 'getreceipt.login.authentication-failed');
             }
 
-            const key = adapter.descriptor.canonicalDomain;
+            // Key the stored session on the authenticated IDENTITY (#254): a multi-account login scopes the key
+            // to its account, a single-account one keeps the bare canonical (unchanged). The account rides on
+            // the resolved credentials — undefined for a single-account source, so `key`, the store entry, and
+            // the ✓ line below are all byte-for-byte as before.
+            const key = accountSessionKey(
+                adapter.descriptor.canonicalDomain,
+                fromCredentialContext(credentials).account,
+            );
             try {
                 await env.sessionStore.save(key, session);
             } catch (error) {

@@ -312,7 +312,17 @@ export type BrowserSessionResolution =
 export interface ReuseOrImportBrowserSessionRequest {
     readonly store: SessionStore;
     readonly detector: ReauthDetector;
-    /** Store key for the session — the canonical domain it is scoped to. */
+    /**
+     * The per-identity STORAGE key (#254): the account-scoped {@link @getreceipt/auth!accountSessionKey}
+     * (`${canonicalDomain}:${account}`) for a multi-account source, or the bare canonical domain for a
+     * single-account one. Keys BOTH the reuse LOAD and the persist SAVE, so two accounts never collide here.
+     */
+    readonly key: string;
+    /**
+     * The canonical source DOMAIN the re-auth signal is scoped to (ADR-008 §5) — SOURCE-level, distinct from
+     * the per-account {@link key}: a stale stored session surfaces ONE `reauth-required` for the source, not
+     * one per account. For a single-account source it equals {@link key}.
+     */
     readonly domain: string;
     /**
      * Imports a fresh session when nothing fresh is stored — typically
@@ -332,23 +342,25 @@ export interface ReuseOrImportBrowserSessionRequest {
  * {@link browserSessionToStoredSession} (the projection), so persistence reuses the audited store + envelope
  * rather than a parallel path. Never throws for an expected condition — a `reauth-required` verdict is
  * RETURNED (mapped via {@link toReauthRequiredError}) for the caller to surface, mirroring
- * {@link reuseStoredSession}'s never-throw contract. The reused session stays domain-scoped: it is loaded by
- * the same `domain` key it was stored under, so reuse never broadens scope.
+ * {@link reuseStoredSession}'s never-throw contract. The reused session stays identity-scoped: it is loaded
+ * by the same per-account {@link ReuseOrImportBrowserSessionRequest.key} it was stored under, so reuse never
+ * broadens scope or crosses accounts.
  */
 export async function reuseOrImportBrowserSession(
     request: ReuseOrImportBrowserSessionRequest,
 ): Promise<BrowserSessionResolution> {
-    const { store, detector, domain, importFresh } = request;
-    const reuse = await reuseStoredSession({ store, detector, key: domain });
+    const { store, detector, key, domain, importFresh } = request;
+    const reuse = await reuseStoredSession({ store, detector, key });
     if (reuse.outcome === 'reuse') {
         return { outcome: 'reused', auth: storedSessionToBrowserSession(reuse.session) };
     }
     if (reuse.outcome === 'reauth-required') {
+        // The re-auth signal is SOURCE-level — the canonical `domain`, not the per-account storage `key` (#254).
         return { outcome: 'reauth-required', error: toReauthRequiredError(domain, reuse) };
     }
-    // absent: nothing stored — import fresh and persist it so the next run can reuse it (skip the browser then).
+    // absent: nothing stored — import fresh and persist it under the per-account key so the next run reuses it.
     const auth = importFresh();
-    await store.save(domain, browserSessionToStoredSession(auth));
+    await store.save(key, browserSessionToStoredSession(auth));
     return { outcome: 'imported', auth };
 }
 

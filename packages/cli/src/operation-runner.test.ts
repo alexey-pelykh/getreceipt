@@ -329,6 +329,57 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
     });
 });
 
+describe('runOperation — multi-account (`accounts:`) fails closed pre-flight (#254 D2)', () => {
+    /** A session adapter (like Amazon): the multi-account guard only reaches `resolveCredentials` past `assertSessionAdapter`. */
+    function sessionAdapter(): SourceAdapter {
+        return {
+            descriptor: {
+                canonicalDomain: 'amazon.com',
+                aliasDomains: [],
+                authKind: 'session',
+                credentialShapes: ['none'],
+                transportTier: 'headless-browser',
+                artifactMode: 'rendered',
+                dateFilter: { basis: 'ordered', fromInclusive: true, toInclusive: true },
+                defaultWindow: { days: 90 },
+                pagination: 'page',
+            },
+            authenticate: async () => ({}) as unknown as AuthHandle,
+            list: async (): Promise<readonly ReceiptRef[]> => [],
+            fetch: async () =>
+                ({ bytes: new Uint8Array([1]), contentType: 'application/pdf' }) as unknown as ArtifactHandle,
+        };
+    }
+
+    const accountsConfig: ConfigParseResult = {
+        config: {
+            sources: {
+                'amazon.com': {
+                    kind: 'session',
+                    accounts: [
+                        { account: 'personal', browser: 'chrome', profile: 'Personal' },
+                        { account: 'business', browser: 'chrome', profile: 'Business' },
+                    ],
+                },
+            },
+        },
+        warnings: [],
+    };
+
+    it('rejects a parseable `accounts:` source with unsupported-shape — the collect loop does not yet iterate accounts', async () => {
+        const error = await runOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({ resolver: resolverWith(sessionAdapter()), loadConfig: () => accountsConfig }),
+        ).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        // Fail CLOSED, not a silent one-account collect: the message points the operator at the single-account shape.
+        expect((error as OperationError).message).toContain('accounts');
+    });
+});
+
 describe('runOperation — username resolves on the same path as the secret', () => {
     /** Config whose username is a reference (not an inline literal), exercising call-time resolution. */
     const refUsernameConfig: ConfigParseResult = {

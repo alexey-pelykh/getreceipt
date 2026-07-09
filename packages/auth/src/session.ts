@@ -31,6 +31,18 @@ export interface SessionStore {
     delete(key: string): Promise<void>;
 }
 
+/**
+ * The {@link SessionStore} key for ONE authenticated identity under a source (#254). A single-account source
+ * (no configured `account`) keys on the BARE canonical domain — UNCHANGED from ADR-008 §4, so existing
+ * at-rest sessions and `login` keys survive (zero migration). A multi-account source scopes the key to the
+ * account (`${canonicalDomain}:${account}`) so two sign-ins to one source (e.g. personal + Amazon Business)
+ * never collide on a single key. The re-auth SIGNAL stays source-level (the bare canonical), distinct from
+ * this per-account STORAGE key — the two are threaded separately through {@link reuseOrImportBrowserSession}.
+ */
+export function accountSessionKey(canonicalDomain: string, account?: string): string {
+    return account === undefined ? canonicalDomain : `${canonicalDomain}:${account}`;
+}
+
 /** The JSON-safe projection of a {@link StoredSession}: the token is exposed as a plain string. */
 interface PersistedSession {
     readonly token: string;

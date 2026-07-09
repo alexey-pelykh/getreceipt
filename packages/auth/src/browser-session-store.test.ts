@@ -177,6 +177,7 @@ describe('reuseOrImportBrowserSession — resolve an imported session through se
         const resolution = await reuseOrImportBrowserSession({
             store,
             detector: new ReauthDetector(),
+            key: DOMAIN,
             domain: DOMAIN,
             importFresh: importMustNotRun,
         });
@@ -198,6 +199,7 @@ describe('reuseOrImportBrowserSession — resolve an imported session through se
         const first = await reuseOrImportBrowserSession({
             store,
             detector: new ReauthDetector(),
+            key: DOMAIN,
             domain: DOMAIN,
             importFresh,
         });
@@ -207,6 +209,7 @@ describe('reuseOrImportBrowserSession — resolve an imported session through se
         const second = await reuseOrImportBrowserSession({
             store,
             detector: new ReauthDetector(),
+            key: DOMAIN,
             domain: DOMAIN,
             importFresh,
         });
@@ -228,6 +231,7 @@ describe('reuseOrImportBrowserSession — resolve an imported session through se
         const resolution = await reuseOrImportBrowserSession({
             store,
             detector: new ReauthDetector(),
+            key: DOMAIN,
             domain: DOMAIN,
             importFresh: importMustNotRun,
         });
@@ -273,6 +277,7 @@ describe('at rest — encrypted, never plaintext [AC3]', () => {
         const opts = {
             store: new EncryptedFileSessionStore({ dir, passphraseProvider: () => 'pw' }),
             detector,
+            key: DOMAIN,
             domain: DOMAIN,
         };
 

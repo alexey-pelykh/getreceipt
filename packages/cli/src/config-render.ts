@@ -40,6 +40,16 @@ interface RedactedAuthView {
     /** Single-item form: the op:// reference to a LOGIN item (resolved via `op item get`). Shown UNRESOLVED. */
     ref?: string;
     mfa?: RedactedMfaView;
+    /** Multi-account session (#254): the accounts, each its account key + browser + profile + instances (no secrets to mask). */
+    accounts?: readonly RedactedAccountView[];
+}
+
+/** One account under a multi-account source, for `config show` (#254). Every field is non-secret — an account key, a browser, a profile name/email, and instance domains. */
+interface RedactedAccountView {
+    account: string;
+    browser: string;
+    profile: string;
+    instances?: readonly string[];
 }
 
 interface RedactedMfaView {
@@ -79,6 +89,16 @@ function redactSources(
         }
         if (auth.mfa !== undefined) {
             view.mfa = redactMfa(auth.mfa);
+        }
+        if (auth.accounts !== undefined) {
+            // A multi-account session (#254) carries no secret in any account — an account key, browser, profile,
+            // and instance domains are all non-sensitive, so they render as-is (no fence, unlike a credential).
+            view.accounts = auth.accounts.map((account) => ({
+                account: account.account,
+                browser: account.browser,
+                profile: account.profile,
+                ...(account.instances !== undefined ? { instances: account.instances } : {}),
+            }));
         }
         out[domain] = { auth: view };
     }

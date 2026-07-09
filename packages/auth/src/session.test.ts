@@ -1,12 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 
-import { Secret } from './index.js';
+import { accountSessionKey, Secret } from './index.js';
 import type { StoredSession } from './index.js';
 // serialize/deserialize are internal to the store layer; import directly to test the projection in isolation.
 import { deserializeSession, serializeSession } from './session.js';
 
 const TOKEN = 'session-token-SENTINEL-do-not-leak';
+
+describe('accountSessionKey (#254)', () => {
+    it('keys on the BARE canonical domain when no account is set — single-account, zero migration', () => {
+        expect(accountSessionKey('amazon.com')).toBe('amazon.com');
+        expect(accountSessionKey('amazon.com', undefined)).toBe('amazon.com');
+    });
+
+    it('scopes the key to the account when one is set — two accounts get DISTINCT keys', () => {
+        expect(accountSessionKey('amazon.com', 'personal')).toBe('amazon.com:personal');
+        expect(accountSessionKey('amazon.com', 'business')).toBe('amazon.com:business');
+        expect(accountSessionKey('amazon.com', 'personal')).not.toBe(accountSessionKey('amazon.com', 'business'));
+    });
+});
 
 describe('serializeSession / deserializeSession', () => {
     it('round-trips a session, re-fencing the token in a Secret', () => {

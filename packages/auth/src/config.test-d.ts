@@ -40,6 +40,21 @@ export type _AuthShapeTypeTests = [
     Expect<Rejected<{ kind: 'session'; paste: { ref: string }; ref: string }>>,
     // `paste` is the session shape — a credential arm carrying it is rejected from the other side too.
     Expect<Rejected<{ kind: 'password'; ref: string; paste: { ref: string } }>>,
+    // Multi-account (#254): `accounts:` is mutually exclusive with a top-level `browser`/`profile` (a source is
+    // EITHER one account or a list). `accounts` + `browser` is assignable to no arm.
+    Expect<
+        Rejected<{ kind: 'session'; accounts: [{ account: 'a'; browser: 'chrome'; profile: 'p' }]; browser: 'chrome' }>
+    >,
+    // …nor `accounts` + a `paste` reference (multi-account is a browser-session list, not a paste).
+    Expect<
+        Rejected<{
+            kind: 'session';
+            accounts: [{ account: 'a'; browser: 'chrome'; profile: 'p' }];
+            paste: { ref: string };
+        }>
+    >,
+    // …nor `accounts` on a credential arm — `accounts` is the session shape, rejected from the other side too.
+    Expect<Rejected<{ kind: 'password'; ref: string; accounts: [{ account: 'a'; browser: 'chrome'; profile: 'p' }] }>>,
 
     // Every valid arm IS constructible.
     Expect<Constructible<{ kind: 'none' }>>,
@@ -51,6 +66,15 @@ export type _AuthShapeTypeTests = [
     Expect<Constructible<{ kind: 'session'; browser: 'chrome'; profile: string }>>,
     // The manual-paste session arm (#218): `kind: session` carrying a `paste` reference, no browser/profile.
     Expect<Constructible<{ kind: 'session'; paste: { ref: string } }>>,
+    // The multi-account session arm (#254): `kind: session` carrying an `accounts:` list, no top-level browser/profile.
+    Expect<Constructible<{ kind: 'session'; accounts: [{ account: 'personal'; browser: 'chrome'; profile: 'p' }] }>>,
+    // …an account MAY carry its own `instances` (#190 moves under each account).
+    Expect<
+        Constructible<{
+            kind: 'session';
+            accounts: [{ account: 'a'; browser: 'firefox'; profile: 'p'; instances: ['amazon.com'] }];
+        }>
+    >,
 
     // `mfa` is orthogonal — it attaches to ANY arm.
     Expect<Constructible<{ kind: 'none'; mfa: { type: 'sms' } }>>,
