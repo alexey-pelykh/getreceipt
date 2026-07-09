@@ -39,7 +39,34 @@ export interface ProfileRenderResult {
     readonly pdf: Uint8Array;
     /** The loaded page's serialized HTML — the caller's source-drift guard + date extraction read it. */
     readonly html: string;
+    /**
+     * The URL the navigation ended on ({@link Page.url} after redirects). A persistent-profile fetch that hits a
+     * `max_auth_age` step-up is bounced to the site's sign-in path, so the caller reads this to route the bounce
+     * to re-auth (#255) rather than mis-reading the sign-in page as invoice drift — the browser-tier mirror of the
+     * HTTP path's redirect-`location` check.
+     */
+    readonly finalUrl: string;
 }
+
+/** An open, headful sign-in window ({@link openProfileForSignIn}) — the caller closes it once the operator has signed in. */
+export interface SignInWindow {
+    /** Close the headful context, ending the sign-in session (the persistent profile keeps the signed-in cookies on disk). */
+    readonly close: () => Promise<void>;
+}
+
+/**
+ * Launch a persistent context the way {@link openProfileForSignIn} needs — injected so the HEADFUL helper is
+ * unit-testable without a real display (a fake launcher stands in; a real headful launch cannot run in CI).
+ * Mirrors `chromium.launchPersistentContext`'s `(profileDir, options)` shape.
+ */
+export type PersistentContextLauncher = (
+    profileDir: string,
+    options: Parameters<typeof chromium.launchPersistentContext>[1],
+) => Promise<BrowserContext>;
+
+/** The production launcher — a bound wrapper (never the unbound method, which would lose `this`). */
+const defaultPersistentContextLauncher: PersistentContextLauncher = (profileDir, options) =>
+    chromium.launchPersistentContext(profileDir, options);
 
 /** Exactly the element type `BrowserContext.addCookies` accepts — derived so this never drifts from Playwright's shape. */
 type PlaywrightCookie = Parameters<BrowserContext['addCookies']>[0][number];
@@ -89,11 +116,12 @@ export async function render(source: RenderSource, options: RenderOptions = {}):
  * the profile's OWN warm, already-signed-in session carries the request — no cookies are injected. The operator
  * signs into that profile once; getreceipt never handles their password.
  *
- * Returns BOTH the PDF and the page HTML: a caller with a coarse-listWindow source dates its receipts at fetch
- * time and guards against page drift, both of which read the HTML — so PDF-only would lose that.
+ * Returns the PDF, the page HTML, AND the URL the navigation ended on: a caller with a coarse-listWindow source
+ * dates its receipts at fetch time and guards against page drift (both read the HTML), and reads `finalUrl` to
+ * route a `max_auth_age` sign-in bounce to re-auth (#255) rather than mis-reading it as drift.
  *
- * Headless for now (`page.pdf()` requires headless Chromium, and it is CI-testable against a fixture URL);
- * attended-headful sign-in + step-up recovery is #255.
+ * Headless (`page.pdf()` requires headless Chromium, and it is CI-testable against a fixture URL); the attended
+ * HEADFUL sign-in the step-up recovery drives is {@link openProfileForSignIn} (#255).
  */
 export async function renderUrlInProfile(
     profileDir: string,
@@ -104,12 +132,39 @@ export async function renderUrlInProfile(
     try {
         const page = await context.newPage();
         await page.goto(url, { waitUntil: 'load' });
+        // Capture where we actually landed BEFORE reading content: a step-up redirected us to the sign-in path,
+        // and the caller keys its re-auth routing on this (the invoice-URL request never reaches the invoice).
+        const finalUrl = page.url();
         const html = await page.content();
         const pdf = await page.pdf(pdfOptions(options));
-        return { pdf, html };
+        return { pdf, html, finalUrl };
     } finally {
         await context.close();
     }
+}
+
+/**
+ * Open the getreceipt-OWNED persistent profile in a HEADFUL window so the operator can sign in — the attended
+ * `max_auth_age` recovery for the browser-driven tier (#255). Unlike {@link renderUrlInProfile} (headless,
+ * unattended), this launches with `headless: false` and navigates to `url` (the site's sign-in page) so a
+ * visible window appears for the operator to complete sign-in IN THAT PROFILE; getreceipt never handles their
+ * password/OTP. The signed-in cookies land in `profileDir` on disk, so the next headless fetch reuses the warm
+ * session. Returns a handle whose {@link SignInWindow.close} the caller invokes once the operator signals they
+ * are done — the caller (the CLI's attended re-auth loop) owns the "wait for the operator" prompt.
+ *
+ * MUST be reached only on an ATTENDED run (TTY + `--reauth`): a headless/scheduled run has no one to see the
+ * window, so its caller gates this behind interactivity and never invokes it unattended (#255 AC3). The launcher
+ * is injected so this is unit-testable without a real display — a headful launch cannot run in CI.
+ */
+export async function openProfileForSignIn(
+    profileDir: string,
+    url: string,
+    launch: PersistentContextLauncher = defaultPersistentContextLauncher,
+): Promise<SignInWindow> {
+    const context = await launch(profileDir, { headless: false });
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: 'load' });
+    return { close: () => context.close() };
 }
 
 /** The `page.pdf()` options derived from {@link RenderOptions} — shared by {@link render} and {@link renderUrlInProfile}. */

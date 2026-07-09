@@ -372,8 +372,15 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
 });
 
 describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profile tier)', () => {
-    /** A browser fetch that records its call and returns a canned invoice page + PDF, WITHOUT launching a browser. */
-    function stubBrowserFetch(pageHtml: string): {
+    /**
+     * A browser fetch that records its call and returns a canned invoice page + PDF, WITHOUT launching a browser.
+     * `finalUrl` defaults to the requested URL (a successful navigation lands where it was pointed — no step-up);
+     * a step-up test overrides it with the sign-in URL to exercise the #255 re-auth routing.
+     */
+    function stubBrowserFetch(
+        pageHtml: string,
+        finalUrl?: string,
+    ): {
         readonly browserFetch: BrowserInvoiceFetcher;
         readonly calls: Array<{ readonly profileDir: string; readonly url: string }>;
     } {
@@ -383,6 +390,7 @@ describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profi
             return Promise.resolve({
                 pdf: new TextEncoder().encode('%PDF-1.4\n% browser-rendered\n%%EOF\n'),
                 html: pageHtml,
+                finalUrl: finalUrl ?? url.toString(),
             });
         };
         return { browserFetch, calls };
@@ -423,6 +431,18 @@ describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profi
 
         expect(error).toBeInstanceOf(TrustBoundaryError);
         expect((error as TrustBoundaryError).boundary).toBe('amazon.fr:fetch');
+    });
+
+    it('routes a browser-tier max_auth_age step-up (navigation bounced to /ap/signin) to a ReauthRequiredError, not a generic drift error (#255 AC1)', async () => {
+        // Even the warm profile periodically hits an old-invoice / .com step-up: the persistent-context navigation
+        // lands on the sign-in path. The seam reports that via finalUrl; the adapter must surface re-auth (the
+        // browser-tier mirror of the HTTP path's redirect-to-signIn check), NOT the not_an_invoice
+        // TrustBoundaryError the missing order id would otherwise trigger — so the reauth flow, not a generic
+        // error, is taken. The sign-in-URL check runs BEFORE the drift guard, which this asserts by precedence.
+        const { browserFetch } = stubBrowserFetch(renderSignInPage(), SIGN_IN_URL);
+        const a = new AmazonAdapter({ browserFetch, browserProfileDir: '/profiles/personal' });
+
+        await expect(a.fetch(anyAuth, browserRef)).rejects.toBeInstanceOf(ReauthRequiredError);
     });
 
     it('falls back to the HTTP-HTML path when the tier is headless-browser but NO profile is wired — the browser fetcher is never invoked', async () => {
