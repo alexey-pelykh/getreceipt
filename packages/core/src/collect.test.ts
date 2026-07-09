@@ -5,6 +5,7 @@ import { http, HttpResponse, server } from '@getreceipt/testing';
 
 import {
     collect,
+    collectAccounts,
     collectInstances,
     formatChallengeEvent,
     ReauthRequiredError,
@@ -62,8 +63,10 @@ interface AdapterScript {
     readonly refs?: readonly ReceiptRef[];
     /** Per-instance refs keyed by instance domain (#190): lets a multi-instance run yield distinct data per instance. */
     readonly refsByInstance?: Readonly<Record<string, readonly ReceiptRef[]>>;
-    // Widened to AuthResult (#133) so a script can emit an interactive challenge, not only a session.
-    readonly authenticate?: () => Promise<AuthResult>;
+    // Widened to AuthResult (#133) so a script can emit an interactive challenge, not only a session; and given
+    // the credential's `account` (#254/#257) so a multi-account run can script per-account auth (e.g. one
+    // account reauths, another succeeds). Existing single-account scripts ignore the arg.
+    readonly authenticate?: (account?: string) => Promise<AuthResult>;
     readonly fetch?: (auth: AuthHandle, ref: ReceiptRef) => Promise<ArtifactHandle>;
 }
 
@@ -75,6 +78,8 @@ interface AdapterProbe {
     /** The instance domain each list/fetch was invoked with (undefined for a single-instance call) — used by #190 tests. */
     readonly listInstances: (string | undefined)[];
     readonly fetchInstances: (string | undefined)[];
+    /** The credential `account` seen at each authenticate call (#254/#257) — proves per-account auth keying. */
+    readonly authAccounts: (string | undefined)[];
 }
 
 function makeAdapter(script: AdapterScript = {}): AdapterProbe {
@@ -83,6 +88,7 @@ function makeAdapter(script: AdapterScript = {}): AdapterProbe {
     const fetched: string[] = [];
     const listInstances: (string | undefined)[] = [];
     const fetchInstances: (string | undefined)[] = [];
+    const authAccounts: (string | undefined)[] = [];
     // A per-instance script (#190): map an instance domain to the refs its list returns, so a multi-instance
     // run can yield distinct data per instance. Falls back to the flat `refs` for single-instance runs.
     const refsByInstance = script.refsByInstance;
@@ -92,7 +98,11 @@ function makeAdapter(script: AdapterScript = {}): AdapterProbe {
         descriptor: { ...baseDescriptor, ...script.descriptor },
         authenticate: async (creds) => {
             log.push('authenticate');
-            return script.authenticate ? script.authenticate() : brand<AuthHandle>({ creds });
+            // The credential `account` (#254) rides on the opaque context; capture it so a multi-account run
+            // (#257) can assert auth was keyed per account, and hand it to a per-account auth script.
+            const account = (creds as { account?: string }).account;
+            authAccounts.push(account);
+            return script.authenticate ? script.authenticate(account) : brand<AuthHandle>({ creds });
         },
         list: async (_auth, range, instance) => {
             log.push('list');
@@ -110,7 +120,7 @@ function makeAdapter(script: AdapterScript = {}): AdapterProbe {
             return script.fetch ? script.fetch(auth, receiptRef) : brand<ArtifactHandle>({ id: receiptRef.id });
         },
     };
-    return { adapter, log, listRanges, fetched, listInstances, fetchInstances };
+    return { adapter, log, listRanges, fetched, listInstances, fetchInstances, authAccounts };
 }
 
 // --- recording writer ------------------------------------------------------
@@ -774,6 +784,190 @@ describe('collectInstances — one config, shared auth, data per instance (#190)
         expect(results[1]?.outcome).toBe('succeeded');
         // The failing instance does not strand the next: com still collected, namespaced to its own domain.
         expect(writer.writtenPaths).toEqual(['amazon.com/COM-1']);
+    });
+});
+
+// --- #257 multi-account: collectAccounts (per-account auth/semaphore/reauth) --
+/** Per-account credentials (#254/#257): the opaque context carrying just the account key the adapter reads back to scope its session store. */
+function accountCreds(account: string): CredentialContext {
+    return brand<CredentialContext>({ account });
+}
+
+describe('collectAccounts — outer per-account loop over collectInstances (#257)', () => {
+    it('authenticates ONCE per account, keyed per account — not once globally, not once per marketplace [AC1]', async () => {
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: {
+                'amazon.com': [ref('P-COM-1')],
+                'amazon.fr': [ref('P-FR-1')],
+                'amazon.de': [ref('B-DE-1')],
+            },
+        });
+        const writer = makeWriter();
+
+        const results = await collectAccounts({
+            adapter: probe.adapter,
+            writer: writer.writer,
+            accounts: [
+                { credentials: accountCreds('personal'), instances: [COM, FR] },
+                { credentials: accountCreds('business'), instances: [DE] },
+            ],
+            now: NOW,
+        });
+
+        // TWO accounts → exactly TWO authenticate calls: NOT one global sign-in, and NOT one per the three
+        // marketplaces (that would be 3). personal authenticates once for its two instances (shared session).
+        expect(probe.log.filter((entry) => entry === 'authenticate')).toHaveLength(2);
+        // Each authenticate was keyed by its OWN account (order is non-deterministic across concurrent accounts).
+        expect([...probe.authAccounts].sort()).toEqual(['business', 'personal']);
+        // One result per (account × instance), flattened account-then-instance in REQUEST order; all succeed.
+        expect(results.map((result) => result.source)).toEqual(['amazon.com', 'amazon.fr', 'amazon.de']);
+        expect(results.map((result) => result.outcome)).toEqual(['succeeded', 'succeeded', 'succeeded']);
+    });
+
+    it('reauths PER ACCOUNT — a dead account surfaces ONE reauth (not per instance) while a healthy account collects independently [AC2]', async () => {
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.com': [ref('B-COM-1')], 'amazon.de': [ref('B-DE-1')] },
+            authenticate: async (account) => {
+                // personal's shared session is dead: it reauths ONCE for the account (its two instances are never
+                // listed — one signal, not one per instance). business is an independent identity: it collects.
+                if (account === 'personal') {
+                    throw new ReauthRequiredError('amazon.com', 'the imported browser session is no longer signed in');
+                }
+                return brand<AuthHandle>({});
+            },
+        });
+        const writer = makeWriter();
+
+        const results = await collectAccounts({
+            adapter: probe.adapter,
+            writer: writer.writer,
+            accounts: [
+                { credentials: accountCreds('personal'), instances: [COM, FR] },
+                { credentials: accountCreds('business'), instances: [COM, DE] },
+            ],
+            now: NOW,
+        });
+
+        // BOTH accounts authenticated — the dead 'personal' never blocks the healthy 'business' (independence).
+        expect([...probe.authAccounts].sort()).toEqual(['business', 'personal']);
+        // 'personal' → EXACTLY ONE reauth for the account (not one per its two instances), keyed to the source;
+        // 'business' → its two instances collected normally.
+        expect(results.map((result) => ({ source: result.source, outcome: result.outcome }))).toEqual([
+            { source: 'amazon.com', outcome: 'reauth-required' },
+            { source: 'amazon.com', outcome: 'succeeded' },
+            { source: 'amazon.de', outcome: 'succeeded' },
+        ]);
+        // 'personal' listed nothing (dead session stops before list); only 'business' wrote — no cross-account bleed.
+        expect(writer.writtenPaths).toEqual(['amazon.com/B-COM-1', 'amazon.de/B-DE-1']);
+    });
+
+    it('gives each account its OWN fetch semaphore — concurrent accounts are not mutually throttled by a shared cap [AC3]', async () => {
+        const gate = deferred<void>();
+        let active = 0;
+        let peak = 0;
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.com': [ref('P-1')], 'amazon.de': [ref('B-1')] },
+            fetch: async (_auth, receiptRef) => {
+                active += 1;
+                peak = Math.max(peak, active);
+                await gate.promise;
+                active -= 1;
+                return brand<ArtifactHandle>({ id: receiptRef.id });
+            },
+        });
+        const writer = makeWriter();
+
+        const run = collectAccounts({
+            adapter: probe.adapter,
+            writer: writer.writer,
+            accounts: [
+                { credentials: accountCreds('personal'), instances: [COM] },
+                { credentials: accountCreds('business'), instances: [DE] },
+            ],
+            fetchConcurrency: 1, // ONE fetch at a time PER ACCOUNT
+            now: NOW,
+        });
+        await flush();
+        // Both accounts fetch CONCURRENTLY — each honors its OWN cap-1 semaphore, so 2 are in flight at once. A
+        // single semaphore SHARED across accounts (the naive lift) would cap this at 1, mutually throttling them.
+        expect(active).toBe(2);
+
+        gate.resolve();
+        const results = await run;
+
+        expect(peak).toBe(2);
+        expect(results.map((result) => result.outcome)).toEqual(['succeeded', 'succeeded']);
+    });
+
+    it("caps fan-out PER ACCOUNT — marketplaces within one account share that account's semaphore [AC3]", async () => {
+        const gates = [deferred<void>(), deferred<void>()];
+        let active = 0;
+        let peak = 0;
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            // One account, one marketplace listing two receipts — they contend for the account's single semaphore.
+            refsByInstance: { 'amazon.com': [ref('r1'), ref('r2')] },
+            fetch: async (_auth, receiptRef) => {
+                active += 1;
+                peak = Math.max(peak, active);
+                await gates[Number(receiptRef.id.slice(1)) - 1]!.promise;
+                active -= 1;
+                return brand<ArtifactHandle>({ id: receiptRef.id });
+            },
+        });
+
+        const run = collectAccounts({
+            adapter: probe.adapter,
+            writer: makeWriter().writer,
+            accounts: [{ credentials: accountCreds('solo'), instances: [COM] }],
+            fetchConcurrency: 1,
+            now: NOW,
+        });
+        await flush();
+        // cap-1 within the account: only ONE of the two receipts fetches at a time (the account's shared semaphore).
+        expect(active).toBe(1);
+        for (const gate of gates) {
+            gate.resolve();
+            await flush();
+        }
+        await run;
+        expect(peak).toBe(1);
+    });
+
+    it('single-account collect (N=1) behaves identically to collectInstances — auth once, one result per instance [AC4]', async () => {
+        const script: AdapterScript = {
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.com': [ref('COM-1')], 'amazon.fr': [ref('FR-1'), ref('FR-2')] },
+        };
+        // Drive the SAME script/credentials/instances through both entry points and compare.
+        const viaInstances = await collectInstances({
+            adapter: makeAdapter(script).adapter,
+            credentials: accountCreds('solo'),
+            writer: makeWriter().writer,
+            instances: [COM, FR],
+            now: NOW,
+        });
+        const accountsProbe = makeAdapter(script);
+        const accountsWriter = makeWriter();
+        const viaAccounts = await collectAccounts({
+            adapter: accountsProbe.adapter,
+            writer: accountsWriter.writer,
+            accounts: [{ credentials: accountCreds('solo'), instances: [COM, FR] }],
+            now: NOW,
+        });
+
+        // A one-account run IS one collectInstances call: same per-instance results, same order, same outcomes.
+        expect(viaAccounts.map((result) => ({ source: result.source, outcome: result.outcome }))).toEqual(
+            viaInstances.map((result) => ({ source: result.source, outcome: result.outcome })),
+        );
+        // Authenticated exactly once (shared session across the account's instances), keyed to the account.
+        expect(accountsProbe.log.filter((entry) => entry === 'authenticate')).toHaveLength(1);
+        expect(accountsProbe.authAccounts).toEqual(['solo']);
+        // Per-instance data namespaced by instance domain, exactly as collectInstances (#190 parity).
+        expect(accountsWriter.writtenPaths).toEqual(['amazon.com/COM-1', 'amazon.fr/FR-1', 'amazon.fr/FR-2']);
     });
 });
 

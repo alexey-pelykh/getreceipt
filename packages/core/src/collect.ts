@@ -81,6 +81,50 @@ export interface CollectInstancesRequest {
     readonly challengeObserver?: ChallengeObserver;
 }
 
+/**
+ * One authenticated ACCOUNT to collect under a multi-account source (#257): its own resolved
+ * {@link CredentialContext} — carrying the account key + browser session #254 made the outer identity — and
+ * the marketplace instances (≥1) to collect under it (#190). Each account authenticates ONCE and loops its
+ * instances under that one session, so an account is a self-contained {@link CollectInstancesRequest} minus
+ * the shared knobs (adapter/writer/window/pacing/observer), which ride on the enclosing
+ * {@link CollectAccountsRequest}. The account key is opaque to the pipeline — it rides on {@link credentials}
+ * and only the adapter reads it back (to key the per-account session store), so core never inspects it.
+ */
+export interface AccountCollect {
+    /** This account's resolved credentials — the front-end scopes the account key + session PER account (#254). */
+    readonly credentials: CredentialContext;
+    /** The marketplace instances to collect under this account (≥1), each keyed by its own domain (#190). */
+    readonly instances: readonly InstanceContext[];
+    /**
+     * Resolves an interactive challenge THIS account's `authenticate` emits (#133). Per-account so one
+     * account's resolver never answers another's — each account is an independent sign-in. Omit for an account
+     * that never challenges; an unresolvable challenge surfaces as this account's own `reauth-required`.
+     */
+    readonly challengeResolver?: ChallengeResolver;
+}
+
+/**
+ * Everything one {@link collectAccounts} run needs: collect a source across SEVERAL authenticated ACCOUNTS
+ * (#257) — the OUTER loop wrapping the per-account {@link collectInstances} (#190), now that #254 made the
+ * account the outer identity. Mirrors {@link CollectInstancesRequest}, but credentials + instances move UNDER
+ * each account ({@link AccountCollect}) because each account authenticates independently. The adapter, writer,
+ * window, clock, pacing, and observer are shared across accounts; the fetch-concurrency cap is applied PER
+ * account (each account gets its OWN semaphore), so independent accounts never mutually throttle.
+ */
+export interface CollectAccountsRequest {
+    readonly adapter: SourceAdapter;
+    readonly writer: ReceiptWriter;
+    /** The accounts to collect (≥1). Each = one authenticate, one semaphore, one reauth surfacing; instances loop inside. */
+    readonly accounts: readonly AccountCollect[];
+    readonly window?: DateRange;
+    readonly now?: Date;
+    /** Max receipts fetched at once, applied PER ACCOUNT (each account's own semaphore) — independent accounts are never mutually throttled. */
+    readonly fetchConcurrency?: number;
+    /** Optional pacing. SHARED across accounts by design — it bounds the source's AGGREGATE tempo even when accounts run concurrently. */
+    readonly rateLimiter?: RateLimiter;
+    readonly challengeObserver?: ChallengeObserver;
+}
+
 interface CollectResultBase {
     /** Canonical domain of the source this result is for. */
     readonly source: string;
@@ -246,6 +290,51 @@ export async function collectInstances(request: CollectInstancesRequest): Promis
     }
     // The source-level challenge outcomes (from the single authenticate) ride on the first result.
     return results.length === 0 ? results : [withChallenges(results[0]!), ...results.slice(1)];
+}
+
+/**
+ * Collect ONE source across SEVERAL authenticated ACCOUNTS (#257) — the OUTER loop that lifts
+ * {@link collectInstances} (#190) now that account is the outer identity (#254). Each account is a
+ * SELF-CONTAINED collection: it authenticates ONCE under its OWN credentials (AC1) — the adapter keys the
+ * session per account (#254) — with its OWN fetch semaphore (AC3) and its OWN re-auth surfacing (AC2), then
+ * loops its marketplace instances under that one session exactly as {@link collectInstances} does. Because a
+ * per-account run IS a {@link collectInstances} call, every per-account isolation is STRUCTURAL, not
+ * re-implemented: the semaphore, the LIST re-import retry seam, and the "one source-level reauth, never one
+ * per instance" guarantee all scope to the account for free. This is the whole point of wrapping
+ * {@link collectInstances} rather than the inner loop — a naive single shared semaphore across accounts would
+ * over-throttle independent accounts, and a naive per-instance reauth would re-prompt within an account.
+ *
+ * Accounts run CONCURRENTLY: they are independent identities with disjoint sessions/jars (#254), so one
+ * account's fetch budget (its semaphore) never throttles another's (AC3) — while each account's own
+ * within-account fan-out stays bounded by {@link CollectAccountsRequest.fetchConcurrency}. Any wired
+ * {@link RateLimiter} is shared, so aggregate source tempo stays bounded even across concurrent accounts.
+ * Results are returned account-then-instance in REQUEST order (positional via {@link Promise.all}, regardless
+ * of completion order), flattened across accounts. A single-account run (N=1) is exactly one
+ * {@link collectInstances} call, so it behaves identically to today (AC4).
+ */
+export async function collectAccounts(request: CollectAccountsRequest): Promise<readonly CollectResult[]> {
+    const { adapter, writer, accounts, rateLimiter } = request;
+    // Each account is its OWN collectInstances run — that call news up the per-account semaphore + re-import
+    // seam internally, so per-account isolation (AC1/AC2/AC3) is guaranteed by construction, not re-derived
+    // here. Concurrent across accounts (independent sessions never mutually throttle); Promise.all preserves
+    // REQUEST order regardless of completion order, so the flattened results stay account-then-instance.
+    const perAccount = await Promise.all(
+        accounts.map((account) =>
+            collectInstances({
+                adapter,
+                writer,
+                credentials: account.credentials,
+                instances: account.instances,
+                ...(request.window !== undefined ? { window: request.window } : {}),
+                ...(request.now !== undefined ? { now: request.now } : {}),
+                ...(request.fetchConcurrency !== undefined ? { fetchConcurrency: request.fetchConcurrency } : {}),
+                ...(rateLimiter !== undefined ? { rateLimiter } : {}),
+                ...(account.challengeResolver !== undefined ? { challengeResolver: account.challengeResolver } : {}),
+                ...(request.challengeObserver !== undefined ? { challengeObserver: request.challengeObserver } : {}),
+            }),
+        ),
+    );
+    return perAccount.flat();
 }
 
 /**
