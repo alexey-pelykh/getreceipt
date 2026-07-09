@@ -36,7 +36,7 @@ import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AmazonAdapter, amazonAdapter, AmazonFrAdapter, amazonFrAdapter } from './index.js';
-import type { InvoiceRenderer, Transport } from './index.js';
+import type { BrowserInvoiceFetcher, InvoiceRenderer, Transport } from './index.js';
 import {
     ENDPOINTS,
     INSTANCES as WIRE_INSTANCES,
@@ -306,14 +306,14 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
         expect(resolver.resolveInstance('AMAZON.FR').adapter).toBe(amazonAdapter);
     });
 
-    it('declares a session / html-scrape / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.com+amazon.fr+amazon.de instances, and no aliases', () => {
+    it('declares a session / headless-browser / rendered descriptor with an inclusive ordered-date window, impersonation, the amazon.com+amazon.fr+amazon.de instances, and no aliases', () => {
         const descriptor = amazonAdapter.descriptor;
 
         expect(descriptor).toMatchObject({
             canonicalDomain: 'amazon.com',
             authKind: 'session',
             credentialShapes: ['none'],
-            transportTier: 'html-scrape',
+            transportTier: 'headless-browser',
             artifactMode: 'rendered',
             pagination: 'page',
             dateFilter: { basis: 'ordered', fromInclusive: true, toInclusive: true },
@@ -332,6 +332,81 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
         expect(descriptor.instances?.map((i) => i.domain)).toEqual(['amazon.com', 'amazon.fr', 'amazon.de']);
         expect(descriptor.instances).toEqual(WIRE_INSTANCES.map((i) => ({ ...i })));
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
+    });
+});
+
+describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profile tier)', () => {
+    /** A browser fetch that records its call and returns a canned invoice page + PDF, WITHOUT launching a browser. */
+    function stubBrowserFetch(pageHtml: string): {
+        readonly browserFetch: BrowserInvoiceFetcher;
+        readonly calls: Array<{ readonly profileDir: string; readonly url: string }>;
+    } {
+        const calls: Array<{ readonly profileDir: string; readonly url: string }> = [];
+        const browserFetch: BrowserInvoiceFetcher = (profileDir, url) => {
+            calls.push({ profileDir, url: url.toString() });
+            return Promise.resolve({
+                pdf: new TextEncoder().encode('%PDF-1.4\n% browser-rendered\n%%EOF\n'),
+                html: pageHtml,
+            });
+        };
+        return { browserFetch, calls };
+    }
+
+    // The browser tier drives the profile's OWN warm session, so `fetch`'s auth handle is unused on that path — a
+    // bare handle suffices. A ref is built directly: the browser tier needs no HTTP list to reach `fetch`.
+    const anyAuth = {} as unknown as AuthHandle;
+    const browserRef = { id: '404-9-1', issuedAt: new Date(COARSE_2026), title: 'Order 404-9-1' };
+
+    it('drives the invoice print page inside the wired persistent profile (no HTTP) and builds the PDF artifact', async () => {
+        // No MSW invoice handler: onUnhandledRequest:'error' would throw if fetch hit the network — proving the
+        // browser tier bypasses the HTTP transport entirely.
+        const { browserFetch, calls } = stubBrowserFetch(renderInvoice('404-9-1'));
+        const a = new AmazonAdapter({ browserFetch, browserProfileDir: '/profiles/personal' });
+
+        const artifact = asReceiptArtifact(await a.fetch(anyAuth, browserRef));
+
+        expect(artifact.contentType).toBe('application/pdf');
+        expect(artifact.filename).toBe('404-9-1.pdf');
+        expect(new TextDecoder().decode(artifact.bytes).startsWith('%PDF-')).toBe(true);
+        // The invoice's plaintext date is extracted on the browser path too (the seam returns the HTML), so the
+        // authoritative fetch-time date supersedes the list's coarse provisional (#240) — parity with the HTTP path.
+        expect(artifact.issuedAt?.toISOString()).toBe('2026-07-02T00:00:00.000Z');
+        // The warm profile dir + the order's print URL (addressed by orderID) reached the driver.
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.profileDir).toBe('/profiles/personal');
+        const url = new URL(calls[0]!.url);
+        expect(url.pathname).toBe(ENDPOINTS.invoicePrint);
+        expect(url.searchParams.get(ORDER_QUERY.orderId)).toBe('404-9-1');
+    });
+
+    it('applies the SAME source-drift guard on the browser path — a page missing the order id is rejected at the trust boundary', async () => {
+        const { browserFetch } = stubBrowserFetch('<!doctype html><html><body>some other page</body></html>');
+        const a = new AmazonAdapter({ browserFetch, browserProfileDir: '/profiles/personal' });
+
+        const error: unknown = await a.fetch(anyAuth, browserRef).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(TrustBoundaryError);
+        expect((error as TrustBoundaryError).boundary).toBe('amazon.fr:fetch');
+    });
+
+    it('falls back to the HTTP-HTML path when the tier is headless-browser but NO profile is wired — the browser fetcher is never invoked', async () => {
+        // headless-browser is DECLARED, but without a profile dir `fetch` degrades to HTTP (the K1 fallback): the
+        // HTTP invoice handler serves the page and the browser seam is never touched (also guards the lazy import
+        // boundary — a non-browser fetch never reaches @getreceipt/browser).
+        server.use(ordersOk([order('404-9-1')]), invoiceOk());
+        const { browserFetch, calls } = stubBrowserFetch(renderInvoice('404-9-1'));
+        const a = new AmazonAdapter({
+            importOptions: { userDataDir: makeUserDataDir(AMAZON_COOKIES), key: KEY },
+            browserFetch,
+            render: stubRender,
+        });
+        const auth = await a.authenticate(creds());
+        const httpRef = (await a.list(auth, WIDE))[0];
+
+        const artifact = asReceiptArtifact(await a.fetch(auth, httpRef!));
+
+        expect(artifact.contentType).toBe('application/pdf');
+        expect(calls).toEqual([]); // the browser tier was declared but not exercised — list + fetch ran over HTTP
     });
 });
 

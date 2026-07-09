@@ -3,7 +3,7 @@ import { fromBrowserSession } from '@getreceipt/auth';
 import type { BrowserSession } from '@getreceipt/auth';
 import type { AuthHandle } from '@getreceipt/core';
 import { chromium } from 'playwright';
-import type { BrowserContext } from 'playwright';
+import type { BrowserContext, Page } from 'playwright';
 
 /**
  * What to render — the `htmlOrUrl` of the port, as a route-by-shape union rather than a bare string the
@@ -31,6 +31,14 @@ export interface RenderOptions {
         readonly bottom?: string;
         readonly left?: string;
     };
+}
+
+/** The page + PDF a persistent-profile render yields (#253) — see {@link renderUrlInProfile}. */
+export interface ProfileRenderResult {
+    /** The rendered print-page PDF bytes (a `Buffer`, usable anywhere `Uint8Array` is). */
+    readonly pdf: Uint8Array;
+    /** The loaded page's serialized HTML — the caller's source-drift guard + date extraction read it. */
+    readonly html: string;
 }
 
 /** Exactly the element type `BrowserContext.addCookies` accepts — derived so this never drifts from Playwright's shape. */
@@ -67,14 +75,50 @@ export async function render(source: RenderSource, options: RenderOptions = {}):
             await page.goto(source.url, { waitUntil: 'load' });
         }
 
-        return await page.pdf({
-            format: options.format ?? 'A4',
-            printBackground: options.printBackground ?? true,
-            ...(options.margin ? { margin: options.margin } : {}),
-        });
+        return await page.pdf(pdfOptions(options));
     } finally {
         await browser.close();
     }
+}
+
+/**
+ * Render a URL to PDF inside a PERSISTENT browser profile — the browser-driven collection tier (#253).
+ *
+ * Unlike {@link render}'s `{ url, session }` arm (a fresh context with INJECTED cookies — the cookie-transplant
+ * model Amazon's order/invoice step-up rejects), this launches a persistent context bound to `profileDir`, so
+ * the profile's OWN warm, already-signed-in session carries the request — no cookies are injected. The operator
+ * signs into that profile once; getreceipt never handles their password.
+ *
+ * Returns BOTH the PDF and the page HTML: a caller with a coarse-listWindow source dates its receipts at fetch
+ * time and guards against page drift, both of which read the HTML — so PDF-only would lose that.
+ *
+ * Headless for now (`page.pdf()` requires headless Chromium, and it is CI-testable against a fixture URL);
+ * attended-headful sign-in + step-up recovery is #255.
+ */
+export async function renderUrlInProfile(
+    profileDir: string,
+    url: string,
+    options: RenderOptions = {},
+): Promise<ProfileRenderResult> {
+    const context = await chromium.launchPersistentContext(profileDir, { headless: true });
+    try {
+        const page = await context.newPage();
+        await page.goto(url, { waitUntil: 'load' });
+        const html = await page.content();
+        const pdf = await page.pdf(pdfOptions(options));
+        return { pdf, html };
+    } finally {
+        await context.close();
+    }
+}
+
+/** The `page.pdf()` options derived from {@link RenderOptions} — shared by {@link render} and {@link renderUrlInProfile}. */
+function pdfOptions(options: RenderOptions): Parameters<Page['pdf']>[0] {
+    return {
+        format: options.format ?? 'A4',
+        printBackground: options.printBackground ?? true,
+        ...(options.margin ? { margin: options.margin } : {}),
+    };
 }
 
 /**

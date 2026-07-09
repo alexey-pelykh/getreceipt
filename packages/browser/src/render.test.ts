@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { Secret } from '@getreceipt/auth';
 import type { AuthHandle } from '@getreceipt/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { render } from './render.js';
+import { render, renderUrlInProfile } from './render.js';
 
 /**
  * A self-contained receipt — no external sub-resources, so it renders with zero network. The
@@ -148,5 +151,35 @@ describe('render', () => {
         expect(isValidPdf(pdf)).toBe(true);
         // The imported session's cookie reached the server on the navigation request.
         expect(seenCookie).toBe('session_token=fixture-value');
+    });
+});
+
+describe('renderUrlInProfile', () => {
+    const profileDirs: string[] = [];
+    afterEach(async () => {
+        await Promise.all(profileDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    it('drives a URL inside a persistent profile, returning the print-page PDF and its HTML (#253)', async () => {
+        const origin = await startServer((_req, res) => {
+            res.setHeader('content-type', 'text/html');
+            res.end(
+                '<!doctype html><html><body><h1>Facture</h1><span class="order-number">404-9-1</span></body></html>',
+            );
+        });
+        const profileDir = await mkdtemp(join(tmpdir(), 'getreceipt-profile-'));
+        profileDirs.push(profileDir);
+
+        const { pdf, html } = await renderUrlInProfile(
+            profileDir,
+            `${origin}/gp/css/summary/print.html?orderID=404-9-1`,
+        );
+
+        expect(isValidPdf(pdf)).toBe(true);
+        expect(pdf.byteLength).toBeGreaterThan(1000);
+        // The loaded page's HTML comes back too — a coarse-listWindow caller reads it for its source-drift guard
+        // and authoritative-date extraction, so a PDF-only return would lose that.
+        expect(html).toContain('Facture');
+        expect(html).toContain('404-9-1');
     });
 });

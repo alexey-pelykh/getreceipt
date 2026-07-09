@@ -32,8 +32,8 @@ import type {
     SourceDescriptor,
 } from '@getreceipt/core';
 
-import { renderInvoicePdf } from './render.js';
-import type { InvoiceRenderer } from './render.js';
+import { fetchInvoiceViaBrowser, renderInvoicePdf } from './render.js';
+import type { BrowserInvoiceFetcher, InvoiceRenderer } from './render.js';
 import {
     ENDPOINTS,
     INSTANCES,
@@ -106,8 +106,9 @@ const DESCRIPTOR: SourceDescriptor = {
     // A session source bypasses the #169 credential-shape gate (it supplies no credential — the login lives
     // in the browser's cookie store); the field is required + non-empty, so it declares "no credential shape".
     credentialShapes: ['none'],
-    // The order history + invoice are server-rendered HTML scraped in-process (no JSON API, no browser).
-    transportTier: 'html-scrape',
+    // list scrapes the server-rendered order history over the impersonating transport; fetch drives the invoice
+    // print page inside a persistent browser profile (#253). The source-level tier is the most-capable stage it uses.
+    transportTier: 'headless-browser',
     // `fetch` renders the invoice print page to a faithful print-layout PDF via @getreceipt/browser (#172/#182).
     artifactMode: 'rendered',
     // The listing is "your-orders", dated by the ORDER date.
@@ -157,6 +158,21 @@ export interface AmazonAdapterOptions {
      * detector defaults to a wall-clock {@link ReauthDetector}.
      */
     readonly sessionReuse?: { readonly store: SessionStore; readonly detector?: ReauthDetector };
+    /**
+     * Browser-driven invoice fetch (#253): the `fetch` seam used when the descriptor's
+     * {@link @getreceipt/core!SourceDescriptor.transportTier} is `headless-browser` AND {@link browserProfileDir}
+     * is wired. Defaults to the real `@getreceipt/browser` persistent-profile driver ({@link fetchInvoiceViaBrowser},
+     * lazy-loaded); a stub swaps in for hermetic unit tests. Absent a profile dir, `fetch` falls back to the
+     * HTTP-HTML path — a source can declare the browser tier and still degrade to HTTP (the K1 fallback).
+     */
+    readonly browserFetch?: BrowserInvoiceFetcher;
+    /**
+     * The getreceipt-OWNED persistent browser profile dir the {@link browserFetch} tier drives — the operator
+     * signs into it once, and its warm session carries the invoice request. Its presence GATES the browser path
+     * in `fetch`. Single-account (N=1) seed for the #253 walking skeleton, sourced at construction; #254
+     * generalizes it to a per-account key and #256 owns the profile-dir resolution + first-run sign-in.
+     */
+    readonly browserProfileDir?: string;
 }
 
 /**
@@ -180,11 +196,15 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
     readonly #importOptions: ImportBrowserSessionOptions;
     readonly #render: InvoiceRenderer;
     readonly #sessionReuse: { readonly store: SessionStore; readonly detector: ReauthDetector } | undefined;
+    readonly #browserFetch: BrowserInvoiceFetcher;
+    readonly #browserProfileDir: string | undefined;
 
     constructor(options: AmazonAdapterOptions = {}) {
         this.#transport = options.transport ?? defaultTransport;
         this.#importOptions = options.importOptions ?? {};
         this.#render = options.render ?? renderInvoicePdf;
+        this.#browserFetch = options.browserFetch ?? fetchInvoiceViaBrowser;
+        this.#browserProfileDir = options.browserProfileDir;
         this.#sessionReuse =
             options.sessionReuse === undefined
                 ? undefined
@@ -266,9 +286,15 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
     }
 
     async fetch(auth: AuthHandle, ref: ReceiptRef, instance?: InstanceContext): Promise<ArtifactHandle> {
-        const session = fromBrowserSession(auth);
         const ctx = runContext(instance);
         const url = invoiceUrl(ctx.origin, ref.id);
+        // Browser tier (#253): when the source declares `headless-browser` AND a persistent profile is wired,
+        // drive the invoice print page inside that warm profile — its own session clears the `max_auth_age`
+        // step-up an HTTP cookie-replay cannot. Absent a profile dir, fall through to the HTTP-HTML path (K1 fallback).
+        if (this.descriptor.transportTier === 'headless-browser' && this.#browserProfileDir !== undefined) {
+            return this.#fetchViaBrowser(this.#browserProfileDir, ref, url, ctx);
+        }
+        const session = fromBrowserSession(auth);
         const response = await requestSession(this.#transport, session, url, ctx);
         const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
         // The print page is about the requested order, so it must carry the order id; a 200 without it is drift
@@ -282,13 +308,22 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
         // The invoice carries the real order date in plaintext (the list's is CSD-locked, #240); when present it
         // supersedes the coarse list-time provisional as the receipt's authoritative issued date.
         const issuedAt = parseInvoiceOrderDate(html);
-        const artifact: ReceiptArtifact = {
-            bytes: pdf,
-            contentType: 'application/pdf',
-            filename: `${ref.id}.pdf`,
-            ...(issuedAt !== undefined ? { issuedAt } : {}),
-        };
-        return artifact as unknown as ArtifactHandle;
+        return invoiceArtifact(ref, pdf, issuedAt);
+    }
+
+    /**
+     * Browser-driven invoice fetch (#253): navigate the print page inside the warm persistent profile — its own
+     * session carries the request (no cookie injection), clearing the `max_auth_age` step-up an HTTP cookie-replay
+     * hits — then apply the SAME source-drift guard + authoritative-date extraction as the HTTP path to the
+     * returned HTML. Returning `{ pdf, html }` from the browser seam is what lets both paths share that check.
+     */
+    async #fetchViaBrowser(profileDir: string, ref: ReceiptRef, url: URL, ctx: RunContext): Promise<ArtifactHandle> {
+        const { pdf, html } = await this.#browserFetch(profileDir, url);
+        if (!html.includes(ref.id)) {
+            throw new TrustBoundaryError(`${ctx.domain}:fetch`, [{ path: '<root>', code: 'not_an_invoice' }]);
+        }
+        const issuedAt = parseInvoiceOrderDate(html);
+        return invoiceArtifact(ref, pdf, issuedAt);
     }
 }
 
@@ -461,6 +496,21 @@ function invoiceUrl(origin: string, orderId: string): URL {
     const url = new URL(ENDPOINTS.invoicePrint, origin);
     url.searchParams.set(ORDER_QUERY.orderId, orderId);
     return url;
+}
+
+/**
+ * Pack a fetched invoice's PDF bytes + authoritative issued date into the canonical PDF {@link ReceiptArtifact}
+ * — shared by the HTTP and browser (#253) `fetch` paths so both emit an identical artifact shape. `issuedAt`
+ * rides only when the invoice yielded a date (the list's is CSD-locked, #240).
+ */
+function invoiceArtifact(ref: ReceiptRef, pdf: Uint8Array, issuedAt: Date | undefined): ArtifactHandle {
+    const artifact: ReceiptArtifact = {
+        bytes: pdf,
+        contentType: 'application/pdf',
+        filename: `${ref.id}.pdf`,
+        ...(issuedAt !== undefined ? { issuedAt } : {}),
+    };
+    return artifact as unknown as ArtifactHandle;
 }
 
 /**
