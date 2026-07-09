@@ -23,6 +23,7 @@ import { resolvePublishableHost, TrustBoundaryError } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
+    BrowserProfileBindableAdapter,
     CredentialContext,
     DateRange,
     InstanceContext,
@@ -191,7 +192,9 @@ export interface AmazonAdapterOptions {
  * source no longer accepts surfaces, at `list`/`fetch`, as the SAME `reauth-required` outcome every source
  * uses ({@link browserSessionReauthRequired}, #180) — pointing the user at their browser to sign in again.
  */
-export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, SessionReimportableAdapter {
+export class AmazonAdapter
+    implements SourceAdapter, SessionPersistableAdapter, SessionReimportableAdapter, BrowserProfileBindableAdapter
+{
     readonly descriptor: SourceDescriptor = DESCRIPTOR;
     readonly #transport: Transport;
     readonly #importOptions: ImportBrowserSessionOptions;
@@ -257,6 +260,25 @@ export class AmazonAdapter implements SourceAdapter, SessionPersistableAdapter, 
             await this.#sessionReuse.store.save(sessionStoreKey(credentials), browserSessionToStoredSession(auth));
         }
         return auth;
+    }
+
+    /**
+     * Bind a getreceipt-OWNED persistent browser-profile dir to this adapter (#264), returning a NEW instance
+     * that drives the browser tier ({@link fetch}'s `headless-browser` path) into `profileDir` — the dir
+     * `ensureOwnedProfile` (#256) resolved for the run's `(canonicalDomain, account)`. The composition root
+     * calls this AFTER config selects `transport: headless-browser`, wiring what construction could not know
+     * (the adapter is registry-resolved, config-blind). Every other option is carried over unchanged; the
+     * receiver is left untouched, so one registry instance rebinds per run without shared-state races.
+     */
+    withBrowserProfile(profileDir: string): SourceAdapter {
+        return new AmazonAdapter({
+            transport: this.#transport,
+            importOptions: this.#importOptions,
+            render: this.#render,
+            browserFetch: this.#browserFetch,
+            ...(this.#sessionReuse === undefined ? {} : { sessionReuse: this.#sessionReuse }),
+            browserProfileDir: profileDir,
+        });
     }
 
     /**

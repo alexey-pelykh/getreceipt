@@ -17,6 +17,7 @@ export type {
     DateFilter,
     DateFilterBasis,
     DateRange,
+    BrowserProfileBindableAdapter,
     InstanceContext,
     ListWindow,
     Opaque,
@@ -29,7 +30,7 @@ export type {
     SourceDescriptor,
     TransportTier,
 } from './source-adapter.js';
-export { isAuthChallengeRequired, isSessionReimportable } from './source-adapter.js';
+export { isAuthChallengeRequired, isBrowserProfileBindable, isSessionReimportable } from './source-adapter.js';
 export { resolveCredentialShape } from './credential-shape.js';
 export type { AuthChallenge, ChallengeResolution, ChallengeResolver, ChallengeType } from './challenge.js';
 export { MAX_AUTH_CHALLENGE_ROUNDS, resolveAuthChallenges, UnresolvedChallengeError } from './auth-challenge.js';

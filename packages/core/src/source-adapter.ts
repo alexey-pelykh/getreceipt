@@ -350,3 +350,36 @@ export interface SessionReimportableAdapter {
 export function isSessionReimportable(adapter: object): adapter is SessionReimportableAdapter {
     return typeof (adapter as Partial<SessionReimportableAdapter>).reimport === 'function';
 }
+
+/**
+ * An opt-in capability a `headless-browser`-tier adapter adds so the composition root can bind the
+ * getreceipt-OWNED persistent browser-profile directory the tier drives (#253/#256) AFTER resolving it per
+ * `(canonicalDomain, account)` — which the config-blind, registry-resolved adapter cannot know at construction
+ * (#264). The adapter DECLARES the `headless-browser` {@link TransportTier} on its descriptor, but its `fetch`
+ * only actually drives the browser path once a profile dir is wired; this seam is how the front-end wires it
+ * from `ensureOwnedProfile`, making the browser tier config-selectable rather than a manual construction seed.
+ *
+ * Returns a NEW adapter bound to the profile — the receiver is left unmutated — so a single registry instance
+ * can be rebound per run without shared-state races. Companion to {@link SourceAdapter}, mirroring
+ * {@link SessionReimportableAdapter}: an adapter with no browser tier simply does not implement it, and the
+ * front-end never rebinds it (a configured `transport: headless-browser` on such a source is a fail-closed
+ * pre-flight error, not a silent no-op).
+ */
+export interface BrowserProfileBindableAdapter {
+    /**
+     * Return a copy of this adapter bound to `profileDir` as the browser tier's persistent profile — the
+     * dir `ensureOwnedProfile` resolved for the run's `(canonicalDomain, account)` (#256/#264). Pure: the
+     * receiver is unchanged, so rebinding is race-free across concurrent runs sharing one registry instance.
+     */
+    withBrowserProfile(profileDir: string): SourceAdapter;
+}
+
+/**
+ * Whether `adapter` opts into the {@link BrowserProfileBindableAdapter} browser-profile binding capability
+ * (#264). Keys off the `withBrowserProfile` method, mirroring {@link isSessionReimportable}. A source without
+ * it has no browser tier to wire — the front-end fails a configured `transport: headless-browser` closed
+ * rather than silently degrading it to the HTTP path.
+ */
+export function isBrowserProfileBindable(adapter: object): adapter is BrowserProfileBindableAdapter {
+    return typeof (adapter as Partial<BrowserProfileBindableAdapter>).withBrowserProfile === 'function';
+}

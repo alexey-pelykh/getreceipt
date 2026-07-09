@@ -9,6 +9,7 @@ export {
     loadConfig,
     parseConfig,
     resolveConfigFilePath,
+    TRANSPORT_TIERS,
 } from './config.js';
 export type {
     AccountAuthConfig,

@@ -5,12 +5,20 @@ import { join } from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
 
-import type { AuthKind } from '@getreceipt/core';
+import type { AuthKind, TransportTier } from '@getreceipt/core';
 
 import { ConfigError } from './errors.js';
 
 /** The auth kinds the config accepts — mirrors core's {@link AuthKind} vocabulary. Exported as the single source for the `config init` scaffold's enum-vocab comment, so it cannot drift (#149). */
 export const AUTH_KINDS: readonly AuthKind[] = ['none', 'password', 'session', 'api-token', 'passkey'];
+
+/**
+ * The transport tiers a source can SELECT (#264) — mirrors core's {@link TransportTier} vocabulary. A source
+ * opts into the browser-driven tier with `transport: headless-browser`; the config layer validates only the
+ * VALUE against this closed vocab, while whether the resolved adapter actually DECLARES the selected tier is
+ * enforced downstream, fail-closed (the config parser is adapter-agnostic).
+ */
+export const TRANSPORT_TIERS: readonly TransportTier[] = ['http-api', 'html-scrape', 'headless-browser'];
 
 /**
  * The browsers a `session` source can import an already-authenticated login FROM — the cookie stores
@@ -245,6 +253,16 @@ export type DomainAuthConfig = AuthShape & {
      * checked downstream, fail-closed.
      */
     readonly instances?: readonly string[];
+    /**
+     * The transport tier this source SELECTS (#264), e.g. `headless-browser` to opt a session source into the
+     * browser-driven fetch tier (getreceipt drives the invoice page inside its OWN persistent profile, #253/#256).
+     * Optional: omit for the adapter's default HTTP path (unchanged). Shape-validated here against
+     * {@link TRANSPORT_TIERS}; whether the resolved adapter actually DECLARES the selected tier is enforced
+     * downstream, fail-closed — the config parser is adapter-agnostic. A SOURCE-level sibling of {@link instances}
+     * (a collection concern, not auth), read from the source mapping so it sits beside an `auth:` block AND the
+     * session shorthand alike.
+     */
+    readonly transport?: TransportTier;
 };
 
 /**
@@ -326,6 +344,10 @@ function isMfaType(value: unknown): value is MfaType {
 
 function isBrowserKind(value: unknown): value is BrowserKind {
     return typeof value === 'string' && (BROWSER_KINDS as readonly string[]).includes(value);
+}
+
+function isTransportTier(value: unknown): value is TransportTier {
+    return typeof value === 'string' && (TRANSPORT_TIERS as readonly string[]).includes(value);
 }
 
 /**
@@ -478,10 +500,16 @@ function parseDomainAuth(raw: unknown, path: string, warnings: SecurityWarning[]
     const mfa = auth.mfa !== undefined ? parseMfa(auth.mfa, `${authPath}.mfa`, warnings, strict) : undefined;
 
     const shape = buildAuthShape(kind, auth, flags, mfa, authPath, warnings, strict);
-    // `instances` is a SOURCE-level sibling (a collection concern, not auth) — read from the source mapping,
-    // not the auth block, so it sits beside an `auth:` block AND beside the session shorthand alike (#190).
+    // `instances` (#190) and `transport` (#264) are SOURCE-level siblings (collection concerns, not auth) —
+    // read from the source mapping, not the auth block, so they sit beside an `auth:` block AND beside the
+    // session shorthand alike.
     const instances = parseInstances(raw.instances, `${path}.instances`);
-    return instances === undefined ? shape : { ...shape, instances };
+    const transport = parseTransport(raw.transport, `${path}.transport`);
+    return {
+        ...shape,
+        ...(instances === undefined ? {} : { instances }),
+        ...(transport === undefined ? {} : { transport }),
+    };
 }
 
 /**
@@ -543,7 +571,12 @@ function parseMultiAccount(raw: Record<string, unknown>, path: string): DomainAu
         seenProfiles.add(account.profile);
         return account;
     });
-    return { kind: 'session', accounts };
+    // `transport` (#264) is a legitimate SOURCE-level tier selection — unlike `instances` (rejected above
+    // because it moves UNDER each account), it applies to the whole source, so parse it and carry it for the
+    // collection front-end. Whether the browser tier is actually WIRED for a multi-account source is enforced
+    // downstream, fail-closed (#264): per-account owned profiles need a seam `collectAccounts` does not yet have.
+    const transport = parseTransport(raw.transport, `${path}.transport`);
+    return transport === undefined ? { kind: 'session', accounts } : { kind: 'session', accounts, transport };
 }
 
 /**
@@ -597,6 +630,24 @@ function parseInstances(raw: unknown, path: string): readonly string[] | undefin
         }
         return entry;
     });
+}
+
+/**
+ * Parse the optional source-level `transport` field (#264): the {@link TransportTier} a source SELECTS, e.g.
+ * `headless-browser` to opt a session source into the browser-driven fetch tier (#253/#256). Must be a value in
+ * the closed {@link TRANSPORT_TIERS} vocab; absent → undefined (the adapter's default HTTP path, unchanged).
+ * Validates only the VALUE — whether the resolved adapter actually DECLARES the selected tier is enforced
+ * downstream, fail-closed (this parser is adapter-agnostic). Throws {@link ConfigError}, which never echoes a
+ * configured value.
+ */
+function parseTransport(raw: unknown, path: string): TransportTier | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    if (!isTransportTier(raw)) {
+        throw new ConfigError(`\`transport\` must be one of ${TRANSPORT_TIERS.join(', ')}`, path);
+    }
+    return raw;
 }
 
 /** Which credential / session fields a source's `auth` block carries — the input to kind derivation and arm selection. */
