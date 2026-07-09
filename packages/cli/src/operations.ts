@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import {
     CredentialResolver,
+    ensureOwnedProfile,
     ReauthDetector,
     SessionStoreError,
     loadConfig as authLoadConfig,
@@ -92,6 +93,12 @@ export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandR
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
     /** Optional sink for the challenge lifecycle (e.g. the verbose trace, #142); omitted → no live trace. */
     readonly challengeObserver?: ChallengeObserver;
+    /**
+     * Fired when a browser-tier source resolves a FIRST-RUN owned profile (#264): the CLI wires it to a
+     * redaction-safe operator notice; the MCP path omits it (unattended — no operator to sign in). See
+     * {@link OperationRunnerDeps.onOwnedProfileFirstRun}.
+     */
+    readonly onOwnedProfileFirstRun?: (source: string) => void;
 }
 
 /**
@@ -163,6 +170,8 @@ function toRunnerDeps(deps: McpCollectionDeps, outDir: string): OperationRunnerD
         ...(deps.instrument === undefined ? {} : { instrument: deps.instrument }),
         ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
         ...(deps.buildOutOfBandResolver === undefined ? {} : { buildOutOfBandResolver: deps.buildOutOfBandResolver }),
+        ...(deps.resolveOwnedProfile === undefined ? {} : { resolveOwnedProfile: deps.resolveOwnedProfile }),
+        ...(deps.onOwnedProfileFirstRun === undefined ? {} : { onOwnedProfileFirstRun: deps.onOwnedProfileFirstRun }),
     };
 }
 
@@ -518,6 +527,10 @@ export function defaultCollectionDeps(): CollectionDeps {
         collectInstances: coreCollectInstances,
         collectAccounts: coreCollectAccounts,
         now: () => new Date(),
+        // Browser tier (#264): resolve + idempotently create the getreceipt-owned profile dir per
+        // (canonical, account). Only invoked when a source selects `transport: headless-browser`, so a
+        // non-browser run never touches the filesystem here.
+        resolveOwnedProfile: ensureOwnedProfile,
     };
 }
 

@@ -118,3 +118,18 @@ export function browserReauthPrompt(
         }
     };
 }
+
+/**
+ * The redaction-safe notice surfaced when a browser-tier source resolves a FIRST-RUN owned profile (#264/#256):
+ * getreceipt just created a fresh persistent profile for `source`, so its browser tier has no signed-in session
+ * yet — the operator must sign in ONCE in that getreceipt-OWNED profile (never their everyday browser) before the
+ * tier can collect. FIXED literals over the `source` domain only (already public in the invocation) — no profile
+ * path, no account, no session material — mirroring {@link attendedReauthPrompt}'s posture. getreceipt never
+ * handles the operator's password/OTP and never reads the operator's own browser store on this owned-dir path.
+ */
+export function firstRunSignInNotice(source: string): string {
+    return (
+        `\nFirst run for ${source}: getreceipt created its own browser profile for the headless-browser tier.\n` +
+        `Sign in to ${source} once in that getreceipt-owned profile — not your everyday browser — before collecting.\n`
+    );
+}

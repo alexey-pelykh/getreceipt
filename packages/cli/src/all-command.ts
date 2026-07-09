@@ -8,6 +8,7 @@ import { EXIT_CODES } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { OperationError } from './operation-runner.js';
 import { DEFAULT_CONCURRENCY, defaultCollectionDeps, runCollectAll, type CollectionDeps } from './operations.js';
+import { firstRunSignInNotice } from './reauth-loop.js';
 import { resolveConfigSelection, resolveGlobalOptions } from './resolve-options.js';
 import { traceAdapter, traceChallengeObserver } from './verbose-trace.js';
 import { parseWindow } from './window.js';
@@ -36,7 +37,15 @@ interface AllOptions {
 }
 
 function defaultEnv(): AllCommandEnv {
-    return { io: processStreamsIO(), consent: createConsentGate(), ...defaultCollectionDeps() };
+    const io = processStreamsIO();
+    return {
+        io,
+        consent: createConsentGate(),
+        ...defaultCollectionDeps(),
+        // Browser tier first-run (#264): surface the one-time owned-profile sign-in notice on stderr (source-only,
+        // redaction-safe) for whichever configured source selects the browser tier.
+        onOwnedProfileFirstRun: (source) => io.writeErr(firstRunSignInNotice(source)),
+    };
 }
 
 /** A usage-exit signal whose user-facing text was ALREADY written via {@link CliIO}; carries no message of its own. */

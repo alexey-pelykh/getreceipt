@@ -3,6 +3,8 @@ import {
     asCredentialContext,
     ConfigError,
     configuredCredentialShapes,
+    ensureOwnedProfile,
+    fromCredentialContext,
     mfaSurfaceResolvers,
     resolveBrowserSession,
 } from '@getreceipt/auth';
@@ -14,10 +16,12 @@ import type {
     CredentialValue,
     DomainAuthConfig,
     LoginSecrets,
+    OwnedProfile,
     ResolvedCredentials,
     Secret,
 } from '@getreceipt/auth';
 import {
+    isBrowserProfileBindable,
     resolveCredentialShape,
     hostTimeZone,
     RoutingChallengeResolver,
@@ -44,6 +48,7 @@ import type {
     ReceiptWriter,
     SourceAdapter,
     SourceResolver,
+    TransportTier,
 } from '@getreceipt/core';
 
 /** Why an operation could not even start — each maps to the same `usage` exit code, but the kind tags the failure for diagnostics. */
@@ -98,6 +103,15 @@ export interface ResolveSourceDeps {
      * IS the login-vs-collect boundary for the human-in-the-loop resolver.
      */
     readonly buildOutOfBandResolver?: (trustDevice: boolean) => ChallengeResolver;
+    /**
+     * Resolve (and idempotently create) the getreceipt-OWNED persistent browser-profile dir for a source that
+     * selects the browser tier (`transport: headless-browser`, #264), keyed per `(canonicalDomain, account)`
+     * exactly like {@link @getreceipt/auth!accountSessionKey} (#254). Defaults to the real
+     * {@link @getreceipt/auth!ensureOwnedProfile} (which touches the filesystem); injected so browser-tier
+     * resolution is unit-testable with no real home dir. Never resolved unless the source opts into the tier,
+     * so a non-browser run never touches it (and existing tests stay hermetic without injecting it).
+     */
+    readonly resolveOwnedProfile?: (canonicalDomain: string, account?: string) => OwnedProfile;
 }
 
 /**
@@ -119,6 +133,14 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
     /** Optional sink for the challenge lifecycle (e.g. the verbose trace, #142); omitted → no live trace. */
     readonly challengeObserver?: ChallengeObserver;
+    /**
+     * Notice sink fired when a browser-tier source resolves a FIRST-RUN owned profile (#264/#256): getreceipt
+     * just created a fresh profile dir, so the operator must sign in ONCE in their own browser before the tier
+     * can reuse it (#255). Called with only the addressed source domain — no path, no session material — so the
+     * CLI can print a redaction-safe heads-up (mirroring `attendedReauthPrompt`'s posture). Omitted → silent
+     * (a warm profile never fires it). getreceipt NEVER handles the operator's password/OTP on this path.
+     */
+    readonly onOwnedProfileFirstRun?: (source: string) => void;
 }
 
 /**
@@ -134,10 +156,11 @@ export async function runOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<OperationResult> {
-    const { adapter, credentials, challengeResolver, instance } = await resolveSourceContext(
+    const { adapter, credentials, challengeResolver, instance, ownedProfile } = await resolveSourceContext(
         { source: spec.source, ...(selection ? { selection } : {}) },
         deps,
     );
+    notifyOwnedProfileFirstRun(spec.source, ownedProfile, deps);
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     // `instance` is set when `spec.source` addresses a specific instance of a multi-instance source (#190);
     // collect() keys its output by the instance domain. Single-instance sources resolve `instance` undefined.
@@ -159,10 +182,9 @@ export async function runInstancesOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<readonly OperationResult[]> {
-    const { adapter, credentials, challengeResolver, instance, configuredInstances } = await resolveSourceContext(
-        { source: spec.source, ...(selection ? { selection } : {}) },
-        deps,
-    );
+    const { adapter, credentials, challengeResolver, instance, configuredInstances, ownedProfile } =
+        await resolveSourceContext({ source: spec.source, ...(selection ? { selection } : {}) }, deps);
+    notifyOwnedProfileFirstRun(spec.source, ownedProfile, deps);
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     if (configuredInstances.length === 0) {
         // No multi-instance config: one run for the addressed/canonical instance (single-instance behavior).
@@ -224,6 +246,8 @@ export async function resolveSourceContext(
     readonly instance?: InstanceContext;
     /** The configured `instances:` list resolved + validated against what the adapter serves (#190); `[]` when none. */
     readonly configuredInstances: readonly InstanceContext[];
+    /** The resolved getreceipt-owned browser profile (#264), present only when the source selects the browser tier. */
+    readonly ownedProfile?: OwnedProfile;
 }> {
     const { adapter, instance } = resolveAddressed(deps.resolver, spec.source);
     const path = deps.resolveConfigPath(spec.selection);
@@ -255,6 +279,17 @@ export async function resolveSourceContext(
         assertConfiguredShapeSupported(adapter, sourceConfig);
     }
     const credentials = asCredentialContext(await resolveCredentials(deps, sourceConfig));
+    // Browser tier (#264): when the source selects `transport: headless-browser` AND the adapter declares that
+    // tier, resolve the getreceipt-OWNED profile per (canonical, account) — mirroring accountSessionKey #254,
+    // bare-canonical for the single-account case that lands here — and rebind the adapter to drive its `fetch`
+    // into that profile. Off the opt-in the adapter is returned unchanged (the HTTP path); a tier the adapter
+    // does not declare fails closed here (the one seam holding both the config and the descriptor).
+    const { adapter: tierAdapter, ownedProfile } = resolveBrowserTierAdapter(
+        adapter,
+        sourceConfig,
+        fromCredentialContext(credentials).account,
+        deps,
+    );
     // Per-surface resolvers the config yields on its own — today only `in-process` (TOTP), computed
     // locally from the seed (#137) and safe to share by collect AND login (unattended either way). Built
     // per-source (the seed is per-source) and lazily (no seed `op read` unless a challenge fires).
@@ -268,11 +303,12 @@ export async function resolveSourceContext(
     }
     const challengeResolver = Object.keys(surfaces).length === 0 ? undefined : new RoutingChallengeResolver(surfaces);
     return {
-        adapter,
+        adapter: tierAdapter,
         credentials,
         configuredInstances,
         ...(instance === undefined ? {} : { instance }),
         ...(challengeResolver === undefined ? {} : { challengeResolver }),
+        ...(ownedProfile === undefined ? {} : { ownedProfile }),
     };
 }
 
@@ -306,6 +342,18 @@ export async function resolveAccountsContext(
         throw new OperationError(
             'unsupported-shape',
             `source "${spec.source}" is not a multi-account (\`accounts:\`) source`,
+        );
+    }
+    // Browser tier + multi-account (#264): FAIL CLOSED rather than silently degrading to the HTTP path. The
+    // browser tier needs ONE owned profile PER account, but `collectAccounts` (#257) drives a SINGLE shared
+    // adapter across every account — so per-account rebinding needs a seam that path does not yet have. Bounding
+    // it here keeps the wiring honest (a multi-account operator who wants the browser tier gets a clear error,
+    // not an unexpected HTTP collection) until the per-account-adapter follow-up lands.
+    if (sourceConfig.transport === 'headless-browser') {
+        throw new OperationError(
+            'unsupported-shape',
+            `source "${spec.source}" selects the browser tier (\`transport: headless-browser\`), which is not yet ` +
+                'supported for multi-account (`accounts:`) sources — a scoped follow-up wires per-account owned profiles',
         );
     }
     return {
@@ -450,6 +498,75 @@ function assertSessionAdapter(adapter: SourceAdapter): void {
             `source "${adapter.descriptor.canonicalDomain}" is configured as a session source but its adapter ` +
                 `authenticates by "${adapter.descriptor.authKind}", not "session"`,
         );
+    }
+}
+
+/**
+ * Resolve the browser tier for a source (#264): when it selects `transport: headless-browser` AND the resolved
+ * adapter declares that tier + exposes the binding seam, resolve the getreceipt-OWNED profile per
+ * `(canonicalDomain, account)` and return the adapter REBOUND to drive its `fetch` into it, plus the resolved
+ * profile (so the caller can fire the first-run notice). Off the opt-in the adapter is returned unchanged (its
+ * default HTTP path). Fails closed — NEVER a silent HTTP degrade — when the config selects a tier the adapter
+ * does not declare, or the browser tier on an adapter with no binding seam. The single-account collect path
+ * lands here (multi-account fails closed upstream), so `account` is the bare-canonical case today; it is
+ * threaded through so the key stays per-(canonical, account)-correct when the per-account path is wired
+ * (mirroring accountSessionKey #254). getreceipt only stats/creates its OWN dir — it never reads the operator's
+ * browser store on this path.
+ */
+function resolveBrowserTierAdapter(
+    adapter: SourceAdapter,
+    sourceConfig: DomainAuthConfig,
+    account: string | undefined,
+    deps: ResolveSourceDeps,
+): { readonly adapter: SourceAdapter; readonly ownedProfile?: OwnedProfile } {
+    if (sourceConfig.transport === undefined) {
+        return { adapter };
+    }
+    assertTransportTierSupported(adapter, sourceConfig.transport);
+    // Only the browser tier wires an owned profile; selecting a non-browser tier just restates the adapter's default.
+    if (sourceConfig.transport !== 'headless-browser') {
+        return { adapter };
+    }
+    if (!isBrowserProfileBindable(adapter)) {
+        // The descriptor declares the tier but the adapter exposes no binding seam — a wiring bug, surfaced fail-closed.
+        throw new OperationError(
+            'unsupported-shape',
+            `source "${adapter.descriptor.canonicalDomain}" declares the browser tier but cannot bind an owned browser profile`,
+        );
+    }
+    const resolveOwnedProfile = deps.resolveOwnedProfile ?? ensureOwnedProfile;
+    const ownedProfile = resolveOwnedProfile(adapter.descriptor.canonicalDomain, account);
+    return { adapter: adapter.withBrowserProfile(ownedProfile.profileDir), ownedProfile };
+}
+
+/**
+ * Fail closed (#264) when a source's configured `transport` selects a tier its resolved adapter does not declare
+ * — you can only select the tier the adapter offers. The config parser validated only the VALUE (adapter-agnostic);
+ * this is the one seam holding BOTH the config and the descriptor, mirroring {@link resolveConfiguredInstances}.
+ * Value-free: names only the source domain and the two tiers.
+ */
+function assertTransportTierSupported(adapter: SourceAdapter, transport: TransportTier): void {
+    if (transport !== adapter.descriptor.transportTier) {
+        throw new OperationError(
+            'unsupported-shape',
+            `source "${adapter.descriptor.canonicalDomain}" declares the "${adapter.descriptor.transportTier}" ` +
+                `transport tier, but the config selects "${transport}"`,
+        );
+    }
+}
+
+/**
+ * Fire the first-run owned-profile notice (#264) when getreceipt just created a fresh profile dir this run — the
+ * operator must sign in once in their own browser before the browser tier can reuse it (#255). No-op on a warm
+ * profile or when no notice sink is wired. See {@link OperationRunnerDeps.onOwnedProfileFirstRun}.
+ */
+function notifyOwnedProfileFirstRun(
+    source: string,
+    ownedProfile: OwnedProfile | undefined,
+    deps: OperationRunnerDeps,
+): void {
+    if (ownedProfile?.firstRun === true) {
+        deps.onOwnedProfileFirstRun?.(source);
     }
 }
 

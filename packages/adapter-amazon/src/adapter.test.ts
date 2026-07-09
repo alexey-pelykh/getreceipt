@@ -25,6 +25,7 @@ import {
     asReceiptArtifact,
     collect,
     FilesystemReceiptWriter,
+    isBrowserProfileBindable,
     isSessionReimportable,
     ReauthRequiredError,
     SourceAdapterRegistry,
@@ -463,6 +464,25 @@ describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profi
 
         expect(artifact.contentType).toBe('application/pdf');
         expect(calls).toEqual([]); // the browser tier was declared but not exercised — list + fetch ran over HTTP
+    });
+
+    it('#264: withBrowserProfile rebinds the browser tier onto a NEW owned-profile dir, purely — a distinct instance, receiver untouched', async () => {
+        // The composition root resolves the getreceipt-OWNED profile (ensureOwnedProfile, #256) only AFTER the
+        // registry hands back a config-blind adapter, so it rebinds the dir here. Prove the seam: the rebound
+        // instance drives fetch into the NEW dir while the original keeps its own — pure, so one registry
+        // instance rebinds per run without a shared-state race.
+        const { browserFetch, calls } = stubBrowserFetch(renderInvoice('404-9-1'));
+        const original = new AmazonAdapter({ browserFetch, browserProfileDir: '/profiles/original' });
+        expect(isBrowserProfileBindable(original)).toBe(true);
+
+        const bound = original.withBrowserProfile('/owned/amazon.com');
+        expect(bound).not.toBe(original);
+        expect(isBrowserProfileBindable(bound)).toBe(true);
+
+        await original.fetch(anyAuth, browserRef);
+        await bound.fetch(anyAuth, browserRef);
+        // The rebind redirected the tier to the owned dir; the receiver still drives its original dir (no mutation).
+        expect(calls.map((c) => c.profileDir)).toEqual(['/profiles/original', '/owned/amazon.com']);
     });
 });
 

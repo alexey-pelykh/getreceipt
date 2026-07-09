@@ -6,6 +6,7 @@ import {
     attendedReauthPrompt,
     browserReauthPrompt,
     DEFAULT_REAUTH_ATTEMPTS,
+    firstRunSignInNotice,
     runWithAttendedReauth,
 } from './reauth-loop.js';
 import type { SignInWindowOpener } from './reauth-loop.js';
@@ -293,5 +294,28 @@ describe('browserReauthPrompt — headful owned-profile sign-in, attended-only (
         expect(result).toBe('reauth-required'); // bounded — no coercive loop
         expect(opener.calls()).toHaveLength(1); // exactly one window (DEFAULT_REAUTH_ATTEMPTS = 1)
         expect(opener.closed()).toBe(1);
+    });
+});
+
+describe('firstRunSignInNotice — first-run owned-profile heads-up (#264/#256)', () => {
+    it('names the addressed source and instructs a ONE-TIME sign-in in the getreceipt-owned profile', () => {
+        const notice = firstRunSignInNotice('amazon.com');
+
+        expect(notice).toContain('amazon.com');
+        expect(notice.toLowerCase()).toContain('first run');
+        expect(notice.toLowerCase()).toContain('sign in');
+        // Points at the getreceipt-OWNED profile explicitly, NOT the operator's everyday browser.
+        expect(notice).toContain('getreceipt-owned profile');
+        expect(notice).toContain('not your everyday browser');
+    });
+
+    it('is redaction-safe: fixed literals over the (already-public) source domain only — no profile path or session material leaks', () => {
+        const notice = firstRunSignInNotice('amazon.com');
+
+        // A leaked filesystem path (the resolved profile dir) would carry a separator; the notice carries none.
+        expect(notice).not.toContain('/');
+        expect(notice).not.toContain('\\');
+        // No home-dir or dotfile markers, no cookie/session token vocabulary.
+        expect(notice).not.toMatch(/Users|home|\.getreceipt|cookie|session/i);
     });
 });

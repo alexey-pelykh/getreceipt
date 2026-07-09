@@ -76,6 +76,9 @@ export type _AuthShapeTypeTests = [
         }>
     >,
 
+    // …a source MAY select a `transport` tier (#264, a source-level sibling of `instances`).
+    Expect<Constructible<{ kind: 'session'; browser: 'chrome'; profile: string; transport: 'headless-browser' }>>,
+
     // `mfa` is orthogonal — it attaches to ANY arm.
     Expect<Constructible<{ kind: 'none'; mfa: { type: 'sms' } }>>,
     Expect<Constructible<{ kind: 'password'; ref: string; mfa: { type: 'totp'; seed: { ref: string } } }>>,

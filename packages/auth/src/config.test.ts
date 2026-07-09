@@ -13,6 +13,7 @@ import {
     loadConfig,
     parseConfig,
     resolveConfigFilePath,
+    TRANSPORT_TIERS,
 } from './index.js';
 
 describe('parseConfig', () => {
@@ -1418,5 +1419,66 @@ describe('parseConfig — #190 multi-instance `instances:` list', () => {
         }
         expect(caught).toBeInstanceOf(ConfigError);
         expect((caught as ConfigError).path).toBe('sources.x.instances[1]');
+    });
+});
+
+describe('parseConfig — #264 source-level `transport` tier selection', () => {
+    it('parses `transport: headless-browser` beside a session shorthand (source-level sibling)', () => {
+        const { config, warnings } = parseConfig({
+            sources: { 'amazon.com': { browser: 'chrome', profile: 'Default', transport: 'headless-browser' } },
+        });
+        expect(warnings).toEqual([]);
+        const source = config.sources['amazon.com'];
+        expect(source?.kind).toBe('session');
+        expect(source?.transport).toBe('headless-browser');
+    });
+
+    it('parses `transport` beside an explicit `auth:` block (read from the source mapping, not the auth block)', () => {
+        const { config } = parseConfig({
+            sources: {
+                'amazon.com': { auth: { browser: 'chrome', profile: 'Default' }, transport: 'headless-browser' },
+            },
+        });
+        expect(config.sources['amazon.com']?.transport).toBe('headless-browser');
+    });
+
+    it('carries `transport` on a multi-account (`accounts:`) source (fail-closed wiring is enforced downstream)', () => {
+        const { config } = parseConfig({
+            sources: {
+                'amazon.com': {
+                    accounts: [{ account: 'personal', browser: 'chrome', profile: 'personal' }],
+                    transport: 'headless-browser',
+                },
+            },
+        });
+        const source = config.sources['amazon.com'];
+        expect(source?.accounts).toHaveLength(1);
+        expect(source?.transport).toBe('headless-browser');
+    });
+
+    it('accepts every tier in the closed vocabulary', () => {
+        for (const tier of TRANSPORT_TIERS) {
+            const { config } = parseConfig({ sources: { s: { browser: 'chrome', profile: 'P', transport: tier } } });
+            expect(config.sources.s?.transport).toBe(tier);
+        }
+    });
+
+    it('leaves `transport` undefined when omitted (the default HTTP path, unchanged)', () => {
+        const { config } = parseConfig({ sources: { 'amazon.com': { browser: 'chrome', profile: 'Default' } } });
+        expect(config.sources['amazon.com']?.transport).toBeUndefined();
+    });
+
+    it('rejects an unknown `transport` value, value-free (path only)', () => {
+        let caught: unknown;
+        try {
+            parseConfig({
+                sources: { 'amazon.com': { browser: 'chrome', profile: 'P', transport: 'quantum-teleport' } },
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        expect((caught as ConfigError).path).toBe('sources.amazon.com.transport');
+        expect((caught as ConfigError).message).not.toContain('quantum-teleport');
     });
 });

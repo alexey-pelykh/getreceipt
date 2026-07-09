@@ -15,6 +15,7 @@ import type {
     ArtifactHandle,
     AuthHandle,
     AuthResult,
+    BrowserProfileBindableAdapter,
     ChallengeResolution,
     CollectAccountsRequest,
     CollectInstancesRequest,
@@ -28,6 +29,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     OperationError,
+    resolveSourceContext,
     runAccountsOperation,
     runInstancesOperation,
     runOperation,
@@ -1238,5 +1240,189 @@ describe('runAccountsOperation — one source, per-account auth, co-mingled outp
             { source: 'amazon.com', outcome: 'reauth-required' },
             { source: 'amazon.de', outcome: 'succeeded' },
         ]);
+    });
+});
+
+describe('resolveSourceContext — #264 browser-tier owned-profile wiring', () => {
+    // Hermetic: the pasted session resolves through the injected resolveCredential — no real cookie store is read.
+    const PASTE_REF = 'op://Private/browser-session';
+    const SYNTHETIC_PASTE = 'Cookie: session-id=synthetic-xyz';
+    const pasteCredential = (): Promise<Secret> => Promise.resolve(new Secret(SYNTHETIC_PASTE));
+
+    /**
+     * A session adapter DECLARING `transportTier` on its descriptor. With a `seam` it also exposes the #264
+     * `withBrowserProfile` binding capability (returning `seam.bound`); without one it declares the tier but has
+     * NO binding seam — the wiring-bug case the resolver must fail closed on.
+     */
+    function bindableSessionAdapter(
+        transportTier: 'headless-browser' | 'http-api',
+        seam?: { readonly onBind: (dir: string) => void; readonly bound: SourceAdapter },
+    ): SourceAdapter {
+        const base = adapter();
+        if (seam === undefined) {
+            return {
+                ...base,
+                descriptor: { ...base.descriptor, authKind: 'session', credentialShapes: ['none'], transportTier },
+            };
+        }
+        const bindable: SourceAdapter & BrowserProfileBindableAdapter = {
+            ...base,
+            descriptor: { ...base.descriptor, authKind: 'session', credentialShapes: ['none'], transportTier },
+            withBrowserProfile: (dir: string): SourceAdapter => {
+                seam.onBind(dir);
+                return seam.bound;
+            },
+        };
+        return bindable;
+    }
+
+    /** A paste-session config that SELECTS the browser tier via the config-selectable `transport` field (#264). */
+    const browserTierConfig: ConfigParseResult = {
+        config: {
+            sources: { 'shop.example': { kind: 'session', paste: { ref: PASTE_REF }, transport: 'headless-browser' } },
+        },
+        warnings: [],
+    };
+
+    it('resolves the getreceipt-owned profile per (canonical, account) and returns the adapter REBOUND onto it', async () => {
+        const binds: string[] = [];
+        const ownedCalls: Array<readonly [string, string | undefined]> = [];
+        const bound = adapter();
+        const owned = { profileDir: '/owned/shop.example', firstRun: false };
+
+        const result = await resolveSourceContext(
+            { source: 'shop.example' },
+            deps({
+                resolver: resolverWith(
+                    bindableSessionAdapter('headless-browser', { onBind: (d) => binds.push(d), bound }),
+                ),
+                loadConfig: () => browserTierConfig,
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: (canonical, account) => {
+                    ownedCalls.push([canonical, account]);
+                    return owned;
+                },
+            }),
+        );
+
+        // Resolved per (canonical, account) — bare canonical for the single-account case that lands here (#254).
+        expect(ownedCalls).toEqual([['shop.example', undefined]]);
+        // The adapter was rebound onto the resolved dir; the resolved profile is surfaced (for the first-run notice).
+        expect(binds).toEqual(['/owned/shop.example']);
+        expect(result.adapter).toBe(bound);
+        expect(result.ownedProfile).toEqual(owned);
+    });
+
+    it('leaves the adapter UNCHANGED and resolves no owned profile when the source selects no tier (HTTP path untouched)', async () => {
+        let ownedResolved = false;
+        const src = bindableSessionAdapter('headless-browser', { onBind: () => {}, bound: adapter() });
+
+        const result = await resolveSourceContext(
+            { source: 'shop.example' },
+            deps({
+                resolver: resolverWith(src),
+                // No `transport` selected — the default HTTP path.
+                loadConfig: () => ({
+                    config: { sources: { 'shop.example': { kind: 'session', paste: { ref: PASTE_REF } } } },
+                    warnings: [],
+                }),
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: () => {
+                    ownedResolved = true;
+                    return { profileDir: '/owned/shop.example', firstRun: false };
+                },
+            }),
+        );
+
+        expect(ownedResolved).toBe(false);
+        expect(result.ownedProfile).toBeUndefined();
+        expect(result.adapter).toBe(src);
+    });
+
+    it('fails closed when the config selects a tier the adapter does NOT declare — no silent HTTP degrade', async () => {
+        const error = await resolveSourceContext(
+            { source: 'shop.example' },
+            deps({
+                // Adapter declares http-api; the config selects headless-browser → mismatch.
+                resolver: resolverWith(bindableSessionAdapter('http-api')),
+                loadConfig: () => browserTierConfig,
+                resolveCredential: pasteCredential,
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        // Value-free: names the source domain, never the pasted session material.
+        expect((error as OperationError).message).toContain('shop.example');
+        expect((error as OperationError).message).not.toContain('synthetic');
+    });
+
+    it('fails closed when the adapter declares the browser tier but exposes NO binding seam (a wiring bug)', async () => {
+        const error = await resolveSourceContext(
+            { source: 'shop.example' },
+            deps({
+                // Declares headless-browser but has no `withBrowserProfile` — not BrowserProfileBindable.
+                resolver: resolverWith(bindableSessionAdapter('headless-browser')),
+                loadConfig: () => browserTierConfig,
+                resolveCredential: pasteCredential,
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        expect((error as OperationError).message).toContain('shop.example');
+    });
+
+    it('fires the first-run sign-in notice through runOperation when the owned profile was just created — silent on warm reuse (#255)', async () => {
+        const runFor = (firstRun: boolean, onFirstRun: (source: string) => void): Promise<unknown> =>
+            runOperation(
+                { source: 'shop.example', profile: 'default' },
+                undefined,
+                deps({
+                    resolver: resolverWith(
+                        bindableSessionAdapter('headless-browser', { onBind: () => {}, bound: adapter() }),
+                    ),
+                    loadConfig: () => browserTierConfig,
+                    resolveCredential: pasteCredential,
+                    resolveOwnedProfile: () => ({ profileDir: '/owned/shop.example', firstRun }),
+                    onOwnedProfileFirstRun: onFirstRun,
+                }),
+            );
+
+        const fresh: string[] = [];
+        await runFor(true, (source) => fresh.push(source));
+        expect(fresh).toEqual(['shop.example']); // first run → the operator is told to sign in once
+
+        const warm: string[] = [];
+        await runFor(false, (source) => warm.push(source));
+        expect(warm).toEqual([]); // warm reuse → no prompt
+    });
+
+    it('fails closed on the browser tier + multi-account combination — per-account profiles are a scoped follow-up', async () => {
+        const accounts: readonly AccountAuthConfig[] = [
+            { account: 'personal', browser: 'chrome', profile: 'Personal' },
+        ];
+        const accountsBrowserConfig: ConfigParseResult = {
+            config: { sources: { 'shop.example': { kind: 'session', transport: 'headless-browser', accounts } } },
+            warnings: [],
+        };
+
+        const error = await runAccountsOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(
+                    bindableSessionAdapter('headless-browser', { onBind: () => {}, bound: adapter() }),
+                ),
+                loadConfig: () => accountsBrowserConfig,
+                // The combination is refused at pre-flight — collectAccounts must never run.
+                collectAccounts: () =>
+                    Promise.reject(new Error('collectAccounts must not run when the combination is refused')),
+            }),
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OperationError);
+        expect((error as OperationError).kind).toBe('unsupported-shape');
+        expect((error as OperationError).message).toContain('shop.example');
     });
 });

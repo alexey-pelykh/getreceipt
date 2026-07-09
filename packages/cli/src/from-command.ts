@@ -18,7 +18,7 @@ import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { promptLine } from './interactive-challenge-resolver.js';
 import { OperationError } from './operation-runner.js';
-import { attendedReauthPrompt, runWithAttendedReauth } from './reauth-loop.js';
+import { attendedReauthPrompt, firstRunSignInNotice, runWithAttendedReauth } from './reauth-loop.js';
 import {
     defaultCollectionDeps,
     runCollect,
@@ -62,6 +62,12 @@ export interface FromCommandEnv {
     readonly isInteractive: () => boolean;
     /** Reads one operator line for the attended re-auth prompt; defaults to the shared {@link promptLine}. Injectable for tests. */
     readonly readLine: (io: CliIO, prompt: string) => Promise<string>;
+    /**
+     * Fired when a browser-tier source resolves a FIRST-RUN owned profile (#264): the default wiring prints a
+     * redaction-safe operator sign-in notice to stderr. Injectable so tests assert the surfacing without a
+     * real profile dir. See {@link @getreceipt/cli!OperationRunnerDeps.onOwnedProfileFirstRun}.
+     */
+    readonly onOwnedProfileFirstRun?: (source: string) => void;
 }
 
 interface FromOptions {
@@ -79,14 +85,18 @@ interface FromOptions {
 }
 
 function defaultEnv(): FromCommandEnv {
+    const io = processStreamsIO();
     return {
-        io: processStreamsIO(),
+        io,
         consent: createConsentGate(),
         // Attended re-auth (#247) gates on BOTH streams being a TTY (the prompt shows on stderr), mirroring
         // the consent gate; the readline helper is the one the interactive challenge resolver already uses.
         isInteractive: () => process.stdin.isTTY === true && process.stderr.isTTY === true,
         readLine: promptLine,
         ...defaultCollectionDeps(),
+        // Browser tier first-run (#264): surface the one-time owned-profile sign-in notice on stderr (source-only,
+        // redaction-safe). getreceipt never handles the operator's password/OTP on this path.
+        onOwnedProfileFirstRun: (source) => io.writeErr(firstRunSignInNotice(source)),
     };
 }
 
