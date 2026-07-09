@@ -7,8 +7,8 @@ export { AmazonAdapter as AmazonFrAdapter, amazonAdapter as amazonFrAdapter } fr
 export type { AmazonAdapterOptions as AmazonFrAdapterOptions } from './adapter.js';
 // The marketplace-agnostic invoice→PDF render step (#182) — the adapter's default renderer and its seam type,
 // reusable by the multi-instance amazon.com wiring (#190/#191).
-export { renderInvoicePdf } from './render.js';
-export type { InvoiceRenderer } from './render.js';
+export { fetchInvoiceViaBrowser, renderInvoicePdf } from './render.js';
+export type { BrowserInvoiceFetcher, InvoiceRenderer } from './render.js';
 // The wire contract (#88) — the single in-repo source of truth for Amazon's endpoints AND page structure.
 // `ENDPOINTS` scopes the impersonating transport to the TLS-fingerprint-gated order host (#101); exporting
 // `LISTING`/`ORDER_QUERY`/`orderSchema` lets a cross-package conformance fixture derive its order pages from the
