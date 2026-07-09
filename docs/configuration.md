@@ -214,6 +214,50 @@ sources:
     profile: Default
 ```
 
+#### Multiple accounts (`accounts:`)
+
+One source can hold **more than one authenticated identity** — e.g. a **personal** and a **business**
+Amazon account, each signed in under its own browser profile. List them under `accounts:`, where the
+**account is the outer key**: each entry names an identity and points at the browser profile holding
+_that_ account's login. getreceipt imports and stores each account's session **separately**, so the two
+never share a cookie jar.
+
+```yaml
+sources:
+  amazon.com:
+    accounts:
+      - account: personal # a stable label for this identity
+        browser: chrome
+        profile: 'Profile 1' # the browser profile holding THIS account's login
+      - account: business
+        browser: chrome
+        profile: 'Work' # a DIFFERENT profile — each account is its own sign-in
+```
+
+- **`account`** — a stable label naming the identity. It scopes the stored session: the two accounts
+  persist under distinct keys (`amazon.com:personal`, `amazon.com:business`), so re-importing one never
+  disturbs the other.
+- **`browser`** / **`profile`** — exactly as in the single-account form above, but naming the browser
+  profile that holds _this_ account's login. Both are required per account.
+- **`instances`** _(optional)_ — a per-account [marketplace instance](#multi-marketplace-instances-amazon)
+  list; each identity may reach a different set of marketplaces. In the multi-account form the list lives
+  **under each account**, never at the source level.
+
+Two rules are enforced at parse time, and both **fail closed** (a config error, never a silent merge):
+
+- every `account` label must be **unique** within the source, and
+- no two accounts may share a `profile` — distinct identities need distinct profiles, or their imported
+  cookie jars would cross-contaminate.
+
+`accounts:` is a **whole-source alternative** to a single top-level session (`browser`/`profile` or
+`paste`): write one form or the other, not both.
+
+> **Collecting across accounts isn't wired yet.** getreceipt **recognizes and validates** the `accounts:`
+> schema today (the uniqueness rules above are enforced at parse time), but the collector does not yet
+> iterate accounts — that lands in a follow-up. Until then, running a source configured with `accounts:`
+> **fails closed** with an error telling you to configure a single `browser`/`profile`, rather than
+> silently collecting just one identity. Use the single-account form above if you need to collect today.
+
 #### Platform support
 
 How a `session` source imports a profile depends on how that browser stores its cookies.

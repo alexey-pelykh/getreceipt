@@ -349,6 +349,16 @@ async function resolveCredentials(
     // A `session` source resolves to a descriptor the adapter's authenticate() hands to importSession; the
     // shape gate is skipped for session upstream (#205), so this branch is the one credential path it takes.
     if (sourceConfig.kind === 'session') {
+        // Multi-account (#254): the collect pipeline does not yet iterate accounts — a separate item lifts the
+        // loop. A parseable `accounts:` config reaching this single-source path fails CLOSED here rather than
+        // silently collecting one account and dropping the rest; it also narrows the session union so the
+        // single browser-session resolution below type-checks.
+        if (sourceConfig.accounts !== undefined) {
+            throw new OperationError(
+                'unsupported-shape',
+                'multi-account sources (`accounts:`) are not yet collectable — configure a single `browser`/`profile` for now',
+            );
+        }
         // Manual-paste session (#218): the pasted material IS a live credential, so it is supplied as a
         // secret-ref and resolved through the SAME resolver as any other (op:// / env / encrypted-file: /
         // file) — never an inline config value or a CLI flag. The resolved value stays fenced in the

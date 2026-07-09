@@ -123,6 +123,40 @@ describe('renderConfigShow', () => {
         expect(output).toContain('type: sms');
     });
 
+    it('renders a multi-account (`accounts:`) session — every account key, browser, profile, and per-account instances, no secret (#254)', () => {
+        const output = renderConfigShow(
+            configWith({
+                'amazon.com': {
+                    kind: 'session',
+                    accounts: [
+                        { account: 'personal', browser: 'chrome', profile: 'Profile 1' },
+                        {
+                            account: 'business',
+                            browser: 'firefox',
+                            profile: 'work-release',
+                            instances: ['amazon.com', 'amazon.de'],
+                        },
+                    ],
+                },
+            }),
+            'default',
+        );
+        expect(output).toContain('amazon.com');
+        expect(output).toContain('kind: session');
+        // Both account keys render — the outer key that scopes each stored session.
+        expect(output).toContain('account: personal');
+        expect(output).toContain('account: business');
+        // Each account's browser + profile render verbatim (non-secret, no fence).
+        expect(output).toContain('browser: chrome');
+        expect(output).toContain('browser: firefox');
+        expect(output).toContain('Profile 1');
+        expect(output).toContain('work-release');
+        // A per-account instance list renders.
+        expect(output).toContain('amazon.de');
+        // A session carries NO credential, so nothing is masked — the redaction fence never fires.
+        expect(output).not.toContain('[redacted]');
+    });
+
     it('labels the output with the active profile name (display only — the file IS the profile)', () => {
         // The file IS one profile, so the name is a header label, not a key lookup; any label renders.
         const output = renderConfigShow(

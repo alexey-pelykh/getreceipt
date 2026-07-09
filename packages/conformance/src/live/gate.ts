@@ -214,6 +214,14 @@ function plansFromConfig(
         // at call-time (#218) — never a value at rest. Either IS a usable plan; it never reaches the
         // username/secret check below. `kind` is validated by loadConfig, so the matching shape is present.
         if (auth.kind === 'session') {
+            // Multi-account (#254): a source-level `accounts:` list has no top-level `{ browser, profile }` to
+            // lift — the live gate does not yet sweep per-account sessions (the collect-loop lift is a separate
+            // item). Fail CLOSED with a skip note here, rather than building a malformed `{ browser: undefined }`
+            // plan that would fail opaquely deep inside the import.
+            if (auth.accounts !== undefined) {
+                notes.push(`skipped "${source}" (multi-account \`accounts:\` sessions are not yet collectable)`);
+                continue;
+            }
             // Thread the source-level `instances` list (#227/#190) onto the plan so the harness sweeps every
             // configured marketplace under the one shared session; omitted → a single-instance run (unchanged).
             const instances = auth.instances === undefined ? {} : { instances: auth.instances };
