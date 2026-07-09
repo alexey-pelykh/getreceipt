@@ -11,6 +11,7 @@ import type {
     ConfigParseResult,
     ConfigSelection,
     CredentialValue,
+    DomainAuthConfig,
     Secret,
     SessionStore,
     StoredSession,
@@ -19,12 +20,14 @@ import {
     FilesystemReceiptWriter,
     Semaphore,
     collect as coreCollect,
+    collectAccounts as coreCollectAccounts,
     collectInstances as coreCollectInstances,
     listSources,
 } from '@getreceipt/core';
 import type {
     ChallengeObserver,
     ChallengeResolver,
+    CollectAccountsRequest,
     CollectInstancesRequest,
     CollectRequest,
     CollectResult,
@@ -41,7 +44,7 @@ import type {
 import { deriveBatchOutcome } from './all-render.js';
 import type { BatchReport, BatchSourceResult } from './all-render.js';
 import { createDefaultRegistry, createDefaultResolver } from './default-sources.js';
-import { OperationError, runInstancesOperation, runOperation } from './operation-runner.js';
+import { OperationError, runAccountsOperation, runInstancesOperation, runOperation } from './operation-runner.js';
 import type { OperationRunnerDeps, ResolveSourceDeps } from './operation-runner.js';
 import { defaultReadableSessionStore } from './sessions.js';
 import type { SourceView, SourcesReport } from './sources-render.js';
@@ -82,6 +85,8 @@ export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandR
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
     /** Multi-instance collection (#190): authenticate once for the source, list/fetch per instance. */
     readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
+    /** Multi-account collection (#257): the OUTER per-account loop over {@link collectInstances}. Used when a source configures `accounts:`. */
+    readonly collectAccounts: (request: CollectAccountsRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
@@ -153,6 +158,7 @@ function toRunnerDeps(deps: McpCollectionDeps, outDir: string): OperationRunnerD
         createWriter: () => deps.createWriter(outDir),
         collect: deps.collect,
         collectInstances: deps.collectInstances,
+        collectAccounts: deps.collectAccounts,
         now: deps.now,
         ...(deps.instrument === undefined ? {} : { instrument: deps.instrument }),
         ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
@@ -174,7 +180,12 @@ export async function runCollectAllInstances(params: CollectParams, deps: McpCol
         params.window === undefined
             ? { source: params.source, profile: params.profile }
             : { source: params.source, profile: params.profile, window: params.window };
-    const results = await runInstancesOperation(spec, params.selection, toRunnerDeps(deps, params.outDir));
+    const runnerDeps = toRunnerDeps(deps, params.outDir);
+    // A multi-account source (`accounts:`, #254) collects ACROSS accounts (per account × instance); every other
+    // source collects across its instances (#190). Both fan one source into a per-slot batch of the same shape.
+    const results = sourceIsMultiAccount(params.source, params.selection, deps)
+        ? await runAccountsOperation(spec, params.selection, runnerDeps)
+        : await runInstancesOperation(spec, params.selection, runnerDeps);
     const sources: BatchSourceResult[] = results.map((result) => ({ source: result.source, ok: true, result }));
     return {
         profile: params.profile,
@@ -230,8 +241,10 @@ export async function runCollectAll(params: CollectAllParams, deps: McpCollectio
     // source order is deterministic — load-bearing for CLI↔MCP parity. A multi-instance source expands to
     // one entry per instance (#190), keeping that positional order; `.flat()` merges the per-source groups.
     const grouped = await Promise.all(
-        Object.keys(parsed.config.sources).map((source) =>
-            semaphore.run(() => runOneSource(source, params.profile, params.selection, params.window, runnerDeps)),
+        Object.entries(parsed.config.sources).map(([source, sourceConfig]) =>
+            semaphore.run(() =>
+                runOneSource(source, sourceConfig, params.profile, params.selection, params.window, runnerDeps),
+            ),
         ),
     );
     const sources = grouped.flat();
@@ -262,6 +275,7 @@ export async function runCollectAll(params: CollectAllParams, deps: McpCollectio
  */
 async function runOneSource(
     source: string,
+    sourceConfig: DomainAuthConfig,
     profile: string,
     selection: ConfigSelection | undefined,
     window: OperationWindow | undefined,
@@ -269,9 +283,13 @@ async function runOneSource(
 ): Promise<readonly BatchSourceResult[]> {
     const spec: OperationSpec = window === undefined ? { source, profile } : { source, profile, window };
     try {
-        // One source may expand to several instances (#190); each becomes its own slot keyed by instance domain.
-        // A single-instance source returns exactly one result, preserving today's one-slot-per-source shape.
-        const results = await runInstancesOperation(spec, selection, deps);
+        // One source may expand to several slots: a multi-account source (`accounts:`, #254) to one per (account ×
+        // instance) via the accounts path, every other source to one per instance (#190) — each keyed by instance
+        // domain. A single-instance, single-account source returns exactly one result (today's one-slot shape).
+        const results =
+            sourceConfig.accounts !== undefined
+                ? await runAccountsOperation(spec, selection, deps)
+                : await runInstancesOperation(spec, selection, deps);
         return results.map((result) => ({ source: result.source, ok: true, result }));
     } catch (error) {
         if (error instanceof OperationError) {
@@ -285,6 +303,33 @@ async function runOneSource(
             },
         ];
     }
+}
+
+/**
+ * Peek whether the requested source is configured multi-account (`accounts:`, #254) — the routing key the
+ * single-source `--all-instances` path uses to choose {@link runAccountsOperation} over {@link runInstancesOperation}
+ * ({@link runCollectAll} already has each source's config, so it routes without this peek). Resolves the source key
+ * against the loaded config, falling back to the canonical domain when an alias was requested (mirroring
+ * {@link @getreceipt/cli!resolveSourceContext}'s own lookup). A config that cannot be read routes to the
+ * instances path, whose own load raises the error uniformly — so this peek never double-reports it.
+ */
+function sourceIsMultiAccount(
+    source: string,
+    selection: ConfigSelection | undefined,
+    deps: Pick<CollectionDeps, 'resolveConfigPath' | 'loadConfig' | 'resolver'>,
+): boolean {
+    const path = deps.resolveConfigPath(selection);
+    let parsed: ConfigParseResult;
+    try {
+        parsed = deps.loadConfig(path, { strict: selection?.strict === true });
+    } catch {
+        return false;
+    }
+    const adapter = deps.resolver.tryResolve(source);
+    const config =
+        parsed.config.sources[source] ??
+        (adapter === undefined ? undefined : parsed.config.sources[adapter.descriptor.canonicalDomain]);
+    return config?.accounts !== undefined;
 }
 
 /** Inputs for a sources listing. */
@@ -471,6 +516,7 @@ export function defaultCollectionDeps(): CollectionDeps {
         createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
         collect: coreCollect,
         collectInstances: coreCollectInstances,
+        collectAccounts: coreCollectAccounts,
         now: () => new Date(),
     };
 }

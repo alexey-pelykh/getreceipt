@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { ConfigParseResult, CredentialValue, LoginSecrets, Secret } from '@getreceipt/auth';
 import type {
+    CollectAccountsRequest,
     CollectInstancesRequest,
     CollectRequest,
     CollectResult,
@@ -51,6 +52,8 @@ export interface FromCommandEnv {
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
     /** Auth-once / data-per-instance collection for `--all-instances` (#190). */
     readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
+    /** Auth-once-per-account / data-per-instance collection for a source configured with `accounts:` (#257). */
+    readonly collectAccounts: (request: CollectAccountsRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
     /**
      * Whether we can prompt for an attended re-auth (#247): stdin AND stderr a TTY. Defaults to the real

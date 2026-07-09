@@ -9,13 +9,14 @@ import {
     importSession,
     Secret,
 } from '@getreceipt/auth';
-import type { ConfigParseResult, CredentialValue, SecretRef } from '@getreceipt/auth';
+import type { AccountAuthConfig, ConfigParseResult, CredentialValue, SecretRef } from '@getreceipt/auth';
 import { collect, SourceAdapterRegistry, SourceResolver } from '@getreceipt/core';
 import type {
     ArtifactHandle,
     AuthHandle,
     AuthResult,
     ChallengeResolution,
+    CollectAccountsRequest,
     CollectInstancesRequest,
     CollectRequest,
     CollectResult,
@@ -25,7 +26,13 @@ import type {
 } from '@getreceipt/core';
 import { describe, expect, it } from 'vitest';
 
-import { OperationError, runInstancesOperation, runOperation, type OperationRunnerDeps } from './operation-runner.js';
+import {
+    OperationError,
+    runAccountsOperation,
+    runInstancesOperation,
+    runOperation,
+    type OperationRunnerDeps,
+} from './operation-runner.js';
 
 const WINDOW = { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') };
 const SUCCEEDED: CollectResult = {
@@ -81,6 +88,7 @@ function deps(overrides: Partial<OperationRunnerDeps> = {}): OperationRunnerDeps
         createWriter: () => ({ has: async () => false, write: async () => {} }),
         collect: () => Promise.resolve(SUCCEEDED),
         collectInstances: () => Promise.resolve([SUCCEEDED]),
+        collectAccounts: () => Promise.resolve([SUCCEEDED]),
         now: () => new Date('2024-02-01T00:00:00.000Z'),
         ...overrides,
     };
@@ -329,8 +337,8 @@ describe('runOperation — pre-flight failures throw typed OperationError', () =
     });
 });
 
-describe('runOperation — multi-account (`accounts:`) fails closed pre-flight (#254 D2)', () => {
-    /** A session adapter (like Amazon): the multi-account guard only reaches `resolveCredentials` past `assertSessionAdapter`. */
+describe('runOperation — plain `from` on a multi-account (`accounts:`) source routes to the batch verbs (#261)', () => {
+    /** A session adapter (like Amazon): the multi-account guard fires on the session branch, past `assertSessionAdapter`. */
     function sessionAdapter(): SourceAdapter {
         return {
             descriptor: {
@@ -366,7 +374,7 @@ describe('runOperation — multi-account (`accounts:`) fails closed pre-flight (
         warnings: [],
     };
 
-    it('rejects a parseable `accounts:` source with unsupported-shape — the collect loop does not yet iterate accounts', async () => {
+    it('throws unsupported-shape pointing at `all` / `--all-instances` — one result cannot represent many accounts', async () => {
         const error = await runOperation(
             { source: 'amazon.com', profile: 'default' },
             undefined,
@@ -375,8 +383,10 @@ describe('runOperation — multi-account (`accounts:`) fails closed pre-flight (
 
         expect(error).toBeInstanceOf(OperationError);
         expect((error as OperationError).kind).toBe('unsupported-shape');
-        // Fail CLOSED, not a silent one-account collect: the message points the operator at the single-account shape.
+        // The retired #254 "not yet collectable" is REPLACED by a routing hint: accounts ARE collectable now (via the
+        // batch path, runAccountsOperation) — the single-context `from` just can't represent the many-result shape.
         expect((error as OperationError).message).toContain('accounts');
+        expect((error as OperationError).message).toMatch(/all|all-instances/);
     });
 });
 
@@ -1026,5 +1036,207 @@ describe('runInstancesOperation — one config, shared auth, data per instance (
         expect(results).toHaveLength(1);
         expect(single.request()).toBeDefined(); // the single-instance path ran
         expect(multi.request()).toBeUndefined(); // the fan-out path was NOT taken
+    });
+});
+
+describe('runAccountsOperation — one source, per-account auth, co-mingled output (#257/#261)', () => {
+    const COM: InstanceContext = {
+        domain: 'amazon.com',
+        host: 'www.amazon.com',
+        cookieDomain: '.amazon.com',
+        locale: 'en-US',
+    };
+    const FR: InstanceContext = {
+        domain: 'amazon.fr',
+        host: 'www.amazon.fr',
+        cookieDomain: '.amazon.fr',
+        locale: 'fr-FR',
+    };
+    const DE: InstanceContext = {
+        domain: 'amazon.de',
+        host: 'www.amazon.de',
+        cookieDomain: '.amazon.de',
+        locale: 'de-DE',
+    };
+
+    /** A session, multi-instance adapter (like Amazon): serves .com/.fr/.de and authenticates by an imported session. */
+    function accountsAdapter(): SourceAdapter {
+        const base = adapter();
+        return {
+            ...base,
+            descriptor: {
+                ...base.descriptor,
+                canonicalDomain: 'amazon.com',
+                aliasDomains: [],
+                authKind: 'session',
+                credentialShapes: ['none'],
+                instances: [COM, FR, DE],
+            },
+        };
+    }
+
+    /** A multi-account config (#254): each account its OWN browser/profile + marketplaces. */
+    function accountsConfig(accounts: readonly AccountAuthConfig[]): ConfigParseResult {
+        return { config: { sources: { 'amazon.com': { kind: 'session', accounts } } }, warnings: [] };
+    }
+
+    /** A `collectAccounts` stub that records the request and returns the given per-(account × instance) results. */
+    function capturingCollectAccounts(results: readonly CollectResult[]): {
+        collectAccounts: OperationRunnerDeps['collectAccounts'];
+        request: () => CollectAccountsRequest | undefined;
+    } {
+        let captured: CollectAccountsRequest | undefined;
+        return {
+            collectAccounts: (request) => {
+                captured = request;
+                return Promise.resolve(results);
+            },
+            request: () => captured,
+        };
+    }
+
+    it('resolves EACH account to its OWN session credentials (account key + browser/profile) and marketplaces (#254)', async () => {
+        const capture = capturingCollectAccounts([{ ...SUCCEEDED, source: 'amazon.com' }]);
+        await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        {
+                            account: 'personal',
+                            browser: 'chrome',
+                            profile: 'Personal',
+                            instances: ['amazon.com', 'amazon.fr'],
+                        },
+                        { account: 'business', browser: 'firefox', profile: 'Business', instances: ['amazon.de'] },
+                    ]),
+                collectAccounts: capture.collectAccounts,
+                // The single- and instances- paths MUST NOT run for a multi-account source.
+                collect: () => Promise.reject(new Error('collect() must not run for a multi-account source')),
+                collectInstances: () =>
+                    Promise.reject(new Error('collectInstances() must not run for a multi-account source')),
+            }),
+        );
+
+        const accounts = capture.request()?.accounts ?? [];
+        expect(accounts).toHaveLength(2);
+        // personal: its own account key + imported browser session + its two marketplaces (resolved contexts, in order).
+        const personal = fromCredentialContext(accounts[0]!.credentials);
+        expect(personal.account).toBe('personal');
+        expect(personal.session).toEqual({ browser: 'chrome', profile: 'Personal' });
+        expect(accounts[0]!.instances).toEqual([COM, FR]);
+        // business: a DIFFERENT account key + a DIFFERENT browser/profile + its own marketplace — no cross-account bleed.
+        const business = fromCredentialContext(accounts[1]!.credentials);
+        expect(business.account).toBe('business');
+        expect(business.session).toEqual({ browser: 'firefox', profile: 'Business' });
+        expect(accounts[1]!.instances).toEqual([DE]);
+    });
+
+    it('carries NO resolve-time secret — a browser session is a fenced { browser, profile } descriptor, never a credential (security)', async () => {
+        const capture = capturingCollectAccounts([SUCCEEDED]);
+        await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        { account: 'personal', browser: 'chrome', profile: 'Personal', instances: ['amazon.com'] },
+                    ]),
+                collectAccounts: capture.collectAccounts,
+                // A browser-session account dereferences NO secret — a rejecting resolver proves it is never called.
+                resolveCredential: () => Promise.reject(new Error('a browser session must resolve no credential')),
+            }),
+        );
+        const packed = fromCredentialContext(capture.request()!.accounts[0]!.credentials);
+        expect(packed.secret).toBeUndefined();
+        expect(packed.username).toBeUndefined();
+        expect(packed.session).toEqual({ browser: 'chrome', profile: 'Personal' });
+    });
+
+    it('CO-MINGLES same-marketplace output across accounts — two accounts on amazon.com key by that ONE domain (Decision 1; separation → #266)', async () => {
+        // Two accounts BOTH collecting amazon.com → collectAccounts returns two amazon.com-keyed results (account-
+        // agnostic domain keying, #254). runAccountsOperation preserves that: duplicate-source rows, co-mingled output.
+        const capture = capturingCollectAccounts([
+            { ...SUCCEEDED, source: 'amazon.com' },
+            { ...SUCCEEDED, source: 'amazon.com' },
+        ]);
+        const results = await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        { account: 'personal', browser: 'chrome', profile: 'Personal', instances: ['amazon.com'] },
+                        { account: 'business', browser: 'firefox', profile: 'Business', instances: ['amazon.com'] },
+                    ]),
+                collectAccounts: capture.collectAccounts,
+            }),
+        );
+        // BOTH accounts resolved amazon.com's SAME instance context — the ONE shared writer co-mingles their output.
+        expect(capture.request()?.accounts.map((account) => account.instances)).toEqual([[COM], [COM]]);
+        // Two result rows, BOTH keyed by the one domain (account-agnostic) — duplicate-source rows are tolerated.
+        expect(results.map((result) => result.source)).toEqual(['amazon.com', 'amazon.com']);
+    });
+
+    it('falls back to the addressed instance when an account configures no `instances:`', async () => {
+        const capture = capturingCollectAccounts([SUCCEEDED]);
+        await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () => accountsConfig([{ account: 'personal', browser: 'chrome', profile: 'Personal' }]),
+                collectAccounts: capture.collectAccounts,
+            }),
+        );
+        // No `instances:` → the account collects the addressed source instance (amazon.com), mirroring single-account.
+        expect(capture.request()?.accounts[0]!.instances).toEqual([COM]);
+    });
+
+    it('throws unsupported-instance (fail-closed) when an account lists a marketplace the adapter does not serve', async () => {
+        const promise = runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        { account: 'personal', browser: 'chrome', profile: 'Personal', instances: ['amazon.co.uk'] },
+                    ]),
+                collectAccounts: () =>
+                    Promise.reject(new Error('collectAccounts must not run when an account instance is unserved')),
+            }),
+        );
+        await expect(promise).rejects.toMatchObject({ name: 'OperationError', kind: 'unsupported-instance' });
+        await expect(promise).rejects.toThrow('amazon.co.uk');
+    });
+
+    it('maps a per-account reauth-required result straight through — a dead account cannot strand the rest (#257 AC2)', async () => {
+        const results = await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        { account: 'personal', browser: 'chrome', profile: 'Personal', instances: ['amazon.com'] },
+                        { account: 'business', browser: 'firefox', profile: 'Business', instances: ['amazon.de'] },
+                    ]),
+                collectAccounts: () =>
+                    Promise.resolve([
+                        { outcome: 'reauth-required', source: 'amazon.com', window: WINDOW },
+                        { ...SUCCEEDED, source: 'amazon.de' },
+                    ]),
+            }),
+        );
+        // Per-account outcomes are DATA the runner maps straight through (never thrown) — one reauth doesn't strand the rest.
+        expect(results.map((result) => ({ source: result.source, outcome: result.outcome }))).toEqual([
+            { source: 'amazon.com', outcome: 'reauth-required' },
+            { source: 'amazon.de', outcome: 'succeeded' },
+        ]);
     });
 });

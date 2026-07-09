@@ -8,6 +8,7 @@ import { loadConfig as authLoadConfig, Secret } from '@getreceipt/auth';
 import type { SessionStore } from '@getreceipt/auth';
 import {
     collect as coreCollect,
+    collectAccounts as coreCollectAccounts,
     collectInstances as coreCollectInstances,
     FilesystemReceiptWriter,
     ReauthRequiredError,
@@ -134,6 +135,7 @@ function baseCollection(): CollectionDeps {
         createWriter: (outDir) => new FilesystemReceiptWriter({ outDir }),
         collect: coreCollect,
         collectInstances: coreCollectInstances,
+        collectAccounts: coreCollectAccounts,
         now: FIXED_NOW,
     };
 }

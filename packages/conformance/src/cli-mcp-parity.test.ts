@@ -134,6 +134,7 @@ const collection: CollectionDeps = {
     createWriter: () => NOOP_WRITER,
     collect: () => Promise.resolve(COLLECT_RESULT),
     collectInstances: () => Promise.resolve([COLLECT_RESULT]),
+    collectAccounts: () => Promise.resolve([COLLECT_RESULT]),
     now: FIXED_NOW,
 };
 
