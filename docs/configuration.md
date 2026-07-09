@@ -347,6 +347,26 @@ session to recover. For the full security posture (in-memory-only, value fencing
 > Login is **source-level**: one stored session serves every marketplace instance (see below).
 > See [SECURITY.md § Session reuse at rest](../SECURITY.md#session-reuse-at-rest-optional).
 
+#### Browser-driven sources (getreceipt-owned profile)
+
+A few sources reject an **imported** cookie jar for their most sensitive pages. Amazon re-challenges the
+**invoice** page even with valid cookies (a `max_auth_age` step-up a transplanted session cannot clear). For
+these getreceipt uses a **browser-driven** tier: it drives a **real persistent browser profile** and lets that
+profile's own warm session carry the request, instead of reading cookies out of your everyday browser.
+
+That profile is one **getreceipt owns** — a directory under `~/.getreceipt/browser-profiles/` (owner-only,
+`0700`), one per account, **distinct from the `profile` you name for a cookie import above**. This is the
+migration for anyone who already runs a session source: the `profile` you configure still names _your_ browser
+profile for a cookie import, but the browser-driven tier signs into a **separate, getreceipt-owned** profile.
+On the **first run** getreceipt opens that owned profile and **you sign in once, yourself** — getreceipt never
+sees your password or one-time code (exactly as with a cookie import, it never drives your login). Every later
+run **reuses the warm profile** with no prompt.
+
+> **What ships today.** The owned-profile **resolution and first-run signal** land now; the **attended sign-in
+> window** and the config wiring that points a source at its owned profile land in follow-ups. Until then the
+> cookie-import and manual-paste paths above are the configurable options — a browser-driven fetch is reached
+> at the API seam, not yet selectable from config.
+
 ### Multi-marketplace instances (Amazon)
 
 Some services run **one account across several marketplaces** — the same sign-in, different orders per

@@ -81,6 +81,7 @@ export {
     CookieReadError,
     CredentialBackendUnavailableError,
     CredentialResolutionError,
+    OwnedProfileError,
     PastedSessionError,
     ProfileResolutionError,
     SessionStoreError,
@@ -91,6 +92,7 @@ export type {
     BrowserCookieStoreReason,
     CookieReadReason,
     CredentialResolutionReason,
+    OwnedProfileReason,
     PastedSessionReason,
     ProfileResolutionReason,
     SessionStoreFailureReason,
@@ -98,6 +100,8 @@ export type {
 } from './errors.js';
 export { browserUserDataDir, firefoxProfilesRoot, resolveFirefoxProfile, resolveProfile } from './profile-resolver.js';
 export type { ResolveFirefoxProfileOptions, ResolveProfileOptions } from './profile-resolver.js';
+export { ensureOwnedProfile, ownedProfileDir } from './owned-profile.js';
+export type { OwnedProfile, OwnedProfileOptions } from './owned-profile.js';
 export {
     decryptChromeCookie,
     deriveChromeSafeStorageKey,

@@ -329,3 +329,24 @@ export class TotpError extends Error {
         super(message);
     }
 }
+
+/** Why an owned-profile identity could not form a valid directory segment. */
+export type OwnedProfileReason = 'invalid-identity';
+
+/**
+ * Thrown when a `(canonicalDomain, account)` identity cannot form a valid single directory segment for a
+ * getreceipt-owned browser profile (#256). Like every error in this subsystem, it deliberately NEVER echoes
+ * the configured domain/account — only a human-readable message and a machine-readable {@link reason} — so a
+ * segment that would collapse onto the parent dir is reported as a typed reason, not a raw path in a log.
+ */
+export class OwnedProfileError extends Error {
+    override readonly name = 'OwnedProfileError';
+
+    constructor(
+        message: string,
+        /** The machine-readable cause; see {@link OwnedProfileReason}. */
+        readonly reason: OwnedProfileReason,
+    ) {
+        super(message);
+    }
+}
