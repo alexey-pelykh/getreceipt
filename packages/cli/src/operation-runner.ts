@@ -7,6 +7,7 @@ import {
     resolveBrowserSession,
 } from '@getreceipt/auth';
 import type {
+    AccountAuthConfig,
     ConfigParseOptions,
     ConfigParseResult,
     ConfigSelection,
@@ -27,8 +28,10 @@ import {
     zonedDayStart,
 } from '@getreceipt/core';
 import type {
+    AccountCollect,
     ChallengeObserver,
     ChallengeResolver,
+    CollectAccountsRequest,
     CollectInstancesRequest,
     CollectRequest,
     CollectResult,
@@ -109,6 +112,8 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
     readonly collect: (request: CollectRequest) => Promise<CollectResult>;
     /** Multi-instance collection (#190): authenticate once, list/fetch per instance. Used by `--all-instances` / `all`. */
     readonly collectInstances: (request: CollectInstancesRequest) => Promise<readonly CollectResult[]>;
+    /** Multi-account collection (#257): the OUTER per-account loop over {@link collectInstances}. Used when a source configures `accounts:`. */
+    readonly collectAccounts: (request: CollectAccountsRequest) => Promise<readonly CollectResult[]>;
     readonly now: () => Date;
     /** Optional adapter wrapper (e.g. a verbose tracer); identity when omitted. */
     readonly instrument?: (adapter: SourceAdapter) => SourceAdapter;
@@ -176,6 +181,31 @@ export async function runInstancesOperation(
 }
 
 /**
+ * Run a source across ITS CONFIGURED ACCOUNTS (#257) — the multi-account sibling of {@link runInstancesOperation},
+ * the engine the `all` / `--all-instances` paths route to when a source configures `accounts:` (#254). Resolves each
+ * account to its OWN {@link @getreceipt/core!AccountCollect} (per-account browser session + marketplace instances),
+ * then drives `collectAccounts` (authenticate ONCE per account, list/fetch per instance) and maps each per-account ×
+ * per-instance {@link CollectResult} to an {@link OperationResult}. Output co-mingles by instance domain
+ * (account-agnostic keying, #254 — two accounts on one marketplace share its folder; lossless because order ids are
+ * marketplace-unique, so distinct orders never collide) — true per-account separation is the scoped follow-up #266.
+ * Pre-flight problems throw {@link OperationError}; per-account / per-instance failures are DATA in the results
+ * (one `reauth-required` per dead account, never thrown), so one account can't strand the rest.
+ */
+export async function runAccountsOperation(
+    spec: OperationSpec,
+    selection: ConfigSelection | undefined,
+    deps: OperationRunnerDeps,
+): Promise<readonly OperationResult[]> {
+    const { adapter, accounts } = await resolveAccountsContext(
+        { source: spec.source, ...(selection ? { selection } : {}) },
+        deps,
+    );
+    const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
+    const request = buildAccountsRequest(spec.window, runAdapter, accounts, deps);
+    return (await deps.collectAccounts(request)).map(toOperationResult);
+}
+
+/**
  * Resolve a source to its adapter and a ready-to-use {@link CredentialContext} — the shared
  * front-half of every credentialed operation: the `from`/`all` collection path AND the `login`
  * ceremony (#17). Resolves the adapter, resolves + loads + validates the selected config file
@@ -211,6 +241,16 @@ export async function resolveSourceContext(
     // must declare a credential shape the adapter accepts (#169).
     if (sourceConfig.kind === 'session') {
         assertSessionAdapter(adapter);
+        // A multi-account source (`accounts:`, #254) yields MANY results (per account × instance), which this
+        // single-context path cannot represent — the batch verbs route it to {@link runAccountsOperation}. Plain
+        // `from` and `login` land here, so point them at the multi-result path rather than resolving one account.
+        // This is the retired #254 fail-closed's replacement: accounts ARE collectable now, just not via this path.
+        if (sourceConfig.accounts !== undefined) {
+            throw new OperationError(
+                'unsupported-shape',
+                'multi-account sources (`accounts:`) collect across accounts via `all` or `from <domain> --all-instances`, not a single `from`',
+            );
+        }
     } else {
         assertConfiguredShapeSupported(adapter, sourceConfig);
     }
@@ -233,6 +273,77 @@ export async function resolveSourceContext(
         configuredInstances,
         ...(instance === undefined ? {} : { instance }),
         ...(challengeResolver === undefined ? {} : { challengeResolver }),
+    };
+}
+
+/**
+ * Resolve a multi-account source (`accounts:`, #254) to its adapter and a LIST of per-account
+ * {@link @getreceipt/core!AccountCollect}s — the accounts-path analogue of {@link resolveSourceContext}
+ * (which resolves ONE credential). Each {@link @getreceipt/auth!AccountAuthConfig} entry resolves to its OWN
+ * session {@link CredentialContext} — carrying the account key #254 scopes the session store by, plus the
+ * imported `{ browser, profile }` (#180) — and its OWN configured marketplace instances (#190, validated
+ * against what the adapter serves, fail-closed). An account that configures no `instances:` collects the
+ * addressed source instance (the source key's marketplace), mirroring the single-account fallback. Throws
+ * {@link OperationError} for any pre-flight failure and carries no secret material — a browser session supplies
+ * no resolve-time credential (the login lives in the cookie store), so nothing is dereferenced here.
+ */
+export async function resolveAccountsContext(
+    spec: { readonly source: string; readonly selection?: ConfigSelection },
+    deps: ResolveSourceDeps,
+): Promise<{
+    readonly adapter: SourceAdapter;
+    /** One entry per configured account, in config order — each with its per-account session + instances. */
+    readonly accounts: readonly AccountCollect[];
+}> {
+    const { adapter, instance: addressed } = resolveAddressed(deps.resolver, spec.source);
+    const path = deps.resolveConfigPath(spec.selection);
+    const parsed = loadConfigOrThrow(deps.loadConfig, path, { strict: spec.selection?.strict === true });
+    const sourceConfig = findSourceConfig(parsed, spec.source, adapter, path);
+    // A multi-account source is a `session` source (#205) whose accounts each import a browser session (#254).
+    assertSessionAdapter(adapter);
+    if (sourceConfig.accounts === undefined) {
+        // Defensive: only a source carrying `accounts:` is routed here; a bare session reaching this path is a bug.
+        throw new OperationError(
+            'unsupported-shape',
+            `source "${spec.source}" is not a multi-account (\`accounts:\`) source`,
+        );
+    }
+    return {
+        adapter,
+        accounts: sourceConfig.accounts.map((entry) => resolveAccount(adapter, entry, addressed, path)),
+    };
+}
+
+/**
+ * Resolve one {@link @getreceipt/auth!AccountAuthConfig} entry to an {@link @getreceipt/core!AccountCollect}: its
+ * per-account session credentials (the account key #254 scopes the session store by + the imported
+ * `{ browser, profile }` #180) and its marketplace instances (#190). An entry with no `instances:` falls back to
+ * the addressed source instance; a single-instance source with no per-account instance fails closed (there is no
+ * instance to collect). Value-free: a browser session carries no resolve-time secret, and the message never echoes
+ * the account key (which may be an email, mirroring the config parser's no-echo posture).
+ */
+function resolveAccount(
+    adapter: SourceAdapter,
+    entry: AccountAuthConfig,
+    addressed: InstanceContext | undefined,
+    path: string,
+): AccountCollect {
+    const configured = resolveConfiguredInstances(adapter, entry.instances, path);
+    const instances = configured.length > 0 ? configured : addressed === undefined ? [] : [addressed];
+    if (instances.length === 0) {
+        throw new OperationError(
+            'unsupported-instance',
+            `source "${adapter.descriptor.canonicalDomain}" is a multi-account source but an account configures no ` +
+                `\`instances:\` and the source serves none by default — list each account's marketplaces (in ${path})`,
+        );
+    }
+    return {
+        credentials: asCredentialContext({
+            kind: 'session',
+            account: entry.account,
+            session: resolveBrowserSession({ kind: 'session', browser: entry.browser, profile: entry.profile }),
+        }),
+        instances,
     };
 }
 
@@ -344,21 +455,14 @@ function assertSessionAdapter(adapter: SourceAdapter): void {
 
 async function resolveCredentials(
     deps: ResolveSourceDeps,
-    sourceConfig: DomainAuthConfig,
+    // Multi-account (`accounts:`, #254) is routed to the accounts path upstream ({@link resolveAccountsContext})
+    // and guarded out of this single-credential path in {@link resolveSourceContext}, so the type excludes it: a
+    // `session` source reaching here is a single browser/paste session (#180/#218), never a list of accounts.
+    sourceConfig: DomainAuthConfig & { readonly accounts?: never },
 ): Promise<ResolvedCredentials> {
     // A `session` source resolves to a descriptor the adapter's authenticate() hands to importSession; the
     // shape gate is skipped for session upstream (#205), so this branch is the one credential path it takes.
     if (sourceConfig.kind === 'session') {
-        // Multi-account (#254): the collect pipeline does not yet iterate accounts — a separate item lifts the
-        // loop. A parseable `accounts:` config reaching this single-source path fails CLOSED here rather than
-        // silently collecting one account and dropping the rest; it also narrows the session union so the
-        // single browser-session resolution below type-checks.
-        if (sourceConfig.accounts !== undefined) {
-            throw new OperationError(
-                'unsupported-shape',
-                'multi-account sources (`accounts:`) are not yet collectable — configure a single `browser`/`profile` for now',
-            );
-        }
         // Manual-paste session (#218): the pasted material IS a live credential, so it is supplied as a
         // secret-ref and resolved through the SAME resolver as any other (op:// / env / encrypted-file: /
         // file) — never an inline config value or a CLI flag. The resolved value stays fenced in the
@@ -462,6 +566,30 @@ function buildInstancesRequest(
         instances,
         now,
         ...(challengeResolver === undefined ? {} : { challengeResolver }),
+        ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
+        ...(range === undefined ? {} : { window: range }),
+    };
+}
+
+/**
+ * {@link buildRequest}'s multi-account sibling (#257): ONE shared writer + window, the resolved accounts to
+ * collect. Credentials + instances ride PER account (each {@link @getreceipt/core!AccountCollect} authenticates
+ * independently), so this request carries only the source-shared knobs. The single writer keyed by instance
+ * domain is what co-mingles same-marketplace output across accounts (#254 keying, follow-up #266 for separation).
+ */
+function buildAccountsRequest(
+    window: OperationWindow | undefined,
+    adapter: SourceAdapter,
+    accounts: readonly AccountCollect[],
+    deps: OperationRunnerDeps,
+): CollectAccountsRequest {
+    const now = deps.now();
+    const range = resolveWindow(window, adapter, now);
+    return {
+        adapter,
+        writer: deps.createWriter(),
+        accounts,
+        now,
         ...(deps.challengeObserver === undefined ? {} : { challengeObserver: deps.challengeObserver }),
         ...(range === undefined ? {} : { window: range }),
     };
