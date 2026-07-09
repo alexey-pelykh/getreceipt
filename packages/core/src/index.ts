@@ -53,10 +53,12 @@ export {
     UnsupportedCredentialShapeError,
 } from './errors.js';
 
-export { collect, collectInstances } from './collect.js';
+export { collect, collectAccounts, collectInstances } from './collect.js';
 export { isWithinDateFilter } from './date-filter.js';
 export { hostTimeZone, zonedDayEnd, zonedDayStart } from './zoned-window.js';
 export type {
+    AccountCollect,
+    CollectAccountsRequest,
     CollectFailed,
     CollectInstancesRequest,
     CollectReauthRequired,
