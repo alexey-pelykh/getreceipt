@@ -146,8 +146,9 @@ export async function renderUrlInProfile(
 /**
  * Open the getreceipt-OWNED persistent profile in a HEADFUL window so the operator can sign in — the attended
  * `max_auth_age` recovery for the browser-driven tier (#255). Unlike {@link renderUrlInProfile} (headless,
- * unattended), this launches with `headless: false` and navigates to `url` (the site's sign-in page) so a
- * visible window appears for the operator to complete sign-in IN THAT PROFILE; getreceipt never handles their
+ * unattended), this launches with `headless: false` and navigates to `url` (a sign-in ENTRY — typically a
+ * protected page the site redirects to its real sign-in form, since a bare sign-in path may not render on its
+ * own) so a visible window appears for the operator to complete sign-in IN THAT PROFILE; getreceipt never handles their
  * password/OTP. The signed-in cookies land in `profileDir` on disk, so the next headless fetch reuses the warm
  * session. Returns a handle whose {@link SignInWindow.close} the caller invokes once the operator signals they
  * are done — the caller (the CLI's attended re-auth loop) owns the "wait for the operator" prompt.
