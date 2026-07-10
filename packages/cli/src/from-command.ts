@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { ConfigParseResult, CredentialValue, LoginSecrets, Secret } from '@getreceipt/auth';
+import type { ConfigParseResult, CredentialValue, LoginSecrets, OwnedProfile, Secret } from '@getreceipt/auth';
 import type {
     CollectAccountsRequest,
     CollectInstancesRequest,
@@ -18,7 +18,14 @@ import { EXIT_CODES, exitCodeFor, renderResultsTable } from './from-render.js';
 import { processStreamsIO, type CliIO } from './io.js';
 import { promptLine } from './interactive-challenge-resolver.js';
 import { OperationError } from './operation-runner.js';
-import { attendedReauthPrompt, firstRunSignInNotice, runWithAttendedReauth } from './reauth-loop.js';
+import {
+    attendedReauthPrompt,
+    browserReauthPrompt,
+    defaultSignInWindowOpener,
+    firstRunSignInNotice,
+    runWithAttendedReauth,
+    type SignInWindowOpener,
+} from './reauth-loop.js';
 import {
     defaultCollectionDeps,
     runCollect,
@@ -68,6 +75,18 @@ export interface FromCommandEnv {
      * real profile dir. See {@link @getreceipt/cli!OperationRunnerDeps.onOwnedProfileFirstRun}.
      */
     readonly onOwnedProfileFirstRun?: (source: string) => void;
+    /**
+     * Resolves the getreceipt-owned browser profile for a browser-tier source (#264). Defaults to the real
+     * `ensureOwnedProfile` (via {@link defaultCollectionDeps}); injectable so tests drive the browser tier
+     * without touching the home dir. Threaded through to the runner, which fires the resolution side-channel.
+     */
+    readonly resolveOwnedProfile?: (canonicalDomain: string, account?: string) => OwnedProfile;
+    /**
+     * Opens the getreceipt-owned profile in a headful sign-in window for a browser-tier re-auth (#270). Defaults
+     * to {@link defaultSignInWindowOpener} (lazy `@getreceipt/browser` — the CLI stays Playwright-free); tests
+     * inject a stub. Absent → a browser-tier re-auth falls back to the text-only prompt (never launches a window).
+     */
+    readonly openSignInWindow?: SignInWindowOpener;
 }
 
 interface FromOptions {
@@ -97,6 +116,8 @@ function defaultEnv(): FromCommandEnv {
         // Browser tier first-run (#264): surface the one-time owned-profile sign-in notice on stderr (source-only,
         // redaction-safe). getreceipt never handles the operator's password/OTP on this path.
         onOwnedProfileFirstRun: (source) => io.writeErr(firstRunSignInNotice(source)),
+        // Browser-tier attended re-auth (#270): the real owned-profile window opener (lazy Playwright).
+        openSignInWindow: defaultSignInWindowOpener(),
     };
 }
 
@@ -159,15 +180,43 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
                 outDir,
                 ...(window === undefined ? {} : { window }),
             };
+            // Browser-tier re-auth (#270): the runner fires onBrowserTierResolved once it resolves an owned
+            // profile, so capture the profileDir + baked signInUrl here. Populated by the first runOnce; read at
+            // onReauth time (reached only AFTER runOnce), so a browser-tier step-up opens the OWNED-profile window.
+            let browserReauth: { readonly profileDir: string; readonly signInUrl: string } | undefined;
+            const captureBrowserTier = (info: { readonly profileDir: string; readonly signInUrl: string }): void => {
+                browserReauth = info;
+            };
             // Verbose wraps the adapter with a secret-fenced stage tracer AND a challenge-lifecycle
             // observer (#142); both trace sinks are the CLI's stderr.
             const deps: CollectionDeps = verbose
                 ? {
                       ...env,
+                      onBrowserTierResolved: captureBrowserTier,
                       instrument: (adapter) => traceAdapter(adapter, env.io.writeErr),
                       challengeObserver: traceChallengeObserver(env.io.writeErr),
                   }
-                : env;
+                : { ...env, onBrowserTierResolved: captureBrowserTier };
+
+            // The attended re-auth action, chosen at call time: a browser-tier source (a profile was captured AND
+            // a window opener is wired) opens the getreceipt-OWNED headful window; every other tier keeps the
+            // text-only "sign in in your own browser" prompt (the HTTP re-import model). Both remain gated behind
+            // runWithAttendedReauth's --reauth + interactive-TTY guard, so a piped run never reaches either.
+            const onReauth = (): Promise<void> => {
+                const captured = browserReauth;
+                const action =
+                    captured !== undefined && env.openSignInWindow !== undefined
+                        ? browserReauthPrompt(
+                              env.io,
+                              domain,
+                              captured.profileDir,
+                              captured.signInUrl,
+                              env.openSignInWindow,
+                              env.readLine,
+                          )
+                        : attendedReauthPrompt(env.io, domain, env.readLine);
+                return action();
+            };
 
             // --all-instances (#190): collect every configured instance of the source under ONE shared auth,
             // reporting a per-instance batch (same shape `all` emits) rather than a single result.
@@ -181,7 +230,7 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
                         needsReauth: (r) => r.sources.some((s) => s.ok && s.result.outcome === 'reauth-required'),
                         reauth: options.reauth === true,
                         isInteractive: env.isInteractive,
-                        onReauth: attendedReauthPrompt(env.io, domain, env.readLine),
+                        onReauth,
                     });
                 } catch (error) {
                     if (error instanceof OperationError) {
@@ -205,7 +254,7 @@ export function createFromCommand(overrides: Partial<FromCommandEnv> = {}): Comm
                     needsReauth: (r) => r.outcome === 'reauth-required',
                     reauth: options.reauth === true,
                     isInteractive: env.isInteractive,
-                    onReauth: attendedReauthPrompt(env.io, domain, env.readLine),
+                    onReauth,
                 });
             } catch (error) {
                 if (error instanceof OperationError) {

@@ -141,6 +141,15 @@ export interface OperationRunnerDeps extends ResolveSourceDeps {
      * (a warm profile never fires it). getreceipt NEVER handles the operator's password/OTP on this path.
      */
     readonly onOwnedProfileFirstRun?: (source: string) => void;
+    /**
+     * Side-channel fired once a browser-tier source resolves its owned profile (#270): carries the resolved
+     * `profileDir` plus the descriptor's baked `signInUrl` so the CLI's re-auth loop can open the owned-profile
+     * sign-in window at exactly this source's entry (vs the HTTP tier's text-only re-import prompt). Fires on
+     * EVERY browser-tier resolve (first-run and warm) — the run may still hit a mid-collect step-up on a warm
+     * profile. HTTP/scrape sources never fire it. Redaction-safe: `signInUrl` is a public constant; `profileDir`
+     * stays in-process (never logged). getreceipt NEVER handles the operator's password/OTP on this path.
+     */
+    readonly onBrowserTierResolved?: (info: { readonly profileDir: string; readonly signInUrl: string }) => void;
 }
 
 /**
@@ -156,11 +165,12 @@ export async function runOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<OperationResult> {
-    const { adapter, credentials, challengeResolver, instance, ownedProfile } = await resolveSourceContext(
+    const { adapter, credentials, challengeResolver, instance, ownedProfile, signInUrl } = await resolveSourceContext(
         { source: spec.source, ...(selection ? { selection } : {}) },
         deps,
     );
     notifyOwnedProfileFirstRun(spec.source, ownedProfile, deps);
+    notifyBrowserTierResolved(ownedProfile, signInUrl, deps);
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     // `instance` is set when `spec.source` addresses a specific instance of a multi-instance source (#190);
     // collect() keys its output by the instance domain. Single-instance sources resolve `instance` undefined.
@@ -182,9 +192,10 @@ export async function runInstancesOperation(
     selection: ConfigSelection | undefined,
     deps: OperationRunnerDeps,
 ): Promise<readonly OperationResult[]> {
-    const { adapter, credentials, challengeResolver, instance, configuredInstances, ownedProfile } =
+    const { adapter, credentials, challengeResolver, instance, configuredInstances, ownedProfile, signInUrl } =
         await resolveSourceContext({ source: spec.source, ...(selection ? { selection } : {}) }, deps);
     notifyOwnedProfileFirstRun(spec.source, ownedProfile, deps);
+    notifyBrowserTierResolved(ownedProfile, signInUrl, deps);
     const runAdapter = deps.instrument === undefined ? adapter : deps.instrument(adapter);
     if (configuredInstances.length === 0) {
         // No multi-instance config: one run for the addressed/canonical instance (single-instance behavior).
@@ -248,6 +259,8 @@ export async function resolveSourceContext(
     readonly configuredInstances: readonly InstanceContext[];
     /** The resolved getreceipt-owned browser profile (#264), present only when the source selects the browser tier. */
     readonly ownedProfile?: OwnedProfile;
+    /** The descriptor's baked attended sign-in URL (#270), present only for a browser-tier source — where the owned-profile window opens. */
+    readonly signInUrl?: string;
 }> {
     const { adapter, instance } = resolveAddressed(deps.resolver, spec.source);
     const path = deps.resolveConfigPath(spec.selection);
@@ -302,6 +315,9 @@ export async function resolveSourceContext(
         surfaces['out-of-band'] = deps.buildOutOfBandResolver(sourceConfig.mfa?.trustDevice ?? false);
     }
     const challengeResolver = Object.keys(surfaces).length === 0 ? undefined : new RoutingChallengeResolver(surfaces);
+    // The attended sign-in URL travels with the browser tier (#270): surfaced only when an owned profile was
+    // resolved, so the CLI opens the owned-profile window at exactly this source's baked sign-in entry.
+    const signInUrl = ownedProfile === undefined ? undefined : tierAdapter.descriptor.signInUrl;
     return {
         adapter: tierAdapter,
         credentials,
@@ -309,6 +325,7 @@ export async function resolveSourceContext(
         ...(instance === undefined ? {} : { instance }),
         ...(challengeResolver === undefined ? {} : { challengeResolver }),
         ...(ownedProfile === undefined ? {} : { ownedProfile }),
+        ...(signInUrl === undefined ? {} : { signInUrl }),
     };
 }
 
@@ -567,6 +584,22 @@ function notifyOwnedProfileFirstRun(
 ): void {
     if (ownedProfile?.firstRun === true) {
         deps.onOwnedProfileFirstRun?.(source);
+    }
+}
+
+/**
+ * Hand the resolved owned `profileDir` + the descriptor's baked `signInUrl` to the CLI (#270) so its re-auth loop
+ * opens the owned-profile sign-in window at this source's entry. Fires on every browser-tier resolve (both keys
+ * present); a no-op for HTTP/scrape sources (no owned profile → no `signInUrl`). See
+ * {@link OperationRunnerDeps.onBrowserTierResolved}.
+ */
+function notifyBrowserTierResolved(
+    ownedProfile: OwnedProfile | undefined,
+    signInUrl: string | undefined,
+    deps: OperationRunnerDeps,
+): void {
+    if (ownedProfile !== undefined && signInUrl !== undefined) {
+        deps.onBrowserTierResolved?.({ profileDir: ownedProfile.profileDir, signInUrl });
     }
 }
 

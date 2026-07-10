@@ -99,6 +99,12 @@ export interface CollectionDeps extends Omit<ResolveSourceDeps, 'buildOutOfBandR
      * {@link OperationRunnerDeps.onOwnedProfileFirstRun}.
      */
     readonly onOwnedProfileFirstRun?: (source: string) => void;
+    /**
+     * Fired once a browser-tier source resolves its owned profile (#270): the CLI captures the `profileDir` +
+     * baked `signInUrl` so its re-auth loop opens the owned-profile sign-in window (vs the HTTP text prompt).
+     * The MCP path omits it (unattended — no window). See {@link OperationRunnerDeps.onBrowserTierResolved}.
+     */
+    readonly onBrowserTierResolved?: (info: { readonly profileDir: string; readonly signInUrl: string }) => void;
 }
 
 /**
@@ -172,6 +178,7 @@ function toRunnerDeps(deps: McpCollectionDeps, outDir: string): OperationRunnerD
         ...(deps.buildOutOfBandResolver === undefined ? {} : { buildOutOfBandResolver: deps.buildOutOfBandResolver }),
         ...(deps.resolveOwnedProfile === undefined ? {} : { resolveOwnedProfile: deps.resolveOwnedProfile }),
         ...(deps.onOwnedProfileFirstRun === undefined ? {} : { onOwnedProfileFirstRun: deps.onOwnedProfileFirstRun }),
+        ...(deps.onBrowserTierResolved === undefined ? {} : { onBrowserTierResolved: deps.onBrowserTierResolved }),
     };
 }
 

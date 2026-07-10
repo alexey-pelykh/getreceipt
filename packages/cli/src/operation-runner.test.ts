@@ -1398,6 +1398,35 @@ describe('resolveSourceContext — #264 browser-tier owned-profile wiring', () =
         expect(warm).toEqual([]); // warm reuse → no prompt
     });
 
+    it('fires onBrowserTierResolved with the profileDir + the descriptor signInUrl through runOperation — silent for the HTTP tier (#270)', async () => {
+        const SIGN_IN_URL = 'https://shop.example/ap/signin';
+        // The BOUND adapter carries the baked sign-in URL — signInUrl surfaces off the rebound descriptor.
+        const bound: SourceAdapter = { ...adapter(), descriptor: { ...adapter().descriptor, signInUrl: SIGN_IN_URL } };
+        const resolved: Array<{ profileDir: string; signInUrl: string }> = [];
+
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(bindableSessionAdapter('headless-browser', { onBind: () => {}, bound })),
+                loadConfig: () => browserTierConfig,
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: () => ({ profileDir: '/owned/shop.example', firstRun: false }),
+                onBrowserTierResolved: (info) => resolved.push(info),
+            }),
+        );
+        expect(resolved).toEqual([{ profileDir: '/owned/shop.example', signInUrl: SIGN_IN_URL }]);
+
+        // HTTP tier (the default password source): no owned profile resolves → the side-channel never fires.
+        const httpResolved: Array<unknown> = [];
+        await runOperation(
+            { source: 'shop.example', profile: 'default' },
+            undefined,
+            deps({ onBrowserTierResolved: (info) => httpResolved.push(info) }),
+        );
+        expect(httpResolved).toEqual([]);
+    });
+
     it('fails closed on the browser tier + multi-account combination — per-account profiles are a scoped follow-up', async () => {
         const accounts: readonly AccountAuthConfig[] = [
             { account: 'personal', browser: 'chrome', profile: 'Personal' },

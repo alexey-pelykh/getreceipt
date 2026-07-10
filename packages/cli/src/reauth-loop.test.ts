@@ -6,6 +6,7 @@ import {
     attendedReauthPrompt,
     browserReauthPrompt,
     DEFAULT_REAUTH_ATTEMPTS,
+    defaultSignInWindowOpener,
     firstRunSignInNotice,
     runWithAttendedReauth,
 } from './reauth-loop.js';
@@ -317,5 +318,16 @@ describe('firstRunSignInNotice — first-run owned-profile heads-up (#264/#256)'
         expect(notice).not.toContain('\\');
         // No home-dir or dotfile markers, no cookie/session token vocabulary.
         expect(notice).not.toMatch(/Users|home|\.getreceipt|cookie|session/i);
+    });
+});
+
+describe('defaultSignInWindowOpener — Playwright-free construction (#270 AC5)', () => {
+    it('constructs the opener WITHOUT eager-loading @getreceipt/browser: the factory is synchronous, the import is deferred into the returned closure', () => {
+        // The factory returns a SignInWindowOpener synchronously — the `await import('@getreceipt/browser')` lives
+        // INSIDE that closure, reached only when a window actually opens. So building the CLI env (which calls this)
+        // never pulls Playwright into the always-loaded path; this test never invokes the closure, so none loads here.
+        const opener = defaultSignInWindowOpener();
+        expect(typeof opener).toBe('function');
+        expect(opener.length).toBe(2); // (profileDir, signInUrl)
     });
 });
