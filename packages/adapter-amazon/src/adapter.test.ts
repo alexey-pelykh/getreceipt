@@ -370,6 +370,16 @@ describe('AmazonAdapter — AC1: registration + resolution', () => {
         expect(descriptor.instances).toEqual(WIRE_INSTANCES.map((i) => ({ ...i })));
         expect(descriptor.defaultWindow.days).toBeGreaterThan(0);
     });
+
+    it('opens a PROTECTED entry (order history) for attended browser-tier sign-in, never the bare /ap/signin (#270 fix)', () => {
+        // The attended owned-profile window navigates to descriptor.signInUrl. It MUST be a navigable page:
+        // Amazon renders its sign-in form only by REDIRECTING an unauthenticated hit off a protected page, so a
+        // bare `/ap/signin` (the fetch-bounce DETECTION substring) 404s on its own. The entry is order history —
+        // and it must never be the raw sign-in path, or the operator lands on a 404 and cannot sign in.
+        const { signInUrl } = amazonAdapter.descriptor;
+        expect(signInUrl).toBe(`${ENDPOINTS.origin}${ENDPOINTS.orderHistory}`);
+        expect(signInUrl).not.toContain(ENDPOINTS.signIn);
+    });
 });
 
 describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profile tier)', () => {
