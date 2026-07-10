@@ -303,6 +303,9 @@ importers:
       '@getreceipt/auth':
         specifier: workspace:^
         version: link:../auth
+      '@getreceipt/browser':
+        specifier: workspace:^
+        version: link:../browser
       '@getreceipt/core':
         specifier: workspace:^
         version: link:../core

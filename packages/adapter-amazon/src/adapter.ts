@@ -111,6 +111,10 @@ const DESCRIPTOR: SourceDescriptor = {
     // list scrapes the server-rendered order history over the impersonating transport; fetch drives the invoice
     // print page inside a persistent browser profile (#253). The source-level tier is the most-capable stage it uses.
     transportTier: 'headless-browser',
+    // The attended sign-in entry the browser tier opens for the operator's one-time owned-profile sign-in
+    // (#255/#270): the canonical origin's `/ap/signin` — the SAME publishable baked constant fetch's step-up
+    // detection keys off (`finalUrl.includes(ENDPOINTS.signIn)`). One Amazon SSO sign-in serves every marketplace.
+    signInUrl: `${ORIGIN}${ENDPOINTS.signIn}`,
     // `fetch` renders the invoice print page to a faithful print-layout PDF via @getreceipt/browser (#172/#182).
     artifactMode: 'rendered',
     // The listing is "your-orders", dated by the ORDER date.

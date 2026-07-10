@@ -16,6 +16,7 @@ import {
 import type {
     ArtifactHandle,
     AuthHandle,
+    BrowserProfileBindableAdapter,
     CollectResult,
     CredentialContext,
     DateRange,
@@ -29,6 +30,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ConsentRequiredError, createConsentGate } from './consent-gate.js';
 import { createFromCommand } from './from-command.js';
 import type { FromCommandEnv } from './from-command.js';
+import type { SignInWindowOpener } from './reauth-loop.js';
 import { addGlobalConfigOptions } from './resolve-options.js';
 
 const configFixture = fileURLToPath(new URL('./__fixtures__/from.getreceipt.yaml', import.meta.url));
@@ -888,5 +890,207 @@ describe('from <domain> — attended re-auth loop (--reauth, #247)', () => {
         expect(scripted.calls()).toBe(2);
         expect(prompts).toHaveLength(1);
         expect(out).toContain('shop.example — succeeded');
+    });
+});
+
+describe('from <domain> — browser-tier attended sign-in wiring (#270)', () => {
+    const BROWSER_SIGN_IN_URL = 'https://shop.example/ap/signin';
+    const BROWSER_PROFILE_DIR = '/owned/shop.example';
+    const window = { from: new Date('2024-01-01T00:00:00.000Z'), to: new Date('2024-01-31T00:00:00.000Z') };
+    const reauthResult: CollectResult = {
+        outcome: 'reauth-required',
+        source: 'shop.example',
+        window,
+        reason: 'session expired',
+    };
+    const okResult: CollectResult = { outcome: 'succeeded', source: 'shop.example', window, written: [], skipped: [] };
+
+    /**
+     * A session adapter DECLARING the browser tier AND exposing the #264 `withBrowserProfile` bind seam, carrying
+     * the baked sign-in URL fetch's step-up keys off — the shape a real browser-tier source (amazon) presents.
+     */
+    function browserTierAdapter(): SourceAdapter {
+        const base = fakeAdapter();
+        const bound: SourceAdapter = {
+            ...base,
+            descriptor: {
+                ...base.descriptor,
+                authKind: 'session',
+                credentialShapes: ['none'],
+                transportTier: 'headless-browser',
+                signInUrl: BROWSER_SIGN_IN_URL,
+            },
+        };
+        const bindable: SourceAdapter & BrowserProfileBindableAdapter = { ...bound, withBrowserProfile: () => bound };
+        return bindable;
+    }
+
+    /** A paste-session config SELECTING the browser tier (`transport: headless-browser`). */
+    const browserTierConfig: ConfigParseResult = {
+        config: {
+            sources: {
+                'shop.example': {
+                    kind: 'session',
+                    paste: { ref: 'op://Private/browser-session' },
+                    transport: 'headless-browser',
+                },
+            },
+        },
+        warnings: [],
+    };
+
+    /** A stub {@link SignInWindowOpener} recording each (profileDir, signInUrl) open + its closes — no Playwright. */
+    function stubOpener(): {
+        open: SignInWindowOpener;
+        opens: () => ReadonlyArray<readonly [string, string]>;
+        closes: () => number;
+    } {
+        const opens: Array<readonly [string, string]> = [];
+        let closes = 0;
+        return {
+            open: (profileDir, signInUrl) => {
+                opens.push([profileDir, signInUrl]);
+                return Promise.resolve({
+                    close: () => {
+                        closes += 1;
+                        return Promise.resolve();
+                    },
+                });
+            },
+            opens: () => opens,
+            closes: () => closes,
+        };
+    }
+
+    /** A `collect` seam yielding the queued outcomes in order (the last repeats), counting its calls. */
+    function queuedCollect(...results: readonly CollectResult[]): {
+        collect: () => Promise<CollectResult>;
+        calls: () => number;
+    } {
+        let index = 0;
+        let calls = 0;
+        return {
+            collect: () => {
+                calls += 1;
+                const result = results[Math.min(index, results.length - 1)]!;
+                index += 1;
+                return Promise.resolve(result);
+            },
+            calls: () => calls,
+        };
+    }
+
+    /** Browser-tier overrides: a bindable browser adapter + its config, an injected owned-profile resolver (no home dir), a paste credential. */
+    function browserTierEnv(firstRun: boolean, opener: SignInWindowOpener): Partial<FromCommandEnv> {
+        return {
+            resolver: resolverWith(browserTierAdapter()),
+            loadConfig: () => browserTierConfig,
+            resolveCredential: () => Promise.resolve(new Secret('Cookie: session-id=synthetic')),
+            resolveOwnedProfile: () => ({ profileDir: BROWSER_PROFILE_DIR, firstRun }),
+            openSignInWindow: opener,
+            // No-op the #264 first-run notice: the default binds defaultEnv's real stderr (not the captured io), so
+            // leaving it would leak to the process stream. Its behavior is covered in operation-runner.test.ts.
+            onOwnedProfileFirstRun: () => {},
+        };
+    }
+
+    it('AC1 first-run: an empty-profile browser-tier reauth on a TTY opens the OWNED window at the baked URL, then resumes (exit 0)', async () => {
+        const opener = stubOpener();
+        const scripted = queuedCollect(reauthResult, okResult);
+        const { out, err, error } = await runFrom(['shop.example', '--reauth'], {
+            ...browserTierEnv(true, opener.open),
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: () => Promise.resolve(''), // operator signed in, pressed Enter
+        });
+        expect(error).toBeUndefined();
+        expect(scripted.calls()).toBe(2); // initial reauth-required + one resume
+        // The OWNED-profile window opened exactly once at the source's baked sign-in URL, and was closed on resume.
+        expect(opener.opens()).toEqual([[BROWSER_PROFILE_DIR, BROWSER_SIGN_IN_URL]]);
+        expect(opener.closes()).toBe(1);
+        // The browser-tier prompt OPENS A WINDOW (not the HTTP text prompt) even on a first-run (empty) profile.
+        expect(err).toContain('Opening a sign-in window in the getreceipt-owned browser profile');
+        expect(out).toContain('shop.example — succeeded');
+    });
+
+    it('AC2 mid-collect: a warm-profile browser-tier step-up on a TTY opens the OWNED window, then resumes (exit 0)', async () => {
+        const opener = stubOpener();
+        const scripted = queuedCollect(reauthResult, okResult);
+        const { err, error } = await runFrom(['shop.example', '--reauth'], {
+            ...browserTierEnv(false, opener.open), // warm profile — no first-run notice
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: () => Promise.resolve(''),
+        });
+        expect(error).toBeUndefined();
+        expect(opener.opens()).toEqual([[BROWSER_PROFILE_DIR, BROWSER_SIGN_IN_URL]]);
+        expect(opener.closes()).toBe(1);
+        expect(err).not.toContain('First run'); // warm profile → no first-run heads-up, still opens the window
+    });
+
+    it('AC3 non-TTY: a browser-tier reauth-required NEVER opens a window (structural gate preserved), exit 5', async () => {
+        const opener = stubOpener();
+        const scripted = queuedCollect(reauthResult);
+        const { error } = await runFrom(['shop.example', '--reauth'], {
+            ...browserTierEnv(true, opener.open),
+            collect: scripted.collect,
+            isInteractive: () => false, // piped / scheduled
+            readLine: () => Promise.reject(new Error('readLine must not be called on a non-TTY run')),
+        });
+        expect(error).toMatchObject({ exitCode: 5 }); // honest reauth-required
+        expect(opener.opens()).toEqual([]); // no window ever launched
+        expect(scripted.calls()).toBe(1); // no resume
+    });
+
+    it('AC3 no --reauth: a browser-tier reauth-required NEVER opens a window even on a TTY, exit 5', async () => {
+        const opener = stubOpener();
+        const scripted = queuedCollect(reauthResult);
+        const { error } = await runFrom(['shop.example'], {
+            ...browserTierEnv(true, opener.open),
+            collect: scripted.collect,
+            isInteractive: () => true, // interactive, but no --reauth flag
+            readLine: () => Promise.reject(new Error('readLine must not be called without --reauth')),
+        });
+        expect(error).toMatchObject({ exitCode: 5 });
+        expect(opener.opens()).toEqual([]);
+        expect(scripted.calls()).toBe(1);
+    });
+
+    it('AC4 HTTP tier unchanged: a reauth on an http-api source keeps the text prompt — the window opener is NEVER called', async () => {
+        const opener = stubOpener();
+        const scripted = queuedCollect(reauthResult, okResult);
+        const prompts: string[] = [];
+        const { err, error } = await runFrom(['shop.example', '--reauth'], {
+            // Default resolver/config = the http-api password source; inject an opener to PROVE it stays unused.
+            openSignInWindow: opener.open,
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: (_io, prompt) => {
+                prompts.push(prompt);
+                return Promise.resolve('');
+            },
+        });
+        expect(error).toBeUndefined();
+        expect(opener.opens()).toEqual([]); // the browser window is NEVER opened for an HTTP source
+        expect(prompts).toHaveLength(1);
+        // The HTTP text prompt directs the operator to THEIR OWN browser (the readLine prompt), and the
+        // owned-profile window notice is absent from stderr — the HTTP path is unchanged (attendedReauthPrompt).
+        expect(prompts[0]).toContain('in your browser');
+        expect(err).not.toContain('Opening a sign-in window');
+    });
+
+    it('AC6 redaction: the owned-profile path is handed to the opener in-process but NEVER printed to the operator', async () => {
+        const opener = stubOpener();
+        const scripted = queuedCollect(reauthResult, okResult);
+        const { err } = await runFrom(['shop.example', '--reauth'], {
+            ...browserTierEnv(false, opener.open),
+            collect: scripted.collect,
+            isInteractive: () => true,
+            readLine: () => Promise.resolve(''),
+        });
+        // The dir reaches the opener (the window needs it) but is a fixed-literal-free surface to the operator.
+        expect(opener.opens()).toEqual([[BROWSER_PROFILE_DIR, BROWSER_SIGN_IN_URL]]);
+        expect(err).not.toContain(BROWSER_PROFILE_DIR);
+        expect(err).not.toContain('/owned');
     });
 });

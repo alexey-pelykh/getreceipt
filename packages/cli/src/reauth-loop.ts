@@ -82,6 +82,19 @@ export type SignInWindowOpener = (
 ) => Promise<{ readonly close: () => Promise<void> }>;
 
 /**
+ * The production {@link SignInWindowOpener}: `@getreceipt/browser`'s `openProfileForSignIn` (#270). Imported
+ * LAZILY — mirroring `adapter-amazon`'s `fetchInvoiceViaBrowser` — so the CLI's always-loaded path never
+ * eager-loads Playwright (#270 AC5): the module resolves only when an attended browser-tier re-auth actually
+ * opens a window. Tests inject a stub opener instead, so this is never reached under test.
+ */
+export function defaultSignInWindowOpener(): SignInWindowOpener {
+    return async (profileDir, signInUrl) => {
+        const { openProfileForSignIn } = await import('@getreceipt/browser');
+        return openProfileForSignIn(profileDir, signInUrl);
+    };
+}
+
+/**
  * Build the {@link AttendedReauthOptions.onReauth} action for the browser-DRIVEN tier (#255). Where
  * {@link attendedReauthPrompt} tells the operator to sign in again in their OWN browser (the HTTP path re-imports
  * from that cookie store), the browser tier's session lives in getreceipt's OWNED persistent profile — so this

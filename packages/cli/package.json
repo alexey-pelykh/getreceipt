@@ -48,6 +48,7 @@
     "@getreceipt/adapter-particuliers-alpiq-fr": "workspace:^",
     "@getreceipt/adapter-pro-free-fr": "workspace:^",
     "@getreceipt/auth": "workspace:^",
+    "@getreceipt/browser": "workspace:^",
     "@getreceipt/core": "workspace:^",
     "@getreceipt/testing": "workspace:^",
     "@getreceipt/transport-impersonate": "workspace:^",

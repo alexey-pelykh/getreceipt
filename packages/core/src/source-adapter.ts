@@ -167,6 +167,15 @@ export interface SourceDescriptor {
      */
     readonly credentialShapes: readonly CredentialShape[];
     readonly transportTier: TransportTier;
+    /**
+     * The absolute sign-in URL the `headless-browser` tier opens for the operator's one-time attended sign-in
+     * into the getreceipt-OWNED persistent profile (#255/#270) — a baked public constant (the same publication
+     * class as the source's host), NOT runtime-discovered. Present only on a source declaring the
+     * `headless-browser` {@link transportTier}: the CLI re-auth loop navigates the owned-profile window here so
+     * the operator signs in THEMSELVES (getreceipt never handles the password/OTP). Absent on HTTP/scrape tiers,
+     * whose re-auth re-imports from the operator's own browser instead.
+     */
+    readonly signInUrl?: string;
     readonly artifactMode: ArtifactMode;
     readonly dateFilter: DateFilter;
     /**
