@@ -42,3 +42,10 @@ sources:
     # (not nested inside it); omit it for a single-instance source. Each entry must be a domain the adapter
     # DECLARES it serves (fail-closed, ADR-008 §8) — amazon.com (canonical), amazon.fr, and amazon.de (#228).
     instances: [amazon.com, amazon.fr, amazon.de]
+    # transport: headless-browser  # OPT-IN browser-driven tier (#264/#270) — a SOURCE-level sibling of `auth:`.
+    #   Default (this line commented): invoice FETCH runs over the Chrome-impersonating HTTP transport, replaying
+    #   the imported session. Uncomment to render each invoice inside a getreceipt-OWNED persistent browser profile
+    #   instead — a warm, already-signed-in profile that clears Amazon's invoice `max_auth_age` step-up an HTTP
+    #   cookie-replay client cannot. The owned profile is signed in ONCE, attended: `getreceipt from amazon.com
+    #   --reauth` opens a headful sign-in window you complete yourself (getreceipt never handles your password/OTP).
+    #   Observed reliability is under live validation (#258); leave it commented unless you are exercising the tier.

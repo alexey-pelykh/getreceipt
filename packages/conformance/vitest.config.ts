@@ -10,5 +10,10 @@ export default mergeConfig(sharedVitestConfig, {
     test: {
         name: '@getreceipt/conformance',
         exclude: [...configDefaults.exclude, '**/*.e2e.test.ts'],
+        // The live-harness synthetic-fixture suites (e.g. amazon-fr-session.test.ts) are MSW-hermetic but can
+        // spike past vitest's 5s default under turbo/CI parallel load (notably a Windows runner) — a budget
+        // flake, not a hang. Mirror the 30s ceiling every adapter package already carries (#239/#220);
+        // conformance was the one package that missed it.
+        testTimeout: 30_000,
     },
 });
