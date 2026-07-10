@@ -423,6 +423,37 @@ The instances share **one** imported session, so a stale session is a **source-l
 `reauth-required` is raised for the source and **all** its instances are blocked until you re-establish that one
 login (re-import in your browser, or re-paste). There is no per-instance re-auth.
 
+#### Transport tier (browser-driven fetch)
+
+By default, invoice **fetch** runs over the same Chrome-impersonating **HTTP transport** as the order list,
+replaying the imported session. Amazon additionally gates the **invoice** page behind a `max_auth_age` **step-up**
+that a cookie-replay HTTP client cannot clear: after a while, fetch bounces to the sign-in page and the run returns
+`reauth-required`.
+
+Opting a source into the **browser-driven tier** renders each invoice inside a **getreceipt-owned** persistent
+browser profile instead — a warm, already-signed-in profile that satisfies the step-up. Select it with a
+**source-level** `transport:` key (a sibling of `auth:`/`instances:`, same indentation):
+
+```yaml
+sources:
+  amazon.com:
+    auth:
+      browser: chrome
+      profile: 'you@example.com'
+    instances: [amazon.com, amazon.fr, amazon.de]
+    transport: headless-browser # opt into the browser-driven fetch tier
+```
+
+The owned profile is **separate** from the everyday browser you import the session from, and it is signed in
+**once, attended**: run `getreceipt from amazon.com --reauth` on an interactive terminal and getreceipt opens a
+headful sign-in window pointed at the owned profile — **you** complete the sign-in there (getreceipt never handles
+your password or OTP), press Enter, and the run resumes over the now-warm profile. A piped / non-interactive run
+(or one without `--reauth`) never opens a window; it returns the honest `reauth-required` outcome instead.
+
+> The browser tier's **observed reliability** is under live validation
+> ([#258](https://github.com/alexey-pelykh/getreceipt/issues/258)) — treat it as **opt-in and experimental** until
+> then. Omit `transport:` (the default) to stay on the HTTP tier.
+
 #### Per-marketplace status (as of this writing)
 
 A marketplace is only **collectable** once it is a declared **and** validated instance. Amazon's instances are
