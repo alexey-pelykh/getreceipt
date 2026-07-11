@@ -43,3 +43,25 @@ export const fetchInvoiceViaBrowser: BrowserInvoiceFetcher = async (profileDir, 
     const { renderUrlInProfile } = await import('@getreceipt/browser');
     return renderUrlInProfile(profileDir, url.toString());
 };
+
+/**
+ * Loads an order-history page's HTML inside a persistent browser profile — the browser-driven `list` seam (#275,
+ * the symmetric half of {@link BrowserInvoiceFetcher}). Returns just the HTML (parsed by the same order parser
+ * the HTTP path uses) AND the URL the navigation ended on (so `list` routes a sign-in bounce to re-auth). No PDF:
+ * listing renders none. Defaults to {@link loadOrderPageViaBrowser}; a stub swaps in so unit tests skip the browser.
+ */
+export type BrowserPageLoader = (
+    profileDir: string,
+    url: URL,
+) => Promise<{ readonly html: string; readonly finalUrl: string }>;
+
+/**
+ * Drive an order-history page inside the getreceipt-OWNED persistent profile via the `@getreceipt/browser` port
+ * (#275) — the warm profile's OWN session carries the request (no cookie injection), so ONE attended sign-in
+ * serves both list and fetch and the everyday-Chrome import is never needed. Imported LAZILY (like
+ * {@link fetchInvoiceViaBrowser}) so importing this adapter never eager-loads Playwright.
+ */
+export const loadOrderPageViaBrowser: BrowserPageLoader = async (profileDir, url) => {
+    const { loadUrlInProfile } = await import('@getreceipt/browser');
+    return loadUrlInProfile(profileDir, url.toString());
+};

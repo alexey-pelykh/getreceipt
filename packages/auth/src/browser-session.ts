@@ -441,3 +441,13 @@ function parsePersistedCookie(entry: unknown): PersistedCookie | undefined {
 function asAuthHandle(session: BrowserSession): AuthHandle {
     return session as unknown as AuthHandle;
 }
+
+/**
+ * An {@link AuthHandle} carrying NO imported cookies — the browser-driven tier's placeholder (#275). A
+ * `headless-browser` source drives BOTH list and fetch through its OWNED persistent profile (whose own warm
+ * session carries every request), so it never reads the everyday-Chrome cookie store: `authenticate` returns
+ * this instead of importing. `list`/`fetch` on that tier never dereference the handle, so an empty jar is inert.
+ */
+export function emptyBrowserSession(domain: string): AuthHandle {
+    return asAuthHandle({ domain, cookies: [] });
+}

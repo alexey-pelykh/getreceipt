@@ -4,6 +4,7 @@ import {
     AuthenticationError,
     browserSessionReauthRequired,
     browserSessionToStoredSession,
+    emptyBrowserSession,
     fromBrowserSession,
     fromCredentialContext,
     importBrowserSessionMulti,
@@ -34,8 +35,8 @@ import type {
     SourceDescriptor,
 } from '@getreceipt/core';
 
-import { fetchInvoiceViaBrowser, renderInvoicePdf } from './render.js';
-import type { BrowserInvoiceFetcher, InvoiceRenderer } from './render.js';
+import { fetchInvoiceViaBrowser, loadOrderPageViaBrowser, renderInvoicePdf } from './render.js';
+import type { BrowserInvoiceFetcher, BrowserPageLoader, InvoiceRenderer } from './render.js';
 import {
     ENDPOINTS,
     INSTANCES,
@@ -174,6 +175,13 @@ export interface AmazonAdapterOptions {
      */
     readonly browserFetch?: BrowserInvoiceFetcher;
     /**
+     * Browser-driven order LIST (#275): the `list` seam used when the descriptor's transportTier is
+     * `headless-browser` AND {@link browserProfileDir} is wired — the symmetric half of {@link browserFetch}, so
+     * ONE owned-profile sign-in serves both list and fetch and the everyday-Chrome import is never read. Defaults
+     * to the real lazy-loaded driver ({@link loadOrderPageViaBrowser}); a stub swaps in for hermetic unit tests.
+     */
+    readonly browserPage?: BrowserPageLoader;
+    /**
      * The getreceipt-OWNED persistent browser profile dir the {@link browserFetch} tier drives — the operator
      * signs into it once, and its warm session carries the invoice request. Its presence GATES the browser path
      * in `fetch`. Single-account (N=1) seed for the #253 walking skeleton, sourced at construction; #254
@@ -206,6 +214,7 @@ export class AmazonAdapter
     readonly #render: InvoiceRenderer;
     readonly #sessionReuse: { readonly store: SessionStore; readonly detector: ReauthDetector } | undefined;
     readonly #browserFetch: BrowserInvoiceFetcher;
+    readonly #browserPage: BrowserPageLoader;
     readonly #browserProfileDir: string | undefined;
 
     constructor(options: AmazonAdapterOptions = {}) {
@@ -213,6 +222,7 @@ export class AmazonAdapter
         this.#importOptions = options.importOptions ?? {};
         this.#render = options.render ?? renderInvoicePdf;
         this.#browserFetch = options.browserFetch ?? fetchInvoiceViaBrowser;
+        this.#browserPage = options.browserPage ?? loadOrderPageViaBrowser;
         this.#browserProfileDir = options.browserProfileDir;
         this.#sessionReuse =
             options.sessionReuse === undefined
@@ -224,6 +234,14 @@ export class AmazonAdapter
     }
 
     async authenticate(credentials: CredentialContext): Promise<AuthHandle> {
+        // Browser tier (#275): the owned profile is the SOLE session for BOTH list and fetch — neither reads the
+        // imported everyday-Chrome session — so skip the import entirely. The owned-dir path must never read the
+        // everyday Chrome cookie store (and reading it can even fail on a locked DB while Chrome is open). Return
+        // an inert empty handle; list/fetch drive the owned profile and never dereference it, so a signed-OUT
+        // everyday Chrome still yields a working browser-tier collection after the one attended sign-in.
+        if (this.#browserProfileDir !== undefined) {
+            return emptyBrowserSession(CANONICAL_DOMAIN);
+        }
         const descriptor = resolveSessionDescriptor(credentials);
         const importFresh = (): AuthHandle => this.#importFresh(descriptor);
         if (this.#sessionReuse === undefined) {
@@ -281,6 +299,7 @@ export class AmazonAdapter
             importOptions: this.#importOptions,
             render: this.#render,
             browserFetch: this.#browserFetch,
+            browserPage: this.#browserPage,
             ...(this.#sessionReuse === undefined ? {} : { sessionReuse: this.#sessionReuse }),
             browserProfileDir: profileDir,
         });
@@ -312,10 +331,25 @@ export class AmazonAdapter
     }
 
     async list(auth: AuthHandle, range: DateRange, instance?: InstanceContext): Promise<readonly ReceiptRef[]> {
-        const session = fromBrowserSession(auth);
         // The instance (#190) supplies the host, locale, and cookie scope; absent → the live amazon.fr instance defaults.
         const ctx = runContext(instance);
-        return listOrderRefs(this.#transport, session, ctx, range);
+        // Browser tier (#275): drive the order history inside the warm OWNED profile — its own session lists (no
+        // cookie injection), the symmetric half of fetch's browser branch, so ONE sign-in serves list AND fetch
+        // and the everyday-Chrome import is never read. Absent a profile dir → the HTTP path (non-browser-tier / K1).
+        if (this.descriptor.transportTier === 'headless-browser' && this.#browserProfileDir !== undefined) {
+            const profileDir = this.#browserProfileDir;
+            return listOrderRefs((url) => this.#browserPage(profileDir, url), ctx, range);
+        }
+        const session = fromBrowserSession(auth);
+        return listOrderRefs(
+            async (url) => {
+                const response = await requestSession(this.#transport, session, url, ctx);
+                const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
+                return { html, finalUrl: response.url };
+            },
+            ctx,
+            range,
+        );
     }
 
     async fetch(auth: AuthHandle, ref: ReceiptRef, instance?: InstanceContext): Promise<ArtifactHandle> {
@@ -448,8 +482,7 @@ function timeFiltersForRange(range: DateRange): string[] {
  * order. Runs against the instance's host/locale/cookie scope ({@link RunContext}, #190).
  */
 async function listOrderRefs(
-    transport: Transport,
-    session: BrowserSession,
+    fetchPage: (url: URL) => Promise<{ readonly html: string; readonly finalUrl: string }>,
     ctx: RunContext,
     range: DateRange,
 ): Promise<ReceiptRef[]> {
@@ -465,15 +498,11 @@ async function listOrderRefs(
                 break; // a malformed pagination that fails to advance can never loop
             }
             seen.add(startIndex);
-            const response = await requestSession(
-                transport,
-                session,
-                ordersUrl(ctx.origin, startIndex, timeFilter),
-                ctx,
-            );
-            const html = new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
-            if (!isOrderHistoryPage(html)) {
-                // A 200 that is not the order history is a stale-session bounce (an interstitial sign-in) → re-auth.
+            const { html, finalUrl } = await fetchPage(ordersUrl(ctx.origin, startIndex, timeFilter));
+            // A step-up lands the navigation on the sign-in path (the browser tier follows the redirect; the HTTP
+            // path's own redirect guard throws earlier), and a 200 that is not the order history is an interstitial
+            // bounce — either way the session is stale/absent → re-auth (on the browser tier the owned window opens).
+            if (finalUrl.includes(ENDPOINTS.signIn) || !isOrderHistoryPage(html)) {
                 throw browserSessionReauthRequired(CANONICAL_DOMAIN);
             }
             total ??= parseOrderCount(html);
