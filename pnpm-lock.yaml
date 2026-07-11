@@ -244,12 +244,6 @@ importers:
 
   packages/browser:
     dependencies:
-      '@getreceipt/auth':
-        specifier: workspace:^
-        version: link:../auth
-      '@getreceipt/core':
-        specifier: workspace:^
-        version: link:../core
       playwright:
         specifier: 'catalog:'
         version: 1.61.1
