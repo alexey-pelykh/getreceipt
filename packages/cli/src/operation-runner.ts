@@ -316,8 +316,11 @@ export async function resolveSourceContext(
     }
     const challengeResolver = Object.keys(surfaces).length === 0 ? undefined : new RoutingChallengeResolver(surfaces);
     // The attended sign-in URL travels with the browser tier (#270): surfaced only when an owned profile was
-    // resolved, so the CLI opens the owned-profile window at exactly this source's baked sign-in entry.
-    const signInUrl = ownedProfile === undefined ? undefined : tierAdapter.descriptor.signInUrl;
+    // resolved. Re-hosted onto the ADDRESSED instance's marketplace (#277): list/fetch drive the owned profile at
+    // the addressed instance's origin, so the window must open THAT marketplace's sign-in — opening the descriptor's
+    // baked default-instance origin (amazon.fr) for a `from amazon.com` run leaves amazon.com signed out and loops.
+    const signInUrl =
+        ownedProfile === undefined ? undefined : signInUrlForInstance(tierAdapter.descriptor.signInUrl, instance);
     return {
         adapter: tierAdapter,
         credentials,
@@ -554,6 +557,24 @@ function resolveBrowserTierAdapter(
     const resolveOwnedProfile = deps.resolveOwnedProfile ?? ensureOwnedProfile;
     const ownedProfile = resolveOwnedProfile(adapter.descriptor.canonicalDomain, account);
     return { adapter: adapter.withBrowserProfile(ownedProfile.profileDir), ownedProfile };
+}
+
+/**
+ * Re-host the descriptor's baked sign-in entry onto the ADDRESSED instance's marketplace (#277). The descriptor
+ * carries ONE `signInUrl` baked on the default-instance origin, but a multi-instance source's `list`/`fetch` drive
+ * the owned profile at the addressed instance's origin (`runContext` → `instance.host`); opening the default
+ * marketplace's sign-in would leave the addressed one signed out and bounce to re-auth forever. The sign-in PATH is
+ * marketplace-agnostic, so re-host it onto the addressed origin. Absent an addressed instance (single-instance /
+ * canonical source) the baked default stands. Redaction-safe: both the instance origin and the path are public constants.
+ */
+function signInUrlForInstance(
+    baseSignInUrl: string | undefined,
+    instance: InstanceContext | undefined,
+): string | undefined {
+    if (baseSignInUrl === undefined || instance === undefined) {
+        return baseSignInUrl;
+    }
+    return new URL(new URL(baseSignInUrl).pathname, instance.host).toString();
 }
 
 /**

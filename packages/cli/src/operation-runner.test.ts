@@ -1313,6 +1313,84 @@ describe('resolveSourceContext — #264 browser-tier owned-profile wiring', () =
         expect(result.ownedProfile).toEqual(owned);
     });
 
+    // --- #277: the attended sign-in window opens the ADDRESSED marketplace, not the baked default ---------------
+    const AMZ_COM: InstanceContext = {
+        domain: 'amazon.com',
+        host: 'https://www.amazon.com',
+        cookieDomain: 'amazon.com',
+        locale: 'en-US',
+    };
+    const AMZ_FR: InstanceContext = {
+        domain: 'amazon.fr',
+        host: 'https://www.amazon.fr',
+        cookieDomain: 'amazon.fr',
+        locale: 'fr-FR',
+    };
+    /** The descriptor's ONE baked sign-in entry, on the fr default instance — the field #277 re-hosts per addressed instance. */
+    const BAKED_SIGN_IN = 'https://www.amazon.fr/gp/css/order-history';
+
+    /**
+     * A browser-tier, bindable, MULTI-INSTANCE adapter (canonical amazon.com, serving amazon.com + amazon.fr) whose
+     * descriptor bakes `signInUrl` onto the fr default. `withBrowserProfile` returns a bound adapter carrying the SAME
+     * descriptor, so the resolved sign-in URL must derive from the ADDRESSED instance, not the baked origin.
+     */
+    function browserMultiInstanceAdapter(): SourceAdapter & BrowserProfileBindableAdapter {
+        const base = adapter();
+        const descriptor = {
+            ...base.descriptor,
+            authKind: 'session',
+            credentialShapes: ['none'],
+            transportTier: 'headless-browser',
+            canonicalDomain: 'amazon.com',
+            aliasDomains: [],
+            instances: [AMZ_COM, AMZ_FR],
+            signInUrl: BAKED_SIGN_IN,
+        } as const;
+        const bound: SourceAdapter = { ...base, descriptor };
+        return { ...base, descriptor, withBrowserProfile: () => bound };
+    }
+
+    /** A browser-tier paste-session config keyed by the addressed source domain (findSourceConfig matches the key directly). */
+    function browserTierConfigFor(source: string): ConfigParseResult {
+        return {
+            config: {
+                sources: { [source]: { kind: 'session', paste: { ref: PASTE_REF }, transport: 'headless-browser' } },
+            },
+            warnings: [],
+        };
+    }
+
+    it('opens the sign-in window at the ADDRESSED instance marketplace, not the descriptor default (#277)', async () => {
+        // `from amazon.com` drives the owned profile at amazon.com, so the window must open amazon.com's sign-in entry,
+        // NOT the descriptor's baked amazon.fr default — else amazon.com stays signed out and list loops on reauth.
+        const result = await resolveSourceContext(
+            { source: 'amazon.com' },
+            deps({
+                resolver: resolverWith(browserMultiInstanceAdapter()),
+                loadConfig: () => browserTierConfigFor('amazon.com'),
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: () => ({ profileDir: '/owned/amazon.com', firstRun: false }),
+            }),
+        );
+
+        expect(result.signInUrl).toBe('https://www.amazon.com/gp/css/order-history');
+    });
+
+    it('keeps the marketplace when the addressed instance IS the baked default (#277)', async () => {
+        // Addressing amazon.fr — the baked default's own marketplace — leaves the sign-in entry on amazon.fr.
+        const result = await resolveSourceContext(
+            { source: 'amazon.fr' },
+            deps({
+                resolver: resolverWith(browserMultiInstanceAdapter()),
+                loadConfig: () => browserTierConfigFor('amazon.fr'),
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: () => ({ profileDir: '/owned/amazon.com', firstRun: false }),
+            }),
+        );
+
+        expect(result.signInUrl).toBe('https://www.amazon.fr/gp/css/order-history');
+    });
+
     it('leaves the adapter UNCHANGED and resolves no owned profile when the source selects no tier (HTTP path untouched)', async () => {
         let ownedResolved = false;
         const src = bindableSessionAdapter('headless-browser', { onBind: () => {}, bound: adapter() });
