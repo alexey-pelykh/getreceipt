@@ -6,8 +6,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Secret } from '@getreceipt/auth';
-import type { AuthHandle } from '@getreceipt/core';
 import type { BrowserContext } from 'playwright';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -58,19 +56,6 @@ const normalize = (pdf: Uint8Array): string =>
         .replace(/\/CreationDate\s*\([^)]*\)/g, '/CreationDate()')
         .replace(/\/ModDate\s*\([^)]*\)/g, '/ModDate()')
         .replace(/\/ID\s*\[[^\]]*\]/g, '/ID[]');
-
-/**
- * Build the {@link AuthHandle} a session-kind source would hand `render` — the opaque handle
- * `importBrowserSession` mints wraps a `BrowserSession` (`{ browser, domain, cookies[] }`) with each value
- * `Secret`-fenced. We construct that shape directly (the `render` <-> `fromBrowserSession` contract) rather
- * than drive a real browser cookie store, which `@getreceipt/auth` already tests.
- */
-const fixtureSession = (domain: string, name: string, value: string): AuthHandle =>
-    ({
-        browser: 'chrome',
-        domain,
-        cookies: [{ name, value: new Secret(value), domain, path: '/', secure: false, httpOnly: false, expires: null }],
-    }) as unknown as AuthHandle;
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -135,24 +120,6 @@ describe('render', () => {
 
         expect(isValidPdf(pdf)).toBe(true);
         expect(hits).toBe(0);
-    });
-
-    it('renders a URL with an imported session’s cookies applied', async () => {
-        let seenCookie: string | undefined;
-        const origin = await startServer((req, res) => {
-            seenCookie ??= req.headers.cookie;
-            res.setHeader('content-type', 'text/html');
-            res.end('<!doctype html><html><body><h1>Account</h1></body></html>');
-        });
-
-        const pdf = await render({
-            url: `${origin}/orders`,
-            session: fixtureSession('127.0.0.1', 'session_token', 'fixture-value'),
-        });
-
-        expect(isValidPdf(pdf)).toBe(true);
-        // The imported session's cookie reached the server on the navigation request.
-        expect(seenCookie).toBe('session_token=fixture-value');
     });
 });
 

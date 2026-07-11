@@ -30,8 +30,6 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@getreceipt/auth": "workspace:^",
-    "@getreceipt/core": "workspace:^",
     "playwright": "catalog:"
   },
   "devDependencies": {

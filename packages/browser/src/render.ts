@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { fromBrowserSession } from '@getreceipt/auth';
-import type { BrowserSession } from '@getreceipt/auth';
-import type { AuthHandle } from '@getreceipt/core';
 import { chromium } from 'playwright';
 import type { BrowserContext, Page } from 'playwright';
 
 /**
- * What to render — the `htmlOrUrl` of the port, as a route-by-shape union rather than a bare string the
- * callee must sniff:
- *
- * - `{ html }` — render a self-contained HTML document directly (no navigation, no network).
- * - `{ url }` — navigate to a URL and render the loaded page; pair it with an imported `session`
- *   ({@link AuthHandle} from `@getreceipt/auth`) to render a page behind a login.
- *
- * A `session` lives ONLY on the URL arm: it is meaningless for raw HTML (there is no request to attach
- * cookies to), and the union makes that unrepresentable instead of a runtime footgun.
+ * What {@link render} rasterizes: a self-contained HTML document (no navigation, no network). Rendering an
+ * authenticated URL belongs to the browser-driven tier's persistent-profile drivers ({@link renderUrlInProfile}
+ * / {@link loadUrlInProfile}), whose own warm session carries the request — never a fresh-context cookie
+ * transplant, the model Amazon's order/invoice step-up rejects.
  */
-export type RenderSource = { readonly html: string } | { readonly url: string; readonly session?: AuthHandle };
+export type RenderSource = { readonly html: string };
 
 /** Tuning for the PDF the headless engine emits. Defaults target a faithful single-receipt artifact. */
 export interface RenderOptions {
@@ -68,19 +60,16 @@ export type PersistentContextLauncher = (
 const defaultPersistentContextLauncher: PersistentContextLauncher = (profileDir, options) =>
     chromium.launchPersistentContext(profileDir, options);
 
-/** Exactly the element type `BrowserContext.addCookies` accepts — derived so this never drifts from Playwright's shape. */
-type PlaywrightCookie = Parameters<BrowserContext['addCookies']>[0][number];
-
 /**
- * Render an HTML receipt — or an authenticated URL — to PDF bytes via headless Chromium.
+ * Render a self-contained HTML receipt to PDF bytes via headless Chromium.
  *
  * The engine emits with the `print` CSS media type (Playwright's `page.pdf()` default), so `@page` rules and
  * `@media print` styles are honored. Output is deterministic for a given input save for the embedded
  * `/CreationDate` + `/ModDate` timestamps — assert on structure, page count, or timestamp-normalized bytes,
  * never raw-byte equality (see the package's render tests).
  *
- * Network is confined to "the supplied content": the `{ html }` arm aborts every sub-resource request (a
- * receipt fixture is self-contained), and the `{ url }` arm fetches only what loading that page requires.
+ * Network is confined to the supplied HTML: every sub-resource request is aborted (a receipt fixture is
+ * self-contained), so the render never reaches out.
  *
  * @returns the PDF as bytes (a `Buffer`, usable anywhere `Uint8Array` is).
  */
@@ -89,19 +78,10 @@ export async function render(source: RenderSource, options: RenderOptions = {}):
     try {
         const context = await browser.newContext();
         const page = await context.newPage();
-
-        if ('html' in source) {
-            // setContent injects the document directly (no request), so this route() only ever fires for
-            // sub-resources the HTML references — abort them to honor "no network beyond the supplied content".
-            await page.route('**/*', (route) => route.abort());
-            await page.setContent(source.html, { waitUntil: 'load' });
-        } else {
-            if (source.session) {
-                await context.addCookies(toPlaywrightCookies(fromBrowserSession(source.session)));
-            }
-            await page.goto(source.url, { waitUntil: 'load' });
-        }
-
+        // setContent injects the document directly (no request), so this route() only ever fires for
+        // sub-resources the HTML references — abort them to honor "no network beyond the supplied content".
+        await page.route('**/*', (route) => route.abort());
+        await page.setContent(source.html, { waitUntil: 'load' });
         return await page.pdf(pdfOptions(options));
     } finally {
         await browser.close();
@@ -111,10 +91,9 @@ export async function render(source: RenderSource, options: RenderOptions = {}):
 /**
  * Render a URL to PDF inside a PERSISTENT browser profile — the browser-driven collection tier (#253).
  *
- * Unlike {@link render}'s `{ url, session }` arm (a fresh context with INJECTED cookies — the cookie-transplant
- * model Amazon's order/invoice step-up rejects), this launches a persistent context bound to `profileDir`, so
- * the profile's OWN warm, already-signed-in session carries the request — no cookies are injected. The operator
- * signs into that profile once; getreceipt never handles their password.
+ * Launches a persistent context bound to `profileDir`, so the profile's OWN warm, already-signed-in session
+ * carries the request — no cookies are injected (a fresh-context cookie transplant is exactly the model Amazon's
+ * order/invoice step-up rejects). The operator signs into that profile once; getreceipt never handles their password.
  *
  * Returns the PDF, the page HTML, AND the URL the navigation ended on: a caller with a coarse-listWindow source
  * dates its receipts at fetch time and guards against page drift (both read the HTML), and reads `finalUrl` to
@@ -200,21 +179,4 @@ function pdfOptions(options: RenderOptions): Parameters<Page['pdf']>[0] {
         printBackground: options.printBackground ?? true,
         ...(options.margin ? { margin: options.margin } : {}),
     };
-}
-
-/**
- * Map an imported {@link BrowserSession}'s cookies onto Playwright's cookie shape. Each value is unwrapped
- * with `Secret.expose()` HERE, at the point of use, and never logged or stored.
- * A `null` expiry (a session cookie) is omitted so Playwright treats it as session-scoped.
- */
-function toPlaywrightCookies(session: BrowserSession): PlaywrightCookie[] {
-    return session.cookies.map((cookie) => ({
-        name: cookie.name,
-        value: cookie.value.expose(),
-        domain: cookie.domain,
-        path: cookie.path,
-        secure: cookie.secure,
-        httpOnly: cookie.httpOnly,
-        ...(cookie.expires === null ? {} : { expires: cookie.expires }),
-    }));
 }
