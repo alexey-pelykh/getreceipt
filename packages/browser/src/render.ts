@@ -144,6 +144,31 @@ export async function renderUrlInProfile(
 }
 
 /**
+ * Load a URL's HTML inside a PERSISTENT browser profile — the browser-driven LIST tier (#275). Like
+ * {@link renderUrlInProfile} but WITHOUT the PDF render: order-history listing needs only the page HTML and the
+ * URL the navigation ended on (to route a `max_auth_age` sign-in bounce to re-auth). Skipping `page.pdf()` avoids
+ * a wasted per-page render across a paginated history. The profile's OWN warm session carries the request (no
+ * cookie injection), so ONE attended sign-in serves both list and fetch.
+ */
+export async function loadUrlInProfile(
+    profileDir: string,
+    url: string,
+): Promise<{ readonly html: string; readonly finalUrl: string }> {
+    const context = await chromium.launchPersistentContext(profileDir, { headless: true });
+    try {
+        const page = await context.newPage();
+        await page.goto(url, { waitUntil: 'load' });
+        // Capture where we landed BEFORE reading content: a step-up redirects to the sign-in path, and the
+        // caller keys its re-auth routing on this (the order-history request never reaches the listing).
+        const finalUrl = page.url();
+        const html = await page.content();
+        return { html, finalUrl };
+    } finally {
+        await context.close();
+    }
+}
+
+/**
  * Open the getreceipt-OWNED persistent profile in a HEADFUL window so the operator can sign in — the attended
  * `max_auth_age` recovery for the browser-driven tier (#255). Unlike {@link renderUrlInProfile} (headless,
  * unattended), this launches with `headless: false` and navigates to `url` (a sign-in ENTRY — typically a

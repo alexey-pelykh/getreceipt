@@ -37,7 +37,7 @@ import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AmazonAdapter, amazonAdapter, AmazonFrAdapter, amazonFrAdapter } from './index.js';
-import type { BrowserInvoiceFetcher, InvoiceRenderer, Transport } from './index.js';
+import type { BrowserInvoiceFetcher, BrowserPageLoader, InvoiceRenderer, Transport } from './index.js';
 import {
     ENDPOINTS,
     INSTANCES as WIRE_INSTANCES,
@@ -493,6 +493,93 @@ describe('AmazonAdapter — #253: browser-driven invoice fetch (persistent profi
         await bound.fetch(anyAuth, browserRef);
         // The rebind redirected the tier to the owned dir; the receiver still drives its original dir (no mutation).
         expect(calls.map((c) => c.profileDir)).toEqual(['/profiles/original', '/owned/amazon.com']);
+    });
+});
+
+describe('AmazonAdapter — #275: browser-driven order LIST (owned profile, no everyday-Chrome import)', () => {
+    /**
+     * A browser page-load that records its call and returns canned order-history HTML, WITHOUT launching a browser
+     * (the symmetric half of #253's `stubBrowserFetch`). `finalUrl` defaults to the requested URL; a step-up test
+     * overrides it with the sign-in URL to exercise the re-auth bounce.
+     */
+    function stubBrowserPage(
+        pageHtml: string,
+        finalUrl?: string,
+    ): {
+        readonly browserPage: BrowserPageLoader;
+        readonly calls: Array<{ readonly profileDir: string; readonly url: string }>;
+    } {
+        const calls: Array<{ readonly profileDir: string; readonly url: string }> = [];
+        const browserPage: BrowserPageLoader = (profileDir, url) => {
+            calls.push({ profileDir, url: url.toString() });
+            return Promise.resolve({ html: pageHtml, finalUrl: finalUrl ?? url.toString() });
+        };
+        return { browserPage, calls };
+    }
+
+    // The browser tier lists over the owned profile's OWN warm session, so `list`'s auth handle is unused on that
+    // path — a bare handle proves the browser branch never dereferences it.
+    const anyAuth = {} as unknown as AuthHandle;
+
+    it('drives the order history inside the wired OWNED profile (no HTTP, no everyday-Chrome import) and parses refs', async () => {
+        // No MSW list handler: onUnhandledRequest:'error' throws if list hit the network — proving the browser tier
+        // lists over the owned profile, NOT the imported HTTP session (the #275 asymmetry fix, symmetric to fetch).
+        const { browserPage, calls } = stubBrowserPage(renderOrdersPage([order('404-9-1'), order('404-9-2')]));
+        const a = new AmazonAdapter({ browserPage, browserProfileDir: '/owned/amazon.com' });
+
+        const refs = await a.list(anyAuth, WIDE);
+
+        expect(refs.map((ref) => ref.id)).toEqual(['404-9-1', '404-9-2']);
+        expect(refs[0]!.issuedAt.toISOString()).toBe(COARSE_2026);
+        // The warm owned dir + the order-history endpoint reached the driver, once (single-year window, one page).
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.profileDir).toBe('/owned/amazon.com');
+        expect(new URL(calls[0]!.url).pathname).toBe(ENDPOINTS.orderHistory);
+    });
+
+    it('routes a browser-tier LIST step-up (navigation bounced to /ap/signin) to a ReauthRequiredError — the owned window then opens', async () => {
+        // The warm owned profile can still hit a max_auth_age gate on the LIST navigation; the persistent-context
+        // navigation lands on the sign-in path. list must surface re-auth (the mirror of fetch's browser-tier bounce,
+        // #255) so the CLI opens the owned window — NOT a generic parse error.
+        const { browserPage } = stubBrowserPage(renderSignInPage(), SIGN_IN_URL);
+        const a = new AmazonAdapter({ browserPage, browserProfileDir: '/owned/amazon.com' });
+
+        await expect(a.list(anyAuth, WIDE)).rejects.toBeInstanceOf(ReauthRequiredError);
+    });
+
+    it('authenticate() short-circuits the everyday-Chrome import for a browser-tier source — the owned profile is the sole session', async () => {
+        // No importOptions, no cookie store, no MSW: a browser-tier adapter reads NO everyday-Chrome session (reading
+        // it can even fail on a locked DB while Chrome is open). authenticate returns an inert empty handle over the
+        // canonical domain; list/fetch drive the owned profile and never dereference it.
+        const a = new AmazonAdapter({ browserProfileDir: '/owned/amazon.com' });
+
+        const auth = await a.authenticate(creds());
+
+        const session = fromBrowserSession(auth);
+        expect(session.domain).toBe('amazon.com'); // CANONICAL_DOMAIN (ADR-008) — the re-auth signal stays source-level
+        expect(session.cookies).toEqual([]); // nothing imported: the owned profile carries the session, not this handle
+    });
+
+    it('completes end-to-end from a signed-OUT everyday Chrome — authenticate, list, and fetch ALL ride the owned profile', async () => {
+        // The headline #275 guarantee: everyday Chrome signed out (no importOptions, no cookie store), no MSW handlers
+        // (onUnhandledRequest:'error' throws on any network) — so ONE attended owned-profile sign-in serves the whole
+        // run. list reads the owned profile; fetch renders inside it; the artifact is produced — zero HTTP, zero read.
+        const { browserPage } = stubBrowserPage(renderOrdersPage([order('404-9-1')]));
+        const browserFetch: BrowserInvoiceFetcher = (_profileDir, url) =>
+            Promise.resolve({
+                pdf: new TextEncoder().encode('%PDF-1.4\n% browser-rendered\n%%EOF\n'),
+                html: renderInvoice('404-9-1'),
+                finalUrl: url.toString(),
+            });
+        const a = new AmazonAdapter({ browserPage, browserFetch, browserProfileDir: '/owned/amazon.com' });
+
+        const auth = await a.authenticate(creds());
+        const refs = await a.list(auth, WIDE);
+        const artifact = asReceiptArtifact(await a.fetch(auth, refs[0]!));
+
+        expect(refs.map((r) => r.id)).toEqual(['404-9-1']);
+        expect(artifact.filename).toBe('404-9-1.pdf');
+        expect(new TextDecoder().decode(artifact.bytes).startsWith('%PDF-')).toBe(true);
     });
 });
 

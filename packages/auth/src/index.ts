@@ -113,6 +113,7 @@ export type { BrowserCookie, ReadChromeCookiesOptions, ReadFirefoxCookiesOptions
 export {
     browserSessionReauthRequired,
     browserSessionToStoredSession,
+    emptyBrowserSession,
     fromBrowserSession,
     importBrowserSession,
     importBrowserSessionMulti,

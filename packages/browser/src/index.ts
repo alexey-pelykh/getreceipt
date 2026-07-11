@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-export { openProfileForSignIn, render, renderUrlInProfile } from './render.js';
+export { loadUrlInProfile, openProfileForSignIn, render, renderUrlInProfile } from './render.js';
 export type {
     PersistentContextLauncher,
     ProfileRenderResult,
