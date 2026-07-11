@@ -1391,6 +1391,40 @@ describe('resolveSourceContext — #264 browser-tier owned-profile wiring', () =
         expect(result.signInUrl).toBe('https://www.amazon.fr/gp/css/order-history');
     });
 
+    it('resolves a no-qualifier `from amazon.com` to the amazon.com INSTANCE, not the .fr default (ADR-008 addressing asymmetry, #229)', async () => {
+        // ADR-008: amazon.com is BOTH the canonical source AND an instance. A bare `from amazon.com` (no instance
+        // qualifier) must address the .com instance — the empirical amazon.com validation (#229/#270) collected
+        // against www.amazon.com, NOT the adapter's baked .fr default that a bare `adapter.list()` falls to. This
+        // locks the CLI-layer resolution the live run relied on to reach the right marketplace.
+        const com = await resolveSourceContext(
+            { source: 'amazon.com' },
+            deps({
+                resolver: resolverWith(browserMultiInstanceAdapter()),
+                loadConfig: () => browserTierConfigFor('amazon.com'),
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: () => ({ profileDir: '/owned/amazon.com', firstRun: false }),
+            }),
+        );
+
+        expect(com.instance?.domain).toBe('amazon.com');
+        expect(com.instance?.host).toBe('https://www.amazon.com');
+
+        // Contrast: `from amazon.fr` addresses the .fr instance — each source resolves its OWN instance, so .com
+        // is genuinely addressed, not merely coinciding with the default.
+        const fr = await resolveSourceContext(
+            { source: 'amazon.fr' },
+            deps({
+                resolver: resolverWith(browserMultiInstanceAdapter()),
+                loadConfig: () => browserTierConfigFor('amazon.fr'),
+                resolveCredential: pasteCredential,
+                resolveOwnedProfile: () => ({ profileDir: '/owned/amazon.com', firstRun: false }),
+            }),
+        );
+
+        expect(fr.instance?.domain).toBe('amazon.fr');
+        expect(fr.instance?.host).toBe('https://www.amazon.fr');
+    });
+
     it('leaves the adapter UNCHANGED and resolves no owned profile when the source selects no tier (HTTP path untouched)', async () => {
         let ownedResolved = false;
         const src = bindableSessionAdapter('headless-browser', { onBind: () => {}, bound: adapter() });
