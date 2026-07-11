@@ -49,12 +49,14 @@ export const ENDPOINTS = {
  * de-DE marketplace can render in English) does NOT affect parsing. The hosts are baked public constants (no
  * runtime discovery) → publishable under the host-publication gate (#103), like {@link ENDPOINTS.origin}.
  *
- * SCOPE NOTE: amazon.com's and amazon.de's LIVE page structure + cookie/auth model are validated via the
- * #191/#228 recon (order-card structure identical to the live-validated amazon.fr) and proven here over
- * SYNTHETIC fixtures. The adapter imports the SHARED multi-marketplace jar — every instance's cookieDomain under
- * the ONE sign-in (#190) — so each marketplace authenticates on its own requests; a live end-to-end validation of
- * .com/.de against real accounts is still pending (#191/#228). The fields are structurally an
- * {@link @getreceipt/core!InstanceContext} (the adapter routes each `host` through the #103 gate).
+ * SCOPE NOTE: both marketplaces' order-card structure is proven in CI over SYNTHETIC fixtures — identical to the
+ * live-validated amazon.fr per the #228 recon. amazon.com is ADDITIONALLY live-validated: its page structure +
+ * cookie/auth model were exercised end to end against a real account via the owned-profile browser tier (#270;
+ * ATTENDED validation, 2026-07), so it is no longer live-validation-pending. amazon.de's live end-to-end
+ * validation against a real .de account is still pending (#230). The adapter imports the SHARED multi-marketplace
+ * jar — every instance's cookieDomain under the ONE sign-in (#190) — so each marketplace authenticates on its own
+ * requests. The fields are structurally an {@link @getreceipt/core!InstanceContext} (the adapter routes each
+ * `host` through the #103 gate).
  */
 export const INSTANCES = [
     { domain: 'amazon.com', host: 'https://www.amazon.com', cookieDomain: 'amazon.com', locale: 'en-US' },

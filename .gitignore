@@ -33,6 +33,9 @@ coverage/
 # Agent / workflow scratch
 .tmp/
 
+# Collected receipt captures — real PII (order ids, dates, amounts); never commit
+receipts/
+
 ## Origin: https://github.com/github/gitignore/blob/main/Global/Linux.gitignore
 *~
 
