@@ -52,8 +52,9 @@ export const ENDPOINTS = {
  * SCOPE NOTE: both marketplaces' order-card structure is proven in CI over SYNTHETIC fixtures — identical to the
  * live-validated amazon.fr per the #228 recon. amazon.com is ADDITIONALLY live-validated: its page structure +
  * cookie/auth model were exercised end to end against a real account via the owned-profile browser tier (#270;
- * ATTENDED validation, 2026-07), so it is no longer live-validation-pending. amazon.de's live end-to-end
- * validation against a real .de account is still pending (#230). The adapter imports the SHARED multi-marketplace
+ * ATTENDED validation, 2026-07), so it is no longer live-validation-pending. amazon.de is ALSO live-validated: 3
+ * real 2025 receipts were collected + rendered against a real .de account via the live e2e conformance harness
+ * (#230; ATTENDED validation, 2026-07). The adapter imports the SHARED multi-marketplace
  * jar — every instance's cookieDomain under the ONE sign-in (#190) — so each marketplace authenticates on its own
  * requests. The fields are structurally an {@link @getreceipt/core!InstanceContext} (the adapter routes each
  * `host` through the #103 gate).
