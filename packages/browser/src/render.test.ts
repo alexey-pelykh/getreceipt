@@ -126,7 +126,13 @@ describe('render', () => {
 describe('renderUrlInProfile', () => {
     const profileDirs: string[] = [];
     afterEach(async () => {
-        await Promise.all(profileDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+        // Windows keeps a handle on the persistent profile's chrome_debug.log briefly after context.close();
+        // fs.rm's maxRetries/retryDelay ride out that EBUSY/EPERM window so a teardown lag never reds a green test (#268).
+        await Promise.all(
+            profileDirs
+                .splice(0)
+                .map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })),
+        );
     });
 
     it('drives a URL inside a persistent profile, returning the print-page PDF and its HTML (#253)', async () => {
