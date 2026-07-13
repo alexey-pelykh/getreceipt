@@ -1113,6 +1113,152 @@ describe('parseConfig — #254 multi-account (`accounts:` outer key)', () => {
     });
 });
 
+describe('parseConfig — #266 opt-in per-account output separation (`label`)', () => {
+    /** Run `parseConfig` expecting a ConfigError; return it for path/message assertions. */
+    function expectConfigError(raw: unknown): ConfigError {
+        let caught: unknown;
+        try {
+            parseConfig(raw);
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(ConfigError);
+        return caught as ConfigError;
+    }
+
+    it('[AC1] parses a per-account `label` onto the account (the opt-in separation namespace)', () => {
+        const { config } = parseConfig({
+            sources: {
+                amazon: {
+                    accounts: [
+                        { account: 'personal', browser: 'chrome', profile: 'personal', label: 'home' },
+                        { account: 'business', browser: 'chrome', profile: 'business', label: 'work' },
+                    ],
+                },
+            },
+        });
+        const accounts = config.sources['amazon']?.accounts;
+        expect(accounts?.[0]).toEqual({ account: 'personal', browser: 'chrome', profile: 'personal', label: 'home' });
+        expect(accounts?.[1]).toEqual({ account: 'business', browser: 'chrome', profile: 'business', label: 'work' });
+    });
+
+    it('[AC1] an account WITHOUT a `label` materializes no `label` key (co-mingle, byte-identical legacy shape)', () => {
+        const { config } = parseConfig({
+            sources: { amazon: { accounts: [{ account: 'solo', browser: 'firefox', profile: 'default-release' }] } },
+        });
+        const account = config.sources['amazon']?.accounts?.[0];
+        expect(account?.label).toBeUndefined();
+        expect('label' in (account ?? {})).toBe(false);
+    });
+
+    it('[AC2] parses an all-unlabeled multi-account source (co-mingle stays valid — no separation opted into)', () => {
+        const { config } = parseConfig({
+            sources: {
+                amazon: {
+                    accounts: [
+                        { account: 'personal', browser: 'chrome', profile: 'personal', instances: ['amazon.com'] },
+                        { account: 'business', browser: 'chrome', profile: 'business', instances: ['amazon.com'] },
+                    ],
+                },
+            },
+        });
+        expect(config.sources['amazon']?.accounts?.every((account) => account.label === undefined)).toBe(true);
+    });
+
+    it('[AC2] rejects a MIXED config (some accounts labeled, some not) at the first unlabeled account — no email-derived fallback', () => {
+        const error = expectConfigError({
+            sources: {
+                amazon: {
+                    accounts: [
+                        // personal opts into separation on amazon.com; business would silently co-mingle on the SAME
+                        // marketplace WITHOUT a label — the footgun the privacy lens fails closed on (AC2).
+                        {
+                            account: 'personal',
+                            browser: 'chrome',
+                            profile: 'personal',
+                            label: 'home',
+                            instances: ['amazon.com'],
+                        },
+                        { account: 'business', browser: 'chrome', profile: 'business', instances: ['amazon.com'] },
+                    ],
+                },
+            },
+        });
+        expect(error.path).toBe('sources.amazon.accounts[1].label');
+        expect(error.message).toContain('label');
+        // Value-free: neither the account email nor the label vocabulary leaks into the message.
+        expect(error.message).not.toContain('business');
+        expect(error.message).not.toContain('home');
+    });
+
+    it('[AC2] rejects two accounts sharing one `label` (they would separate into the SAME folder) — value-free, path-localized', () => {
+        const error = expectConfigError({
+            sources: {
+                amazon: {
+                    accounts: [
+                        { account: 'personal', browser: 'chrome', profile: 'personal', label: 'shared' },
+                        { account: 'business', browser: 'chrome', profile: 'business', label: 'shared' },
+                    ],
+                },
+            },
+        });
+        expect(error.path).toBe('sources.amazon.accounts[1].label');
+        expect(error.message).toContain('duplicate');
+        expect(error.message).not.toContain('shared');
+    });
+
+    it('[AC3] accepts a filesystem-safe label verbatim', () => {
+        for (const label of ['home', 'work-2024', 'a_b', 'perso.nal', 'A1']) {
+            const { config } = parseConfig({
+                sources: { amazon: { accounts: [{ account: 'a', browser: 'chrome', profile: 'p', label }] } },
+            });
+            expect(config.sources['amazon']?.accounts?.[0]?.label).toBe(label);
+        }
+    });
+
+    it.each([
+        { label: 'a bare dot', value: '.' },
+        { label: 'a bare dot-dot', value: '..' },
+        { label: 'a leading dot (hidden segment)', value: '.hidden' },
+        { label: 'an interior dot-dot', value: 'a..b' },
+        { label: 'a relative traversal', value: '../etc' },
+        { label: 'a path separator', value: 'a/b' },
+        { label: 'whitespace', value: 'my label' },
+        { label: 'an all-dash reduction', value: '///' },
+    ])('[AC3] rejects a traversal-lookalike / unsafe label at parse ($label)', ({ value }) => {
+        const error = expectConfigError({
+            sources: { amazon: { accounts: [{ account: 'a', browser: 'chrome', profile: 'p', label: value }] } },
+        });
+        expect(error.path).toBe('sources.amazon.accounts[0].label');
+    });
+
+    it('[AC3] the rejection is value-free — a sensitive-vocabulary label is never echoed into the message', () => {
+        // An unsafe label carrying real vocabulary (a space makes it unsafe). The message must name the RULE,
+        // never the offending value (mirroring the config parser's account/profile no-echo posture).
+        const error = expectConfigError({
+            sources: {
+                amazon: { accounts: [{ account: 'a', browser: 'chrome', profile: 'p', label: 'ProjectTitan merger' }] },
+            },
+        });
+        expect(error.path).toBe('sources.amazon.accounts[0].label');
+        expect(error.message).not.toContain('ProjectTitan');
+        expect(error.message).not.toContain('merger');
+    });
+
+    it('[AC3] rejects a non-string / empty `label`', () => {
+        expect(
+            expectConfigError({
+                sources: { amazon: { accounts: [{ account: 'a', browser: 'chrome', profile: 'p', label: '' }] } },
+            }).path,
+        ).toBe('sources.amazon.accounts[0].label');
+        expect(
+            expectConfigError({
+                sources: { amazon: { accounts: [{ account: 'a', browser: 'chrome', profile: 'p', label: 42 }] } },
+            }).path,
+        ).toBe('sources.amazon.accounts[0].label');
+    });
+});
+
 describe('parseConfig — #155 strict mode (fail closed on inline-literal secrets)', () => {
     const secret = 'super-secret-password';
     const inlineSecretConfig = { sources: { 'free.fr': { auth: { kind: 'password', secret } } } };

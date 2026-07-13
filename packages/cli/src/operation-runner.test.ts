@@ -1184,6 +1184,62 @@ describe('runAccountsOperation — one source, per-account auth, co-mingled outp
         expect(results.map((result) => result.source)).toEqual(['amazon.com', 'amazon.com']);
     });
 
+    it("[#266] threads each account's `label` as the collect `namespace` (opt-in separation) — never the account email", async () => {
+        const capture = capturingCollectAccounts([
+            { ...SUCCEEDED, source: 'home/amazon.com' },
+            { ...SUCCEEDED, source: 'work/amazon.de' },
+        ]);
+        await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        // Account keys are EMAILS (PII); labels are the user-authored output namespaces.
+                        {
+                            account: 'alice@example.com',
+                            browser: 'chrome',
+                            profile: 'Personal',
+                            label: 'home',
+                            instances: ['amazon.com'],
+                        },
+                        {
+                            account: 'bob@example.com',
+                            browser: 'firefox',
+                            profile: 'Business',
+                            label: 'work',
+                            instances: ['amazon.de'],
+                        },
+                    ]),
+                collectAccounts: capture.collectAccounts,
+            }),
+        );
+        const accounts = capture.request()?.accounts ?? [];
+        // Each account carries its `label` as the collect `namespace` — the ONE knob collectAccounts prefixes output by.
+        expect(accounts.map((account) => account.namespace)).toEqual(['home', 'work']);
+        // AC4: the namespace is the LABEL, never the account email (no `label ?? account` fallback re-injecting PII).
+        expect(accounts[0]!.namespace).not.toContain('@');
+        expect(accounts[1]!.namespace).not.toContain('@');
+    });
+
+    it('[#266] carries NO `namespace` when an account sets no `label` (co-mingle preserved, additive)', async () => {
+        const capture = capturingCollectAccounts([{ ...SUCCEEDED, source: 'amazon.com' }]);
+        await runAccountsOperation(
+            { source: 'amazon.com', profile: 'default' },
+            undefined,
+            deps({
+                resolver: resolverWith(accountsAdapter()),
+                loadConfig: () =>
+                    accountsConfig([
+                        { account: 'solo', browser: 'chrome', profile: 'Personal', instances: ['amazon.com'] },
+                    ]),
+                collectAccounts: capture.collectAccounts,
+            }),
+        );
+        expect(capture.request()?.accounts[0]?.namespace).toBeUndefined();
+    });
+
     it('falls back to the addressed instance when an account configures no `instances:`', async () => {
         const capture = capturingCollectAccounts([SUCCEEDED]);
         await runAccountsOperation(

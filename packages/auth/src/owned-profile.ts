@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { CONFIG_DIR } from './config.js';
 import { OwnedProfileError } from './errors.js';
+import { sanitizePathSegment } from './path-segment.js';
 
 /** Owner-only, matching the `~/.getreceipt/` posture (sessions + consent are 0700/0600). */
 const DIR_MODE = 0o700;
@@ -70,14 +71,13 @@ function ownedProfileSegment(canonicalDomain: string, account?: string): string 
 }
 
 /**
- * Reduce one identity component to a filesystem-safe token: any char outside `[A-Za-z0-9._-]` (a path
- * separator, whitespace, or the `:` {@link accountSessionKey} uses) becomes `-`, so the joined segment can
- * never traverse out of the profiles dir or be Windows-illegal. Rejects a component that is empty or reduces
- * to nothing meaningful (`.`, `..`, all-separators) — which would collapse the path onto the parent dir.
+ * Reduce one identity component to a filesystem-safe token via the shared {@link sanitizePathSegment} rule,
+ * mapping its `null` (an empty / `.` / `..` / all-separator segment that would collapse onto the parent dir)
+ * onto a typed {@link OwnedProfileError} rather than a raw path in a log.
  */
 function sanitizeComponent(value: string, label: string): string {
-    const safe = value.replace(/[^a-zA-Z0-9._-]/g, '-');
-    if (safe === '' || safe === '.' || safe === '..' || /^-+$/.test(safe)) {
+    const safe = sanitizePathSegment(value);
+    if (safe === null) {
         throw new OwnedProfileError(
             `the ${label} does not form a valid owned-profile directory segment`,
             'invalid-identity',

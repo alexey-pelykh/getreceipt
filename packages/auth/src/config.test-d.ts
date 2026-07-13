@@ -75,6 +75,13 @@ export type _AuthShapeTypeTests = [
             accounts: [{ account: 'a'; browser: 'firefox'; profile: 'p'; instances: ['amazon.com'] }];
         }>
     >,
+    // …an account MAY carry an opt-in output-separation `label` (#266), a string sibling of `instances`.
+    Expect<
+        Constructible<{
+            kind: 'session';
+            accounts: [{ account: 'a'; browser: 'firefox'; profile: 'p'; label: 'home' }];
+        }>
+    >,
 
     // …a source MAY select a `transport` tier (#264, a source-level sibling of `instances`).
     Expect<Constructible<{ kind: 'session'; browser: 'chrome'; profile: string; transport: 'headless-browser' }>>,

@@ -79,6 +79,14 @@ export interface CollectInstancesRequest {
     readonly rateLimiter?: RateLimiter;
     readonly challengeResolver?: ChallengeResolver;
     readonly challengeObserver?: ChallengeObserver;
+    /**
+     * Opt-in output separation (#266): when set, PREFIXES every source key this run derives — each instance's
+     * `<namespace>/<domain>` write/result key AND the source-level reauth-failure key — so a multi-account run
+     * namespaces per account (threaded from {@link AccountCollect.namespace} by {@link collectAccounts}). Omit →
+     * byte-identical `<domain>` layout. Only the opaque source STRING is prefixed; the `InstanceContext` handed
+     * to the adapter (its real marketplace domain) is untouched, so list/fetch still address the true instance.
+     */
+    readonly namespace?: string;
 }
 
 /**
@@ -101,6 +109,14 @@ export interface AccountCollect {
      * that never challenges; an unresolvable challenge surfaces as this account's own `reauth-required`.
      */
     readonly challengeResolver?: ChallengeResolver;
+    /**
+     * Opt-in output separation (#266): when set, PREFIXES this account's opaque `source` key so its receipts
+     * namespace under `<namespace>/<domain>/…` instead of the co-mingled `<domain>/…` (#261). Threaded verbatim
+     * from the config `label` (never the account key — that is a PII email that must never reach an output path
+     * or the batch-report `source`). Omit → byte-identical legacy `<domain>/` layout. The `ReceiptWriter`
+     * contract is untouched — this only shapes the opaque string the writer keys on.
+     */
+    readonly namespace?: string;
 }
 
 /**
@@ -249,6 +265,9 @@ export async function collect(request: CollectRequest): Promise<CollectResult> {
 export async function collectInstances(request: CollectInstancesRequest): Promise<readonly CollectResult[]> {
     const { adapter, credentials, writer, instances, rateLimiter } = request;
     const canonical = adapter.descriptor.canonicalDomain;
+    // Prefix the source KEY with the account namespace (#266); the adapter still receives the real domain.
+    const sourceKey = (domain: string): string =>
+        request.namespace === undefined ? domain : `${request.namespace}/${domain}`;
     const now = request.now ?? new Date();
     const window = request.window ?? materializeWindow(adapter.descriptor.defaultWindow, now);
     const { observer, withChallenges } = challengeRecorder(request.challengeObserver);
@@ -259,21 +278,21 @@ export async function collectInstances(request: CollectInstancesRequest): Promis
         // One shared semaphore: the fetch cap applies ACROSS all instances, so instances don't license fan-out.
         semaphore = new Semaphore(request.fetchConcurrency ?? 1);
         // Authenticate ONCE for the source; the resulting session is shared across every instance (AC4).
-        auth = await authenticateOnce(adapter, credentials, request.challengeResolver, canonical, observer);
+        auth = await authenticateOnce(adapter, credentials, request.challengeResolver, sourceKey(canonical), observer);
     } catch (error) {
         // A dead shared session / unresolvable challenge is ONE source-level reauth (or failure), never N (AC6).
-        return [withChallenges(summarizeErrors([error], canonical, window, [], []))];
+        return [withChallenges(summarizeErrors([error], sourceKey(canonical), window, [], []))];
     }
 
     // One re-auth retry seam for the source (#243 D1), keyed on the canonical like the shared session; each
     // instance's runInstance retries its own list bounce independently and bounded. Undefined disables it.
-    const reimport = buildReimport(adapter, credentials, request.challengeResolver, canonical, observer);
+    const reimport = buildReimport(adapter, credentials, request.challengeResolver, sourceKey(canonical), observer);
     const results: CollectResult[] = [];
     for (const instance of instances) {
         const result = await runInstance(
             adapter,
             auth,
-            instance.domain,
+            sourceKey(instance.domain),
             window,
             writer,
             semaphore,
@@ -325,6 +344,7 @@ export async function collectAccounts(request: CollectAccountsRequest): Promise<
                 writer,
                 credentials: account.credentials,
                 instances: account.instances,
+                ...(account.namespace !== undefined ? { namespace: account.namespace } : {}),
                 ...(request.window !== undefined ? { window: request.window } : {}),
                 ...(request.now !== undefined ? { now: request.now } : {}),
                 ...(request.fetchConcurrency !== undefined ? { fetchConcurrency: request.fetchConcurrency } : {}),

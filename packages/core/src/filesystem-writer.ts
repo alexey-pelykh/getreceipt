@@ -29,8 +29,9 @@ export interface FilesystemReceiptWriterOptions {
 }
 
 /**
- * The filesystem {@link ReceiptWriter}: persists fetched artifacts under
- * `<outDir>/<domain>/` and records an {@link ArtifactDescriptor} per write.
+ * The filesystem {@link ReceiptWriter}: persists fetched artifacts under `<outDir>/<source>/` — where the
+ * source key is a bare `<domain>` or, with opt-in per-account separation (#266), `<label>/<domain>` — and
+ * records an {@link ArtifactDescriptor} per write.
  *
  * Mechanics it owns (the pipeline stays oblivious to all of them):
  *  - **Never-clobber** — an identical re-write is skipped; differing content for the
@@ -71,7 +72,7 @@ export class FilesystemReceiptWriter implements ReceiptWriter {
      */
     async has(source: string, ref: ReceiptRef): Promise<boolean> {
         const stem = sanitizeSegment(ref.id);
-        const dir = join(this.#outDir, sanitizeSegment(source));
+        const dir = join(this.#outDir, sanitizeSourceKey(source));
         const names = await readFileNames(dir);
         return names.some((name) => stemOf(name) === stem);
     }
@@ -83,7 +84,7 @@ export class FilesystemReceiptWriter implements ReceiptWriter {
      */
     async write(source: string, ref: ReceiptRef, artifact: ArtifactHandle): Promise<void> {
         const { bytes, contentType, filename } = asReceiptArtifact(artifact);
-        const sanitizedSource = sanitizeSegment(source);
+        const sanitizedSource = sanitizeSourceKey(source);
         const dir = join(this.#outDir, sanitizedSource);
         const stem = sanitizeSegment(ref.id);
         const ext = extensionFor(contentType, filename);
@@ -135,12 +136,24 @@ function sha256Hex(bytes: Uint8Array): string {
 /**
  * Make one path segment filesystem-safe and traversal-proof: keep only `[A-Za-z0-9._-]`
  * (so separators, `~`, and shell-significant characters are neutralized), and never let a
- * segment be empty or a `.`/`..` directory reference. Both the domain and the receipt id
- * are funneled through here before they touch the filesystem.
+ * segment be empty or a `.`/`..` directory reference. The receipt id is funneled through here,
+ * and each `/`-delimited segment of the source key via {@link sanitizeSourceKey}.
  */
 function sanitizeSegment(raw: string): string {
     const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, '_');
     return cleaned === '' || cleaned === '.' || cleaned === '..' ? '_' : cleaned;
+}
+
+/**
+ * Sanitize the source KEY into a relative directory path. The key is a `/`-delimited path — a bare `<domain>`
+ * (single segment, unchanged) or, when an account opts into output separation (#266), `<label>/<domain>`. Split
+ * on `/` and sanitize EACH segment (via {@link sanitizeSegment}), so a namespaced source lands in the nested
+ * `<label>/<domain>/` layout rather than a single flattened `label_domain` dir. Traversal-proof: every segment
+ * is neutralized independently, so no `..`/`.`/empty segment survives to escape `outDir` — even had the label
+ * not already been validated as a safe segment at config-parse (`parseLabel`, #266).
+ */
+function sanitizeSourceKey(source: string): string {
+    return source.split('/').map(sanitizeSegment).join('/');
 }
 
 /** Pick a file extension: an explicit filename hint's extension wins, else the MIME map, else `.bin`. */

@@ -159,6 +159,40 @@ describe('FilesystemReceiptWriter', () => {
         expect(readdirSync(join(out, 's'))).toEqual(['doc.pdf']);
     });
 
+    it('writes a namespaced source (<label>/<domain>) into NESTED dirs, not one flattened dir [#266 AC1]', async () => {
+        const writer = new FilesystemReceiptWriter({ outDir: out });
+        await writer.write('home/amazon.com', ref('inv-1'), artifact('personal'));
+        await writer.write('work/amazon.com', ref('inv-1'), artifact('business'));
+
+        // Separated: each account's <label>/amazon.com/ is a REAL nested path — the label is a DIRECTORY, not
+        // fused into a single `home_amazon.com`. This is exactly what a fake string-concat writer cannot prove.
+        expect(readFileSync(join(out, 'home', 'amazon.com', 'inv-1.pdf'), 'utf8')).toBe('personal');
+        expect(readFileSync(join(out, 'work', 'amazon.com', 'inv-1.pdf'), 'utf8')).toBe('business');
+        expect(existsSync(join(out, 'home_amazon.com'))).toBe(false); // no flattened dir leaks
+        // The manifest path + source carry the nested key verbatim (POSIX-style `/`).
+        expect(writer.manifest.map((d) => d.path).sort()).toEqual([
+            'home/amazon.com/inv-1.pdf',
+            'work/amazon.com/inv-1.pdf',
+        ]);
+        expect(writer.manifest.map((d) => d.source).sort()).toEqual(['home/amazon.com', 'work/amazon.com']);
+    });
+
+    it('keeps a bare <domain> source byte-identical — the #266 path-aware sanitizer is a no-op with no `/` [#266 AC1 additive]', async () => {
+        const writer = new FilesystemReceiptWriter({ outDir: out });
+        await writer.write('amazon.com', ref('inv-1'), artifact('x'));
+        expect(readFileSync(join(out, 'amazon.com', 'inv-1.pdf'), 'utf8')).toBe('x');
+        expect(writer.manifest[0]?.path).toBe('amazon.com/inv-1.pdf');
+        expect(writer.manifest[0]?.source).toBe('amazon.com');
+    });
+
+    it('has() honors the nested namespaced source key — a different label on the same domain is a separate scope [#266]', async () => {
+        const writer = new FilesystemReceiptWriter({ outDir: out });
+        await writer.write('home/amazon.com', ref('inv-1'), artifact('x'));
+        expect(await writer.has('home/amazon.com', ref('inv-1'))).toBe(true); // same scope → already present
+        expect(await writer.has('work/amazon.com', ref('inv-1'))).toBe(false); // separated scope → absent
+        expect(await writer.has('amazon.com', ref('inv-1'))).toBe(false); // co-mingle scope → absent
+    });
+
     it('neutralizes path traversal in source and receipt id, staying within outDir [security]', async () => {
         const writer = new FilesystemReceiptWriter({ outDir: out });
         await writer.write('../evil', { id: '../../escape', issuedAt: new Date(0) }, artifact('x'));
