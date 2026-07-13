@@ -242,21 +242,28 @@ sources:
 - **`instances`** _(optional)_ — a per-account [marketplace instance](#multi-marketplace-instances-amazon)
   list; each identity may reach a different set of marketplaces. In the multi-account form the list lives
   **under each account**, never at the source level.
+- **`label`** _(optional)_ — opt into **per-account output separation**: this account's receipts are written
+  under `<label>/<domain>/…` instead of the co-mingled `<domain>/…`. Omit it (the default) to co-mingle by
+  domain. It is used **verbatim as a folder name**, so it must be a filesystem-safe segment (`[A-Za-z0-9._-]`,
+  no `.`/`..`, no leading dot). getreceipt never derives it from the `account` — that is an email, and it must
+  never reach an on-disk path (see the caveat below).
 
-Two rules are enforced at parse time, and both **fail closed** (a config error, never a silent merge):
+These rules are enforced at parse time, and all **fail closed** (a config error, never a silent merge):
 
-- every `account` label must be **unique** within the source, and
+- every `account` key must be **unique** within the source,
 - no two accounts may share a `profile` — distinct identities need distinct profiles, or their imported
-  cookie jars would cross-contaminate.
+  cookie jars would cross-contaminate, and
+- `label` is **all-or-nothing** per source: either **every** account carries a (unique) `label` — the
+  separated `<label>/<domain>/` layout — or **none** does — co-mingle by domain. A **mix** fails closed (the
+  unlabeled accounts would silently co-mingle while the labeled ones separate).
 
 `accounts:` is a **whole-source alternative** to a single top-level session (`browser`/`profile` or
 `paste`): write one form or the other, not both.
 
-> **Collecting across accounts isn't wired yet.** getreceipt **recognizes and validates** the `accounts:`
-> schema today (the uniqueness rules above are enforced at parse time), but the collector does not yet
-> iterate accounts — that lands in a follow-up. Until then, running a source configured with `accounts:`
-> **fails closed** with an error telling you to configure a single `browser`/`profile`, rather than
-> silently collecting just one identity. Use the single-account form above if you need to collect today.
+> **A `label` is written to disk and printed.** It becomes a real `<label>/…` directory segment **and** appears
+> in the `all` batch report, so keep it free of sensitive vocabulary. Collect a multi-account source across its
+> accounts with `all` or `from <domain> --all-instances`; plain `from <domain>` addresses a single identity and
+> points you at those verbs.
 
 #### Platform support
 

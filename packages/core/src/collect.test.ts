@@ -969,6 +969,120 @@ describe('collectAccounts — outer per-account loop over collectInstances (#257
         // Per-instance data namespaced by instance domain, exactly as collectInstances (#190 parity).
         expect(accountsWriter.writtenPaths).toEqual(['amazon.com/COM-1', 'amazon.fr/FR-1', 'amazon.fr/FR-2']);
     });
+
+    // --- #266 opt-in per-account output separation via `namespace` ---
+    it('[#266 AC1] separates two accounts on the SAME marketplace via `namespace` — vs co-mingle when it is absent', async () => {
+        const script: AdapterScript = {
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.com': [ref('A-1')] },
+        };
+
+        // Co-mingle (no namespace, the #261 default): BOTH accounts key by the bare domain → one shared folder.
+        const comingleWriter = makeWriter();
+        const comingle = await collectAccounts({
+            adapter: makeAdapter(script).adapter,
+            writer: comingleWriter.writer,
+            accounts: [
+                { credentials: accountCreds('personal@example.com'), instances: [COM] },
+                { credentials: accountCreds('business@example.com'), instances: [COM] },
+            ],
+            now: NOW,
+        });
+        expect(comingleWriter.writtenPaths).toEqual(['amazon.com/A-1', 'amazon.com/A-1']);
+        expect(comingle.map((result) => result.source)).toEqual(['amazon.com', 'amazon.com']);
+
+        // Separated (namespace set per account): each gets its OWN <label>/amazon.com/ folder — no co-mingle.
+        const sepWriter = makeWriter();
+        const sep = await collectAccounts({
+            adapter: makeAdapter(script).adapter,
+            writer: sepWriter.writer,
+            accounts: [
+                { credentials: accountCreds('personal@example.com'), instances: [COM], namespace: 'home' },
+                { credentials: accountCreds('business@example.com'), instances: [COM], namespace: 'work' },
+            ],
+            now: NOW,
+        });
+        // Sorted: accounts run concurrently, so write ORDER is non-deterministic — the SET of paths is the invariant.
+        expect([...sepWriter.writtenPaths].sort()).toEqual(['home/amazon.com/A-1', 'work/amazon.com/A-1']);
+        // Result source (→ BatchSourceResult.source) is positional (request order) and namespaced per account.
+        expect(sep.map((result) => result.source)).toEqual(['home/amazon.com', 'work/amazon.com']);
+    });
+
+    it('[#266 AC1] absent `namespace` is byte-identical to the legacy layout — each instance keys by its bare domain', async () => {
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.com': [ref('COM-1')], 'amazon.fr': [ref('FR-1')] },
+        });
+        const writer = makeWriter();
+        const results = await collectAccounts({
+            adapter: probe.adapter,
+            writer: writer.writer,
+            accounts: [{ credentials: accountCreds('solo'), instances: [COM, FR] }],
+            now: NOW,
+        });
+        // No namespace threaded → the exact pre-#266 `<domain>/` keying, unchanged.
+        expect(writer.writtenPaths).toEqual(['amazon.com/COM-1', 'amazon.fr/FR-1']);
+        expect(results.map((result) => result.source)).toEqual(['amazon.com', 'amazon.fr']);
+    });
+
+    it('[#266 AC4] the `account` email never reaches a WRITTEN output path or result `source` — only the label namespaces', async () => {
+        const email = 'alice.personal@example.com';
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.com': [ref('X-1')], 'amazon.de': [ref('X-2')] },
+        });
+        const writer = makeWriter();
+        const results = await collectAccounts({
+            adapter: probe.adapter,
+            writer: writer.writer,
+            accounts: [{ credentials: accountCreds(email), instances: [COM, DE], namespace: 'home' }],
+            now: NOW,
+        });
+
+        // The email IS the auth-scoping key — the adapter genuinely received it (so the checks below aren't vacuous).
+        expect(probe.authAccounts).toEqual([email]);
+        // …yet it appears in NO output path and NO result source. Separation must not re-inject the PII it removes.
+        for (const path of writer.writtenPaths) {
+            expect(path).not.toContain(email);
+            expect(path).not.toContain('@');
+        }
+        for (const result of results) {
+            expect(result.source).not.toContain(email);
+            expect(result.source).not.toContain('@');
+        }
+        // Positively: output is namespaced by the LABEL, not the email.
+        expect([...writer.writtenPaths].sort()).toEqual(['home/amazon.com/X-1', 'home/amazon.de/X-2']);
+        expect(results.map((result) => result.source)).toEqual(['home/amazon.com', 'home/amazon.de']);
+    });
+
+    it('[#266 AC4] the reauth-failure `source` is namespaced by the label too — never the bare canonical, never the email', async () => {
+        const email = 'bob.business@example.com';
+        const probe = makeAdapter({
+            descriptor: { canonicalDomain: 'amazon.com' },
+            refsByInstance: { 'amazon.de': [ref('never')] },
+            // A dead session: authenticate throws BEFORE any instance is listed, so the ONE source-level
+            // reauth-required result keys by the (namespaced) canonical — the exact leak surface AC4 guards.
+            authenticate: async () => {
+                throw new ReauthRequiredError('amazon.com', 'the imported browser session is no longer signed in');
+            },
+        });
+        const writer = makeWriter();
+        const results = await collectAccounts({
+            adapter: probe.adapter,
+            writer: writer.writer,
+            accounts: [{ credentials: accountCreds(email), instances: [DE], namespace: 'work' }],
+            now: NOW,
+        });
+
+        expect(probe.authAccounts).toEqual([email]);
+        // One source-level reauth-required, keyed by the namespaced CANONICAL (auth fails before per-instance listing).
+        expect(results).toHaveLength(1);
+        expect(results[0]?.outcome).toBe('reauth-required');
+        expect(results[0]?.source).toBe('work/amazon.com');
+        expect(results[0]?.source).not.toContain(email);
+        expect(results[0]?.source).not.toContain('@');
+        expect(writer.writtenPaths).toEqual([]);
+    });
 });
 
 describe('collect — coarse-list window (#243)', () => {

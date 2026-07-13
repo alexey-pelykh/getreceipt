@@ -412,6 +412,9 @@ function resolveAccount(
             session: resolveBrowserSession({ kind: 'session', browser: entry.browser, profile: entry.profile }),
         }),
         instances,
+        // #266: deliberately NOT `entry.label ?? entry.account` — the `account` email must never namespace an
+        // output path (that would re-inject the PII separation removes). Absent → co-mingle.
+        ...(entry.label === undefined ? {} : { namespace: entry.label }),
     };
 }
 

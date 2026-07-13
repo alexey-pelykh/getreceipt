@@ -8,6 +8,7 @@ import { parse as parseYaml } from 'yaml';
 import type { AuthKind, TransportTier } from '@getreceipt/core';
 
 import { ConfigError } from './errors.js';
+import { sanitizePathSegment } from './path-segment.js';
 
 /** The auth kinds the config accepts — mirrors core's {@link AuthKind} vocabulary. Exported as the single source for the `config init` scaffold's enum-vocab comment, so it cannot drift (#149). */
 export const AUTH_KINDS: readonly AuthKind[] = ['none', 'password', 'session', 'api-token', 'passkey'];
@@ -199,6 +200,15 @@ export interface AccountAuthConfig {
     readonly profile: string;
     /** The marketplace instances to collect under this account (#190), e.g. `[amazon.com, amazon.fr]`; omit for single-instance. */
     readonly instances?: readonly string[];
+    /**
+     * Opt-in output separation (#266): namespaces this account's receipts under `<label>/<domain>/…` instead of
+     * the co-mingled `<domain>/…` (#261). User-authored and DELIBERATELY NOT derived from {@link account} — that
+     * is a PII email that must never reach an on-disk path or the batch-report `source` key. Absent → co-mingle
+     * (byte-identical legacy layout). Under one source it is all-or-nothing: either EVERY account carries a
+     * (unique) label or NONE does — a mixed config fails closed at parse (there is no email-derived fallback).
+     * Validated as a filesystem-safe path segment (fail-closed {@link ConfigError}).
+     */
+    readonly label?: string;
 }
 
 /**
@@ -550,6 +560,7 @@ function parseMultiAccount(raw: Record<string, unknown>, path: string): DomainAu
     }
     const seenAccounts = new Set<string>();
     const seenProfiles = new Set<string>();
+    const seenLabels = new Set<string>();
     const accounts = raw.accounts.map((entry, index) => {
         const account = parseAccount(entry, `${path}.accounts[${index}]`);
         // Fail-closed uniqueness (#254 AC4) — value-free: the path localizes WHICH entry, so the message need
@@ -567,10 +578,34 @@ function parseMultiAccount(raw: Record<string, unknown>, path: string): DomainAu
                 `${path}.accounts[${index}].profile`,
             );
         }
+        // Cross-account `label` uniqueness (#266) — value-free, mirroring the account/profile checks. Two accounts
+        // sharing a label would separate into the SAME `<label>/<domain>/` folder, defeating the separation.
+        if (account.label !== undefined) {
+            if (seenLabels.has(account.label)) {
+                throw new ConfigError(
+                    'duplicate `label` — each account output label must be unique across the source',
+                    `${path}.accounts[${index}].label`,
+                );
+            }
+            seenLabels.add(account.label);
+        }
         seenAccounts.add(account.account);
         seenProfiles.add(account.profile);
         return account;
     });
+    // All-or-nothing labeling (#266): opt-in separation is a SOURCE-wide choice — EITHER every account carries a
+    // (unique) label (the separated `<label>/<domain>/` layout) OR none does (co-mingle by domain, #261). A MIXED
+    // config is the footgun the privacy lens fails closed on: the unlabeled accounts would silently co-mingle
+    // under `<domain>/` while the labeled ones separate. There is no email-derived fallback (`label ?? account`
+    // is FORBIDDEN — the `account` email must never namespace a path). Path-localized to the first account
+    // missing a label; value-free.
+    if (seenLabels.size > 0 && seenLabels.size < accounts.length) {
+        const firstUnlabeled = accounts.findIndex((account) => account.label === undefined);
+        throw new ConfigError(
+            'give EVERY account a `label` to separate output (`<label>/<domain>/`), or NONE to co-mingle by domain — a mix would silently co-mingle the unlabeled accounts while separating the labeled ones',
+            `${path}.accounts[${firstUnlabeled}].label`,
+        );
+    }
     // `transport` (#264) is a legitimate SOURCE-level tier selection — unlike `instances` (rejected above
     // because it moves UNDER each account), it applies to the whole source, so parse it and carry it for the
     // collection front-end. Whether the browser tier is actually WIRED for a multi-account source is enforced
@@ -602,9 +637,44 @@ function parseAccount(raw: unknown, path: string): AccountAuthConfig {
     const browser = parseBrowser(raw.browser, `${path}.browser`);
     const profile = parseProfile(raw.profile, `${path}.profile`);
     const instances = parseInstances(raw.instances, `${path}.instances`);
-    return instances === undefined
-        ? { account: raw.account, browser, profile }
-        : { account: raw.account, browser, profile, instances };
+    const label = parseLabel(raw.label, `${path}.label`);
+    return {
+        account: raw.account,
+        browser,
+        profile,
+        ...(instances === undefined ? {} : { instances }),
+        ...(label === undefined ? {} : { label }),
+    };
+}
+
+/**
+ * Parse the optional per-account `label` (#266): the opt-in output-separation namespace, used VERBATIM as a
+ * directory segment in `<label>/<domain>/…`. Absent → undefined (co-mingle by domain, byte-identical legacy
+ * layout). Validated as a filesystem-safe path segment via the shared {@link sanitizePathSegment} rule (the same
+ * one the owned-profile dirs use): REJECTED — never silently sanitized — if it is not already a clean segment
+ * (only `[A-Za-z0-9._-]`, and not a bare `.`/`..`/all-`-`), so no surprising on-disk rename and no two distinct
+ * labels collapsing onto one folder post-sanitization. Defense-in-depth BEYOND that rule: a leading `.` (a hidden
+ * segment) or any interior `..` (a traversal-lookalike the exact-`.`/`..` check misses) is also rejected. Throws a
+ * value-free {@link ConfigError} — the label may embed sensitive vocabulary, so it is never echoed — mirroring
+ * {@link parseAccount}'s no-echo posture.
+ */
+function parseLabel(raw: unknown, path: string): string | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    if (typeof raw !== 'string' || raw.length === 0) {
+        throw new ConfigError('`label` must be a non-empty string', path);
+    }
+    if (sanitizePathSegment(raw) !== raw) {
+        throw new ConfigError(
+            '`label` must be a filesystem-safe path segment (only `[A-Za-z0-9._-]`, and not `.` or `..`)',
+            path,
+        );
+    }
+    if (raw.startsWith('.') || raw.includes('..')) {
+        throw new ConfigError('`label` must not start with `.` or contain `..`', path);
+    }
+    return raw;
 }
 
 /**
