@@ -98,6 +98,15 @@ describe('renderAllText', () => {
         expect(text).toContain('getreceipt login shop.example');
     });
 
+    it('shows the multi-account re-collection remedy for a `<label>/<domain>` reauth source, not the dead-end `login` (#288)', () => {
+        const text = renderAllText(
+            report([ran('home/amazon.com', 'reauth-required', { reason: 'session expired' })], 'failed'),
+        );
+        expect(text).toContain('home/amazon.com — reauth-required');
+        expect(text).toContain('getreceipt from amazon.com --all-instances');
+        expect(text).not.toContain('getreceipt login');
+    });
+
     it('renders a pre-flight error source with its kind and message', () => {
         const text = renderAllText(report([failed('ghost.example', 'unknown-source')], 'failed'));
         expect(text).toContain('ghost.example — error (unknown-source)');
