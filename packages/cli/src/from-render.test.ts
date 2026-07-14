@@ -116,6 +116,21 @@ describe('renderResultsTable', () => {
         };
         expect(renderResultsTable(result)).toContain('getreceipt login grandfrais.com');
     });
+
+    it('shows the multi-account re-collection remedy for a `<label>/<domain>` reauth source, not the dead-end `login` (#288)', () => {
+        const result: OperationResult = {
+            source: 'home/amazon.com',
+            outcome: 'reauth-required',
+            window: isoWindow,
+            written: [],
+            skipped: [],
+            reason: 'session expired',
+        };
+        const text = renderResultsTable(result);
+        expect(text).toContain('home/amazon.com — reauth-required');
+        expect(text).toContain('getreceipt from amazon.com --all-instances');
+        expect(text).not.toContain('getreceipt login');
+    });
 });
 
 describe('reauthRemedy (#17 [AC3])', () => {
@@ -123,5 +138,12 @@ describe('reauthRemedy (#17 [AC3])', () => {
         const remedy = reauthRemedy('grandfrais.com');
         expect(remedy).toContain('login');
         expect(remedy).toContain('getreceipt login grandfrais.com');
+    });
+
+    it('names the `--all-instances` re-collection path for a multi-account `<label>/<domain>` source, not the dead-end `login` (#288)', () => {
+        // `login home/amazon.com` → unknown-source; `login amazon.com` → unsupported-shape. Both dead-end.
+        const remedy = reauthRemedy('home/amazon.com');
+        expect(remedy).not.toContain('login');
+        expect(remedy).toContain('getreceipt from amazon.com --all-instances');
     });
 });

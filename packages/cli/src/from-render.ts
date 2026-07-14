@@ -44,11 +44,18 @@ export function exitCodeFor(outcome: OperationOutcome): number {
 }
 
 /**
- * The remedy line a `reauth-required` outcome shows: it names the `login` verb (#17) — which now
- * exists — the user runs to re-establish the source's session. Shared by the `from` and `all`
- * renderers. Pure; carries no secret material.
+ * The remedy line a `reauth-required` outcome shows — the command to re-establish the source's
+ * session. Shared by the `from` and `all` renderers. Pure; carries no secret material.
+ *
+ * A bare token is a single source → the `login` verb (#17). A multi-account source (`accounts:`)
+ * surfaces its accounts as `<label>/<domain>` (#266), which `login` rejects (#288); those
+ * re-authenticate by re-collecting via `--all-instances`, which re-drives the per-account prompt.
  */
 export function reauthRemedy(source: string): string {
+    if (source.includes('/')) {
+        const domain = source.slice(source.lastIndexOf('/') + 1);
+        return `→ run \`getreceipt from ${domain} --all-instances\` to re-authenticate its accounts`;
+    }
     return `→ run \`getreceipt login ${source}\` to re-authenticate`;
 }
 
