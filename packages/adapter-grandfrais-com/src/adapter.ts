@@ -15,6 +15,7 @@ import type {
 } from '@getreceipt/core';
 
 import {
+    COLLECTION,
     ENDPOINTS,
     parseListPage,
     parseReceiptDetail,
@@ -113,17 +114,18 @@ export class GrandfraisAdapter implements SourceAdapter, SessionPersistableAdapt
 /** A ready-to-register adapter instance — a front-end registers this into its {@link @getreceipt/core!SourceAdapterRegistry}. */
 export const grandfraisAdapter: SourceAdapter = new GrandfraisAdapter();
 
-/** Page through the token-paginated listing, returning every receipt across all pages (un-filtered). */
+/** Page through the cursor-paginated listing, returning every receipt the window can still reach (un-filtered). */
 async function listAllReceipts(token: Secret, range: DateRange): Promise<ReceiptDto[]> {
     const all: ReceiptDto[] = [];
     const seenTokens = new Set<string>();
     let paginationToken: string | undefined;
     for (;;) {
-        const page = await fetchPage(token, range, paginationToken);
+        const page = await fetchPage(token, paginationToken);
         all.push(...page.receipts);
-        const next = page.paginationToken;
-        // Stop at the last page; the seen-token guard breaks a malformed pagination cycle.
-        if (next === undefined || seenTokens.has(next)) {
+        const next = page.nextToken;
+        // The cursor rides in under `nextToken` and goes back out as `paginationToken` — see
+        // {@link ./wire}; the two names are independent facts.
+        if (next === undefined || crossesBelowWindow(page, range) || seenTokens.has(next)) {
             return all;
         }
         seenTokens.add(next);
@@ -131,11 +133,36 @@ async function listAllReceipts(token: Secret, range: DateRange): Promise<Receipt
     }
 }
 
-/** Fetch and boundary-validate one listing page for the window (optionally continuing from `paginationToken`). */
-async function fetchPage(token: Secret, range: DateRange, paginationToken: string | undefined): Promise<ListPageDto> {
+/**
+ * Whether the walk can stop after this page. Pages are newest-first, strictly descending and
+ * non-overlapping (probe, 2026-08-25), so once a page's OLDEST receipt sits below the window's `from`
+ * every later page is older still. Mirrors the `skip-stop` arm of core's `classifyAgainstWindow`, which
+ * is not exported. An empty page carries no oldest receipt, so it establishes nothing and never stops.
+ */
+function crossesBelowWindow(page: ListPageDto, range: DateRange): boolean {
+    let oldest: Date | undefined;
+    for (const receipt of page.receipts) {
+        const issuedAt = new Date(receipt.checkOutDate);
+        if (oldest === undefined || issuedAt.getTime() < oldest.getTime()) {
+            oldest = issuedAt;
+        }
+    }
+    if (oldest === undefined || isWithinDateFilter(oldest, range, DESCRIPTOR.dateFilter)) {
+        return false;
+    }
+    return DESCRIPTOR.dateFilter.fromInclusive
+        ? oldest.getTime() < range.from.getTime()
+        : oldest.getTime() <= range.from.getTime();
+}
+
+/**
+ * Fetch and boundary-validate one listing page (optionally continuing from `paginationToken`). The
+ * request carries no window: the probe's no-parameter control proved `beginDate`/`endDate` inert
+ * server-side (see {@link COLLECTION}), so the window is applied client-side in {@link expandToRefs}.
+ */
+async function fetchPage(token: Secret, paginationToken: string | undefined): Promise<ListPageDto> {
     const url = new URL(ENDPOINTS.receipts, API_BASE);
-    url.searchParams.set('beginDate', range.from.toISOString());
-    url.searchParams.set('endDate', range.to.toISOString());
+    url.searchParams.set('limit', String(COLLECTION.receiptsLimit));
     if (paginationToken !== undefined) {
         url.searchParams.set('paginationToken', paginationToken);
     }

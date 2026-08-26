@@ -20,8 +20,8 @@ import { http, HttpResponse, server, wireFixture } from '@getreceipt/testing';
 import { describe, expect, it } from 'vitest';
 
 import { GrandfraisAdapter, grandfraisAdapter } from './index.js';
-import { ENDPOINTS, listPageSchema, receiptDetailSchema } from './wire.js';
-import type { ListPageDto, ReceiptDto } from './wire.js';
+import { COLLECTION, ENDPOINTS, listPageSchema, receiptDetailSchema } from './wire.js';
+import type { ReceiptDto } from './wire.js';
 
 // Everything below runs against MSW-mocked HTTP — there is no live bff.grandfrais.com in CI. Endpoints
 // AND positive response shapes are sourced from the in-repo contract (wire.ts): URLs come from
@@ -47,10 +47,12 @@ const AMOUNT = '42.50';
 
 /** A wide window that admits every in-range synthetic receipt; the inclusivity test uses a precise one. */
 const WIDE: DateRange = { from: new Date('2026-01-01T00:00:00.000Z'), to: new Date('2026-12-31T23:59:59.999Z') };
+/** A narrower window for the early-stop tests: their page fixtures sit either side of its `from`. */
+const NARROW: DateRange = { from: new Date('2026-06-01T00:00:00.000Z'), to: new Date('2026-08-31T23:59:59.999Z') };
 const ISSUED = '2026-06-01T10:00:00.000Z';
 
-// Receipt + listing-page shapes are the schema-derived types from wire.ts (ReceiptDto / ListPageDto) —
-// not re-declared here. `WireFlags` is test-local sugar for the per-receipt download flags, not a wire shape.
+// The receipt shape is the schema-derived type from wire.ts (ReceiptDto), not re-declared here.
+// `WireFlags` and `TestPage` are test-local sugar (download flags / a page as a test declares it).
 interface WireFlags {
     sales?: boolean;
     creditCard?: boolean;
@@ -74,13 +76,37 @@ function loginOk() {
     );
 }
 
-/** Serve listing pages by pagination token: the first request (no token) gets page 0, `?paginationToken=N` gets page N. Each page derives from `listPageSchema` (#88). */
-function receiptsPages(pages: readonly ListPageDto[], onToken?: (token: string | null) => void) {
+/**
+ * The cursor key these mocks EMIT — the ONE name in this file hand-authored rather than derived from
+ * `wire.ts`, and deliberately so. Deriving it is the circularity that hid #298: the mock emitted the
+ * cursor under whatever key `listPageSchema` declared, so a schema naming the WRONG key produced a mock
+ * that agreed with it, and the suite stayed green while the adapter reached one listing page of six. Do
+ * not "fix" this back to the schema's field name; the receipts array still derives from the contract (#88).
+ */
+const LIVE_CURSOR_KEY = 'nextToken';
+
+/** A listing page as a test declares it; `next` is emitted under {@link LIVE_CURSOR_KEY}. */
+interface TestPage {
+    receipts: readonly ReceiptDto[];
+    next?: string;
+}
+
+/** Render one page the way the wire serves it: schema-derived receipts, cursor under the live key. */
+function listingPage(page: TestPage): Record<string, unknown> {
+    return {
+        ...wireFixture(listPageSchema, { receipts: [...page.receipts] }),
+        ...(page.next === undefined ? {} : { [LIVE_CURSOR_KEY]: page.next }),
+    };
+}
+
+/** Serve listing pages by cursor: the first request (no cursor) gets page 0, `?paginationToken=N` gets page N. */
+function receiptsPages(pages: readonly TestPage[], onRequest?: (url: URL) => void) {
     return http.get(RECEIPTS, ({ request }) => {
-        const token = new URL(request.url).searchParams.get('paginationToken');
-        onToken?.(token);
-        const index = token === null ? 0 : Number(token);
-        return HttpResponse.json(wireFixture(listPageSchema, pages[index] ?? { receipts: [] }));
+        const url = new URL(request.url);
+        onRequest?.(url);
+        const cursor = url.searchParams.get('paginationToken');
+        const index = cursor === null ? 0 : Number(cursor);
+        return HttpResponse.json(listingPage(pages[index] ?? { receipts: [] }));
     });
 }
 
@@ -259,20 +285,97 @@ describe('GrandfraisAdapter — AC3: list', () => {
 
     it('follows the pagination token across pages, de-duplicates overlaps, and never truncates', async () => {
         const tokens: (string | null)[] = [];
-        const pages: ListPageDto[] = [
-            { receipts: [receipt('a'), receipt('b')], paginationToken: '1' },
+        const pages: TestPage[] = [
+            { receipts: [receipt('a'), receipt('b')], next: '1' },
             { receipts: [receipt('b'), receipt('c')] }, // 'b' overlaps page 0
         ];
         server.use(
             loginOk(),
-            receiptsPages(pages, (token) => tokens.push(token)),
+            receiptsPages(pages, (url) => tokens.push(url.searchParams.get('paginationToken'))),
             detailsAllSales(),
         );
 
         const refs = await grandfraisAdapter.list(await authenticate(), WIDE);
 
         expect(refs.map((ref) => ref.id)).toEqual(['a__SALE', 'b__SALE', 'c__SALE']);
-        expect(tokens).toEqual([null, '1']); // two pages followed, then stopped (page 1 has no paginationToken)
+        expect(tokens).toEqual([null, '1']); // two pages followed, then stopped (page 1 carries no cursor)
+    });
+
+    it('sends the contract page-size `limit`, and none of the probe-inert date parameters (#299)', async () => {
+        const urls: URL[] = [];
+        server.use(
+            loginOk(),
+            receiptsPages([{ receipts: [receipt('a')] }], (url) => urls.push(url)),
+            detailsAllSales(),
+        );
+
+        await grandfraisAdapter.list(await authenticate(), WIDE);
+
+        expect(urls[0]?.searchParams.get('limit')).toBe(String(COLLECTION.receiptsLimit));
+        // The server ignores both (probe #299, no-parameter control); the window is enforced client-side.
+        expect(urls[0]?.searchParams.has('beginDate')).toBe(false);
+        expect(urls[0]?.searchParams.has('endDate')).toBe(false);
+    });
+
+    it('advances the cursor on the `paginationToken` request parameter, never on `nextToken` (#299)', async () => {
+        const urls: URL[] = [];
+        server.use(
+            loginOk(),
+            receiptsPages([{ receipts: [receipt('a')], next: '1' }, { receipts: [receipt('b')] }], (url) =>
+                urls.push(url),
+            ),
+            detailsAllSales(),
+        );
+
+        await grandfraisAdapter.list(await authenticate(), WIDE);
+
+        // The response carries the cursor as `nextToken`; the request sends it back as `paginationToken`.
+        // The asymmetry is real (probe #299) — a fix that renames both sides in step stops advancing.
+        expect(urls).toHaveLength(2);
+        expect(urls[1]?.searchParams.get('paginationToken')).toBe('1');
+        expect(urls[1]?.searchParams.has(LIVE_CURSOR_KEY)).toBe(false);
+    });
+
+    it('stops the newest-first walk at the page that crosses below the window (#299)', async () => {
+        const urls: URL[] = [];
+        server.use(
+            loginOk(),
+            receiptsPages(
+                [
+                    { receipts: [receipt('in', { checkOutDate: '2026-08-20T10:00:00.000Z' })], next: '1' },
+                    // Entirely older than `from`; pages descend, so page 2 is older still and is never requested.
+                    { receipts: [receipt('old', { checkOutDate: '2026-05-20T10:00:00.000Z' })], next: '2' },
+                    { receipts: [receipt('never', { checkOutDate: '2026-08-15T10:00:00.000Z' })] },
+                ],
+                (url) => urls.push(url),
+            ),
+            detailsAllSales(),
+        );
+
+        const refs = await grandfraisAdapter.list(await authenticate(), NARROW);
+
+        expect(urls).toHaveLength(2);
+        expect(refs.map((ref) => ref.id)).toEqual(['in__SALE']);
+    });
+
+    it('never stops the walk on an empty page — an empty page establishes nothing (#299)', async () => {
+        const urls: URL[] = [];
+        server.use(
+            loginOk(),
+            receiptsPages(
+                [
+                    { receipts: [], next: '1' },
+                    { receipts: [receipt('after-gap', { checkOutDate: '2026-07-15T10:00:00.000Z' })] },
+                ],
+                (url) => urls.push(url),
+            ),
+            detailsAllSales(),
+        );
+
+        const refs = await grandfraisAdapter.list(await authenticate(), NARROW);
+
+        expect(urls).toHaveLength(2);
+        expect(refs.map((ref) => ref.id)).toEqual(['after-gap__SALE']);
     });
 
     it('terminates on a cyclic pagination token instead of looping forever', async () => {
@@ -283,9 +386,7 @@ describe('GrandfraisAdapter — AC3: list', () => {
                 calls += 1;
                 const token = new URL(request.url).searchParams.get('paginationToken');
                 // Always advertise the SAME next token → a cycle the adapter's seen-token guard must break.
-                return HttpResponse.json(
-                    wireFixture(listPageSchema, { receipts: [receipt(token ?? 'first')], paginationToken: 'loop' }),
-                );
+                return HttpResponse.json(listingPage({ receipts: [receipt(token ?? 'first')], next: 'loop' }));
             }),
             detailsAllSales(),
         );

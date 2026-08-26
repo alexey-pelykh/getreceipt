@@ -12,8 +12,9 @@ import { z } from 'zod';
  * contract and the live service surfaces as a {@link @getreceipt/core!TrustBoundaryError}
  * (the shape mismatch IS the drift detector) rather than a silent mis-parse. The live
  * e2e oracle (#89) is the fidelity check that promotes the adapter past `unverified`; it
- * confirmed `amount` is a wire STRING. The listing wrapper key and next-page token field
- * remain best-effort, flagged below.
+ * confirmed `amount` is a wire STRING. An attended live probe of the listing on 2026-08-25
+ * (#299) settled the two names that were still best-effort: the wrapper key is `receipts`
+ * and the next-page cursor is `nextToken`.
  */
 
 /**
@@ -55,6 +56,23 @@ export function receiptPdfPath(receiptId: string, variant: string): string {
 }
 
 /**
+ * Collection-request constants for the listing call (besides the per-request bearer token).
+ *
+ * The listing takes NO server-side window: the 2026-08-25 probe (#299) swept `beginDate`/`endDate` across
+ * several window shapes AND a no-parameter control, and every one returned the identical page — the
+ * control being what makes it decisive. Neither is sent any more; the window is enforced client-side, by
+ * `isWithinDateFilter` in `expandToRefs` (see `./adapter.ts`).
+ */
+export const COLLECTION = {
+    /**
+     * Page-size cap, sent as `limit` on every listing request. Unset, the server defaults to 10 — which is
+     * what capped this adapter's reach before #299. `500` returns HTTP 400, so 100 is the largest value the
+     * probe observed to work, not a known ceiling.
+     */
+    receiptsLimit: 100,
+} as const;
+
+/**
  * A receipt id, constrained so that `receiptId__VARIANT` round-trips by splitting on the FIRST
  * delimiter. That requires no embedded `__` AND no edge underscore: an underscore at the id's start
  * or end would merge with the delimiter (e.g. `R_`+`SALE` packs to `R___SALE`, which splits back to
@@ -80,12 +98,18 @@ export const receiptSchema = z.object({
 });
 
 /**
- * One page of the paginated receipts listing. The response wraps the array (the wrapper key and the
- * next-page token field are best-effort pending #89); an absent `paginationToken` marks the last page.
+ * One page of the paginated receipts listing. The 2026-08-25 probe observed the envelope's top-level
+ * keys as `[ cardsId, nextToken, receipts ]`: the array rides under `receipts`, and an ABSENT
+ * `nextToken` is what marks the last page. `cardsId` is live and unconsumed — it is deliberately left
+ * out of this schema (#302's territory), so the envelope on the wire is wider than what is modelled here.
+ *
+ * The cursor's REQUEST parameter is `paginationToken`, NOT `nextToken` (the probe advanced on
+ * `?paginationToken=` and did not advance on `?nextToken=`). The two sides of this contract are
+ * independent facts: renaming both in step is the one fix shape that breaks paging.
  */
 export const listPageSchema = z.object({
     receipts: z.array(receiptSchema),
-    paginationToken: z.string().min(1).optional(),
+    nextToken: z.string().min(1).optional(),
 });
 
 /**
