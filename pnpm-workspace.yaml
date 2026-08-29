@@ -11,31 +11,31 @@ allowBuilds:
 catalog:
   # Toolchain
   typescript: 6.0.3
-  turbo: 2.9.18
+  turbo: 2.10.12
   tsup: 8.5.1
   # Test substrate
   vitest: 4.1.9
-  msw: 2.14.6
+  msw: 2.15.0
   # Lint + format
-  eslint: 10.5.0
+  eslint: 10.9.1
   '@eslint/js': 10.0.1
-  typescript-eslint: 8.61.1
+  typescript-eslint: 8.68.0
   eslint-config-prettier: 10.1.8
-  prettier: 3.8.4
+  prettier: 3.9.6
   # Types
-  '@types/node': 26.0.0
+  '@types/node': 26.3.0
   # Runtime
   commander: 15.0.0
   yaml: 2.9.0
   zod: 4.4.3
-  '@modelcontextprotocol/sdk': 1.29.0
+  '@modelcontextprotocol/sdk': 1.30.0
   # Chrome TLS/HTTP-2 browser impersonation (napi-rs Rust + BoringSSL) for Cloudflare-gated sources (#101).
   # napi prebuilt binaries via optionalDependencies — ABI-stable across Node 24/26, no from-source compile.
   node-wreq: 2.4.1
   # Headless-Chromium render engine for @getreceipt/browser (#172): HTML/URL -> PDF. The browser BINARY is
   # not pulled by install (pnpm blocks build scripts; see allowBuilds) — it is fetched explicitly via
   # `playwright install chromium` (CI wires this per leg), keeping installs hermetic and lightweight.
-  playwright: 1.61.1
+  playwright: 1.62.1
 
 # Packages newer than pnpm's default minimum-release-age window; vetted + allowed so fresh clones (and the
 # frozen-lockfile CI matrix) install deterministically without a prompt. node-wreq ships one prebuilt
